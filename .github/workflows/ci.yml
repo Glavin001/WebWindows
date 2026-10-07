@@ -194,7 +194,8 @@ jobs:
           ARCH=x86_64 WINE_BUILD=$WINE_BUILD64 sh tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase \
             advapi32 sechost user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 \
             oleaut32 rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi hid programs/winemine programs/notepad fonts \
-            setupapi apisetschema ws2_32 crypt32 dnsapi nsi iphlpapi secur32 bcrypt normaliz wldap32
+            setupapi apisetschema ws2_32 crypt32 dnsapi nsi iphlpapi secur32 bcrypt normaliz wldap32 \
+            kernel32/tests user32/tests gdi32/tests
       - uses: mymindstorm/setup-emsdk@v14
       - name: Build
         run: |
@@ -215,6 +216,12 @@ jobs:
         run: node tests/programs/check.mjs --arch x64 --wine --jobs 4
       - name: 64-bit GUI programs on translated x86_64 Wine (headless)
         run: node tests/wine/gui.mjs --arch x64
+      - name: Wine's x86_64 kernel32, user32 and gdi32 tests, against the recorded baselines
+        run: |
+          for t in kernel32 user32 gdi32; do
+            node tests/wine/winetest.mjs --jobs 4 --timeout 120 --baseline tests/wine/baseline/${t}_test64.json \
+              "$WINE_BUILD64/dlls/$t/tests/x86_64-windows/${t}_test.exe"
+          done
       - name: 64-bit GUI programs in headless Chromium
         run: |
           npx --yes playwright@1 install --with-deps chromium

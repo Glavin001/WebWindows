@@ -360,10 +360,36 @@ extracting into a subfolder needs directory creation, and updating an
 existing archive needs file rename and delete (the Wine-runtime file
 system work).
 
+### Wine's conformance tests on x86-64
+
+The x86_64 builds of Wine's kernel32, user32 and gdi32 tests run in CI
+against their own baselines (`tests/wine/baseline/*_test64.json`), as the
+i386 ones do:
+
+| Tests | i386: units finished (failures) | x86-64: units finished (failures) |
+| --- | --- | --- |
+| kernel32 | 14 of 33 (8982) | 18 of 33 (12923, over 2.7× the tests) |
+| user32 | 15 of 24 (338) | 16 of 24 (350) |
+| gdi32 | 12 of 14 (153) | 12 of 14 (130) |
+
+Getting there fixed, for x86-64: the 17th argument of
+`NtUserCreateWindowEx` (`ansi`), which the host's 16 argument slots
+dropped, so every window a 64-bit program made through the ANSI API was
+Unicode (user32's `edit` test crashed calling a winproc handle); and, for
+both, `NtQuerySystemInformation` leaving the length unset for a class it
+lacks (kernel32's `version` crashed on x86-64). user32's tests also import
+`setupapi`, which CI did not build: the test program could not start and
+the baseline check passed on no units; it now builds it, and a unit the
+baseline finished that does not run counts as a regression.
+
+The one unit worse on x86-64, gdi32's `metafile`, writes to a file named
+by `GetTempFileName` in `C:\windows\temp`, which does not exist yet on
+either architecture (directories come with the Wine-runtime file system
+work): the test goes on with an uninitialized name, so what happens next
+depends on the stack's leftovers.
+
 ## Not done yet
 
-* **64-bit Wine's tests:** kernel32, user32 and gdi32 conformance tests
-  for x86_64 are not run yet (the i386 ones are, against baselines).
 * **Exceptions:** x86-64 exceptions are table-based (`.pdata` unwind
   information). Translated code keeps the guest stack real, so Wine's
   `RtlVirtualUnwind` works on it as long as prologue saves and stack
