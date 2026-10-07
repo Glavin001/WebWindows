@@ -181,8 +181,8 @@ pub fn compare(case: &Case, want: &Outcome, got: &Outcome) -> Vec<String> {
     if !mask.skip_result {
         const NAMES: [&str; 8] = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"];
         const NAMES64: [&str; 16] = [
-            "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12",
-            "r13", "r14", "r15",
+            "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11",
+            "r12", "r13", "r14", "r15",
         ];
         for r in 0..want.regs.len().max(got.regs.len()) {
             let (w, g) = (want.regs.get(r), got.regs.get(r));

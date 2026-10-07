@@ -312,7 +312,7 @@ impl Executor {
                         }
                         .to_string(),
                     ),
-                    None => (0, format!("trap: {e}")),
+                    None => (0, format!("trap: {e:#}")),
                 },
             };
             let mem = read_bytes(&memory, MEM_BASE, MEM_SIZE);

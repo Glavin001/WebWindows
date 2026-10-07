@@ -3122,17 +3122,12 @@ impl<'a> Lifter<'a> {
             // Intel CPUs zero-extend ecx, and edi/esi for movs and stos,
             // even when the count is zero (the instruction suite treats the
             // zero-count case as model-specific).
-            let mut regs = vec![ECX];
-            if matches!(m, M::Movsb | M::Movsw | M::Movsd | M::Movsq) {
-                regs.push(ESI);
-            }
-            if matches!(
-                m,
-                M::Movsb | M::Movsw | M::Movsd | M::Movsq | M::Stosb | M::Stosw | M::Stosd | M::Stosq
-            ) {
-                regs.push(EDI);
-            }
-            for r in regs {
+            let regs: &[V] = match m {
+                M::Movsb | M::Movsw | M::Movsd | M::Movsq => &[ECX, ESI, EDI],
+                M::Stosb | M::Stosw | M::Stosd | M::Stosq => &[ECX, EDI],
+                _ => &[ECX],
+            };
+            for &r in regs {
                 let v = self.r32(r);
                 self.set_gpr(r, v);
             }

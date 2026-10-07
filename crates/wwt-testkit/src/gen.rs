@@ -1147,7 +1147,7 @@ pub(crate) fn fusion_cases_in(ints: Group, n: usize, rng: &mut Rng) -> Vec<Case>
         .copied()
         .filter(|c| {
             let m = format!("{:?}", c.mnemonic());
-            (m.starts_with('J') && m != "Jmp" && m != "Jecxz" && m != "Jcxz")
+            (m.starts_with('J') && !matches!(m.as_str(), "Jmp" | "Jecxz" | "Jcxz" | "Jrcxz"))
                 || m.starts_with("Set")
                 || m.starts_with("Cmov")
                 || matches!(
@@ -1186,7 +1186,36 @@ pub(crate) fn fusion_cases_in(ints: Group, n: usize, rng: &mut Rng) -> Vec<Case>
         if undef & crate::compare::rflags_read(&i2) != 0 {
             continue;
         }
+        // ... and pairs whose consumer shifts by cl after the producer
+        // changed it: the comparison takes shift counts from the inputs.
+        if shifts_by_cl(&i2) && writes_rcx(&i1) {
+            continue;
+        }
         out.push(first);
     }
     out
+}
+
+fn shifts_by_cl(i: &Instruction) -> bool {
+    use Mnemonic as M;
+    matches!(
+        i.mnemonic(),
+        M::Shl | M::Sal | M::Shr | M::Sar | M::Rol | M::Ror | M::Rcl | M::Rcr | M::Shld | M::Shrd
+    ) && (0..i.op_count())
+        .any(|k| i.op_kind(k) == OpKind::Register && i.op_register(k) == Register::CL)
+}
+
+fn writes_rcx(i: &Instruction) -> bool {
+    use iced_x86::OpAccess as A;
+    iced_x86::InstructionInfoFactory::new()
+        .info(i)
+        .used_registers()
+        .iter()
+        .any(|u| {
+            u.register().full_register() == Register::RCX
+                && matches!(
+                    u.access(),
+                    A::Write | A::ReadWrite | A::CondWrite | A::ReadCondWrite
+                )
+        })
 }

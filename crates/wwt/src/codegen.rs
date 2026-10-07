@@ -1254,7 +1254,20 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 if mem.space == Space::Guest && self.m.cfg.mem_checks {
                     self.check_addr(*addr, mem.offset, dirty, inst.eip);
                 }
-                let la = self.addr_local(*addr);
+                let mut la = self.addr_local(*addr);
+                // The result may take over the address's local (the address
+                // dies here), but the code-write check below still needs the
+                // address. Only code with 64-bit addresses has the spare local
+                // (32-bit code would need a new one, changing its output).
+                if mem.space == Space::Guest
+                    && self.m.cfg.smc_checks
+                    && self.tmp_ma != UNASSIGNED
+                    && inst.dst.is_some_and(|d| self.local_of[d as usize] == la)
+                {
+                    self.emit(W::LocalGet(la));
+                    self.emit(W::LocalSet(self.tmp_ma));
+                    la = self.tmp_ma;
+                }
                 let ty = ty.unwrap_or(Ty::I32);
                 let wide = ty == Ty::I64;
                 let tmp = if wide { self.tmp_i64 } else { self.tmp_i32 };

@@ -100,7 +100,32 @@ refused for now (VS2005/2008-era executables built without
 
 ## Test results
 
-**Layer 1 — instructions:** in progress: a 64-bit oracle (`tools/oracle/oracle64.c`), 64-bit case generation and the first `integer64`/`sse64` fixtures; results to follow.
+**Layer 1 — instructions**, recorded on a real x86-64 CPU by
+`tools/oracle/oracle64.c` (16 registers, rflags, xmm0–15) and replayed
+through the translator in optimized mode, fast mode and on a 64-bit memory:
+
+| Group | Instruction forms | Cases | Result |
+| --- | --- | --- | --- |
+| Integer64 (every form valid in 64-bit user mode except I/O, segments and far branches; REX registers, 64-bit immediates, RIP-relative and 0x67 addressing, full 128-bit `div` dividends, `cmpxchg16b`) | 611 | 14,644 | all pass |
+| Fusion64 (flag producer + consumer pairs) | 3,792 pairs | 4,000 | all pass |
+| Sse64 (SSE/SSE2 with xmm8–15 and 64-bit general registers) | 305 | 7,320 | all pass |
+
+The 32-bit groups also pass on a 64-bit memory. A larger run (150 cases per
+form, 137,000 cases, 30,000 fusion pairs) found nothing else except
+`rsqrtps`/`rcpps` on denormal inputs, which the CPU flushes to zero and the
+translator does not (32-bit code has the same gap). The suite found and
+fixed these x86-64 behaviors: a 32-bit shift, rotate or `shld`/`shrd` by a
+masked count of zero still writes (zero-extends) its register; a 64-bit
+`rcl`/`rcr` by zero leaves its operand alone; `bsf`/`bsr r32` with a zero
+source leaves the 64-bit register alone; a 32-bit `cmpxchg` writes its
+register destination only on success and `cmpxchg8b` writes rdx:rax only on
+failure; `loop` and string instructions with the 0x67 prefix count in ecx
+and use esi/edi (zero-extending them, even with a zero count on this Intel
+CPU); `pinsrw` with a 64-bit source; and a lock-prefixed read-modify-write
+on a 64-bit memory checked self-modifying code at a clobbered address.
+Three of these were recorded on Intel only and may need masking if another
+CPU's re-recording differs (failed 32-bit `cmpxchg` destinations,
+`bsf`/`bsr` with a zero source, zero-count 0x67 `rep`).
 
 **Layer 2 — programs** (`tests/programs/check.mjs --arch x64`): built with
 `x86_64-w64-mingw32-gcc` at -O0 to -Os, the reference built with the native

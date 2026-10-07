@@ -1023,7 +1023,11 @@ impl<'a> Lifter<'a> {
             M::Pinsrw => {
                 let d = src!(0);
                 let x = match i.op1_kind() {
-                    OpKind::Register => self.read_reg(i.op1_register()),
+                    OpKind::Register => {
+                        // The low word of r32 or r64.
+                        let v = self.read_reg(i.op1_register());
+                        self.r32(v)
+                    }
                     _ => {
                         let (a, sp) = self.ea(i);
                         self.load(a, 2, sp)

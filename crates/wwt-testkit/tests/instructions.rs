@@ -4,6 +4,11 @@ use wwt_testkit::case::read_fixtures;
 use wwt_testkit::suite::{fixture_path, run_fixtures};
 
 fn run_group(group: &str) {
+    run_group_with(group, &[]);
+}
+
+/// Runs a group optimized and in fast mode, plus the `extra` configurations.
+fn run_group_with(group: &str, extra: &[(&str, wwt::Config)]) {
     let path = fixture_path(group);
     if !path.exists() {
         eprintln!(
@@ -12,11 +17,12 @@ fn run_group(group: &str) {
         return;
     }
     let fixtures = read_fixtures(&path).unwrap();
-    for (name, cfg) in [
+    let configs = [
         ("optimized", wwt::Config::default()),
         ("fast mode", wwt::Config::fast()),
-    ] {
-        let summary = run_fixtures(&fixtures, &cfg).unwrap();
+    ];
+    for (name, cfg) in configs.iter().chain(extra) {
+        let summary = run_fixtures(&fixtures, cfg).unwrap();
         let report = summary.report();
         eprintln!("{group} ({name}): {report}");
         let (_, fail, _) = summary.totals();
@@ -44,17 +50,24 @@ fn sse() {
     run_group("sse");
 }
 
+// x86-64: the executor runs these in the translator's 64-bit mode, also
+// with a 64-bit WebAssembly memory.
+
+fn mem64() -> [(&'static str, wwt::Config); 1] {
+    [("memory64", wwt::Config::default().with_mem64(true))]
+}
+
 #[test]
 fn integer64() {
-    run_group("integer64");
+    run_group_with("integer64", &mem64());
 }
 
 #[test]
 fn fusion64() {
-    run_group("fusion64");
+    run_group_with("fusion64", &mem64());
 }
 
 #[test]
 fn sse64() {
-    run_group("sse64");
+    run_group_with("sse64", &mem64());
 }

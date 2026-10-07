@@ -23,6 +23,10 @@ const SKIP_MNEMONICS64: &[Mnemonic] = &[
     Mnemonic::Rdgsbase,
     Mnemonic::Wrfsbase,
     Mnemonic::Wrgsbase,
+    // Their 512-byte images do not fit the window (fxsave/fxrstor are
+    // skipped in 32-bit mode for the same reason).
+    Mnemonic::Fxsave64,
+    Mnemonic::Fxrstor64,
 ];
 
 /// Classifies an instruction form for the x86-64 groups, or None when it
@@ -130,6 +134,9 @@ pub fn group_of64(code: Code) -> Option<Group> {
     None
 }
 
+/// Byte registers except spl (rsp is the stack pointer). ah..bh cannot be
+/// encoded with a REX prefix; forms that pick them together with a REX-only
+/// register fail to encode and are generated again.
 const R8: [Register; 19] = [
     Register::AL,
     Register::CL,
@@ -158,10 +165,7 @@ fn pool(bits: u32) -> Vec<Register> {
         32 => Register::EAX,
         _ => Register::RAX,
     };
-    (0..16)
-        .filter(|&n| n != 4)
-        .map(|n| reg(first, n))
-        .collect()
+    (0..16).filter(|&n| n != 4).map(|n| reg(first, n)).collect()
 }
 
 /// The `n`th register of the family starting at `first` (rax, eax, ax,
@@ -213,7 +217,11 @@ impl Mem {
             a = a.wrapping_add(regs[num(self.base)]);
         }
         if self.index != Register::None {
-            a = a.wrapping_add(regs[num(self.index)].wrapping_mul(self.scale as u64));
+            let mut ix = regs[num(self.index)];
+            if self.index.size() == 1 {
+                ix &= 0xff; // xlat: [rbx + al]
+            }
+            a = a.wrapping_add(ix.wrapping_mul(self.scale as u64));
         }
         // 32-bit address size wraps.
         if self.base.size() == 4 || self.index.size() == 4 {
@@ -297,27 +305,10 @@ impl<'r> Builder<'r> {
                 let ds = if disp == 0 && num(b) & 7 != 5 { 0 } else { 1 };
                 mem(b, none, 1, disp, ds)
             }
-            4 | 5 if candidates.len() >= 2 => {
-                let (b, ix, scale, disp) = self.base_index(&candidates, target);
-                let (bv, iv) = (self.regs[b], self.regs[ix]);
-                let (b, ix) = (reg(Register::RAX, b), reg(Register::RAX, ix));
-                self.pin(b, bv);
-                self.pin(ix, iv);
-                mem(b, ix, scale, disp, 1)
-            }
+            4 | 5 if candidates.len() >= 2 => self.base_index(&candidates, target, false),
             8 => mem(Register::RIP, none, 1, target as i64, 4),
-            9 if candidates.len() >= 2 => {
-                // 0x67: 32-bit address arithmetic. The registers' upper
-                // halves are ignored, so fill them with garbage.
-                let (b, ix, scale, disp) = self.base_index(&candidates, target);
-                let (bv, iv) = (self.regs[b], self.regs[ix]);
-                let hi = |rng: &mut Rng| rng.next() << 32;
-                let (bv, iv) = (bv | hi(self.rng), iv | hi(self.rng));
-                let (b, ix) = (reg(Register::EAX, b), reg(Register::EAX, ix));
-                self.pin(b, bv);
-                self.pin(ix, iv);
-                mem(b, ix, scale, disp, 1)
-            }
+            // 0x67: 32-bit address arithmetic.
+            9 if candidates.len() >= 2 => self.base_index(&candidates, target, true),
             _ => {
                 // [rsp + disp]: rsp points near the top of the window.
                 let disp = target as i64 - STACK as i64;
@@ -326,18 +317,34 @@ impl<'r> Builder<'r> {
         }
     }
 
-    /// Picks base and index registers (by number) addressing `target`, and
-    /// stores their values in `regs` (not yet pinned).
-    fn base_index(&mut self, candidates: &[usize], target: u64) -> (usize, usize, u32, i64) {
+    /// [base + index * scale + disp] addressing `target`, with registers
+    /// from `candidates` (by number). With 32-bit addressing (`addr32`)
+    /// the registers' upper halves are ignored, so they get garbage.
+    fn base_index(&mut self, candidates: &[usize], target: u64, addr32: bool) -> Mem {
         let b = self.rng.pick(candidates);
         let rest: Vec<usize> = candidates.iter().copied().filter(|&r| r != b).collect();
         let ix = self.rng.pick(&rest);
         let scale = self.rng.pick(&[1u32, 2, 4, 8]);
-        let iv = self.rng.below(4);
+        let mut iv = self.rng.below(4);
         let disp = self.rng.below(16) as i64 - 8;
-        self.regs[b] = (target as i64 - disp - (iv * scale as u64) as i64) as u64;
-        self.regs[ix] = iv;
-        (b, ix, scale, disp)
+        let mut bv = (target as i64 - disp - (iv * scale as u64) as i64) as u64;
+        let first = if addr32 {
+            bv |= self.rng.next() << 32;
+            iv |= self.rng.next() << 32;
+            Register::EAX
+        } else {
+            Register::RAX
+        };
+        let (base, index) = (reg(first, b), reg(first, ix));
+        self.pin(base, bv);
+        self.pin(index, iv);
+        Mem {
+            base,
+            index,
+            scale,
+            disp,
+            displ_size: 1,
+        }
     }
 }
 
@@ -420,11 +427,13 @@ pub(crate) fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -
             }
             K::mem => {
                 let size = mem_size(code).max(1);
-                mem_op = Some(if group == Some(Group::Sse64) || m == Mnemonic::Cmpxchg16b {
-                    b.memory_aligned(size, 16)
-                } else {
-                    b.memory(size)
-                });
+                mem_op = Some(
+                    if group == Some(Group::Sse64) || m == Mnemonic::Cmpxchg16b {
+                        b.memory_aligned(size, 16)
+                    } else {
+                        b.memory(size)
+                    },
+                );
                 OpKind::Memory
             }
             K::al | K::cl | K::ax | K::dx | K::eax | K::rax => {
@@ -744,8 +753,24 @@ fn high8_shift(ins: &Instruction) -> u32 {
 
 /// Dividends for div/idiv: mostly ones whose quotient fits. 64-bit
 /// divisions also get full 128-bit dividends in rdx:rax, built from a
-/// divisor chosen here; the rest are random (often #DE).
+/// divisor chosen here; some divisors are zero, and the rest of the
+/// dividends are random (often #DE from an overflowing quotient).
 fn div_inputs(b: &mut Builder, ins: &Instruction, mem_op: Option<Mem>, w: u32, signed: bool) {
+    if b.rng.chance(5) {
+        // Division by zero.
+        match (ins.op0_kind(), mem_op) {
+            (OpKind::Register, _) => {
+                let mask = width_mask(w) << high8_shift(ins);
+                b.regs[num(ins.op0_register())] &= !mask;
+            }
+            (_, Some(mo)) => {
+                let ea = mo.ea(&b.regs) as u32 - MEM_BASE;
+                b.patch64(ea, 0);
+            }
+            _ => {}
+        }
+        return;
+    }
     if b.pinned[2] || b.pinned[0] {
         return;
     }
