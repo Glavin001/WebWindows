@@ -560,7 +560,11 @@ mod tests {
             fallback: fb,
         };
         f.blocks[1].term = Term::Jump(3);
-        f.blocks[2].term = Term::Branch { cond: ECX, t: 4, f: 3 };
+        f.blocks[2].term = Term::Branch {
+            cond: ECX,
+            t: 4,
+            f: 3,
+        };
         f.blocks[3].term = Term::Switch {
             index: EDX,
             targets: vec![1, 2],

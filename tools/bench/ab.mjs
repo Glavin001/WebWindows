@@ -146,7 +146,8 @@ for (const v of variants) {
     else args.push(tok);
   }
   v.wasm = join(out, `${v.name.replace(/[^\w.-]/g, '_')}.wasm`);
-  execFileSync(wwt, ['translate', exe, '-o', v.wasm, '--guest-limit-mb', '1024', ...args], { env, stdio: ['ignore', 'ignore', 'inherit'] });
+  // A variant can name its own translator build with WWT=path.
+  execFileSync(env.WWT ?? wwt, ['translate', exe, '-o', v.wasm, '--guest-limit-mb', '1024', ...args], { env, stdio: ['ignore', 'ignore', 'inherit'] });
   v.scores = [];
 }
 

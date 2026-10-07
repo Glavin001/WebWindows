@@ -353,6 +353,17 @@ struct FnGen<'g, 'a> {
     loop_header: Vec<bool>,
     /// Scratch locals.
     tmp_i32: u32,
+    /// Labels open at the current point of the body (blocks, loops, ifs).
+    open_labels: u32,
+    /// Shared fault blocks: (state mask, fault code), in creation order.
+    fault_blocks: Vec<(StateMask, u32)>,
+    /// The faulting instruction's address, for the shared fault blocks.
+    fault_eip: u32,
+    /// Uses of each vreg in the function (for stackifying).
+    use_count: Vec<u32>,
+    /// Stackified values not emitted yet: vreg -> (instruction, dirty mask).
+    /// They are emitted where their one use reads them (see `stackify`).
+    pending: Vec<(V, Inst, StateMask)>,
     /// Scratch for the store-map byte in code-write checks.
     tmp_map: u32,
     tmp_i32b: u32,
@@ -395,6 +406,11 @@ impl<'g, 'a> FnGen<'g, 'a> {
             merge: vec![false; n],
             loop_header: vec![false; n],
             tmp_i32: 0,
+            open_labels: 0,
+            fault_blocks: vec![],
+            fault_eip: 0,
+            use_count: vec![],
+            pending: vec![],
             tmp_map: 0,
             tmp_i32b: 0,
             tmp_i64: 0,
@@ -411,6 +427,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         g.local_of[CPU as usize] = 0;
         g.assign_locals();
         g.tmp_i32 = g.new_local(ValType::I32);
+        g.fault_eip = g.new_local(ValType::I32);
         g.tmp_map = g.new_local(ValType::I32);
         g.tmp_i32b = g.new_local(ValType::I32);
         g.tmp_i64 = g.new_local(ValType::I64);
@@ -515,10 +532,20 @@ impl<'g, 'a> FnGen<'g, 'a> {
     }
 
     fn emit(&mut self, i: W<'static>) {
+        match i {
+            W::Block(_) | W::Loop(_) | W::If(_) => self.open_labels += 1,
+            W::End => self.open_labels -= 1,
+            _ => {}
+        }
         self.out.push(i);
     }
 
     fn get(&mut self, v: V) {
+        if let Some(i) = self.pending.iter().position(|&(p, _, _)| p == v) {
+            let (_, inst, dirty) = self.pending.remove(i);
+            self.inst_value(&inst, dirty, true);
+            return;
+        }
         let l = self.local_of[v as usize];
         debug_assert!(l != UNASSIGNED, "vreg {v} has no local");
         self.emit(W::LocalGet(l));
@@ -571,20 +598,39 @@ impl<'g, 'a> FnGen<'g, 'a> {
         }
     }
 
-    fn store_eip_const(&mut self, eip: u32) {
-        self.emit(W::LocalGet(0));
+    /// Raises a fault: branches to the function's shared fault block for
+    /// this state mask and code, which writes back `mask`, records eip and
+    /// calls the host. Sharing these blocks (one per distinct mask and code,
+    /// instead of a copy at every check) makes modules 10-15% smaller,
+    /// which shortens compilation. The fault blocks wrap the body
+    /// (see `run`); block k is `open_labels + k` labels out. The
+    /// address/info value must already be in `tmp_i32b`.
+    fn raise(&mut self, mask: StateMask, code: u32, eip: u32) {
+        let k = match self
+            .fault_blocks
+            .iter()
+            .position(|&(m, c)| m == mask && c == code)
+        {
+            Some(k) => k,
+            None => {
+                self.fault_blocks.push((mask, code));
+                self.fault_blocks.len() - 1
+            }
+        } as u32;
         self.emit(W::I32Const(eip as i32));
-        self.emit(W::I32Store(memarg(cpu::EIP, 2)));
+        self.emit(W::LocalSet(self.fault_eip));
+        self.emit(W::Br(self.open_labels + k));
     }
 
-    /// Raises a fault: writes back `mask`, records eip and calls the host.
-    /// The address/info value must already be in `tmp_i32b`.
-    fn raise(&mut self, mask: StateMask, code: u32, eip: u32) {
+    /// The code of a shared fault block.
+    fn fault_block(&mut self, mask: StateMask, code: u32) {
         self.sync(mask);
-        self.store_eip_const(eip);
+        self.emit(W::LocalGet(0));
+        self.emit(W::LocalGet(self.fault_eip));
+        self.emit(W::I32Store(memarg(cpu::EIP, 2)));
         self.emit(W::LocalGet(0));
         self.emit(W::I32Const(code as i32));
-        self.emit(W::I32Const(eip as i32));
+        self.emit(W::LocalGet(self.fault_eip));
         self.emit(W::LocalGet(self.tmp_i32b));
         self.emit(W::Call(F_FAULT));
         self.emit(W::Unreachable);
@@ -714,6 +760,17 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.def_block[v] = u32::MAX;
             }
         }
+        self.use_count = vec![0; f.vtypes.len()];
+        for b in &f.blocks {
+            for inst in &b.insts {
+                for u in inst.op.uses() {
+                    self.use_count[u as usize] += 1;
+                }
+            }
+            for u in b.term.uses() {
+                self.use_count[u as usize] += 1;
+            }
+        }
         self.const_of = vec![None; f.vtypes.len()];
         for b in &f.blocks {
             for inst in &b.insts {
@@ -734,6 +791,19 @@ impl<'g, 'a> FnGen<'g, 'a> {
             self.dispatch_loop(&order);
         }
         self.emit(W::Unreachable);
+        // Wrap the body in one block per fault block, innermost first, with
+        // each fault block's code after its block's end.
+        let body = std::mem::take(&mut self.out);
+        let n = self.fault_blocks.len();
+        self.out = Vec::with_capacity(body.len() + n * 32);
+        for _ in 0..n {
+            self.out.push(W::Block(BlockType::Empty));
+        }
+        self.out.extend(body);
+        for (mask, code) in self.fault_blocks.clone() {
+            self.out.push(W::End);
+            self.fault_block(mask, code);
+        }
     }
 
     fn compute_dominators(&mut self, order: &[BlockId], preds: &[Vec<BlockId>]) {
@@ -1065,8 +1135,14 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.facts_local.clear();
         self.alias.clear();
         self.cur_block = b;
+        let deferred = self.stackify(blk);
         for (k, inst) in blk.insts.iter().enumerate() {
-            self.inst(inst, trace[k]);
+            if deferred[k] {
+                self.pending
+                    .push((inst.dst.unwrap(), inst.clone(), trace[k]));
+            } else {
+                self.inst(inst, trace[k]);
+            }
             if let Some(d) = inst.dst {
                 // Facts and aliases about the old value of `d` are void.
                 self.facts_local.retain(|&(v, _)| v != d);
@@ -1238,6 +1314,12 @@ impl<'g, 'a> FnGen<'g, 'a> {
     }
 
     fn inst(&mut self, inst: &Inst, dirty: StateMask) {
+        self.inst_value(inst, dirty, false);
+    }
+
+    /// Emits `inst`; with `keep`, its value stays on the stack instead of
+    /// going to its local (a stackified value, emitted at its use).
+    fn inst_value(&mut self, inst: &Inst, dirty: StateMask, keep: bool) {
         let ty = inst.dst.map(|d| self.f.ty(d));
         match &inst.op {
             Op::Const(c) => {
@@ -1480,6 +1562,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             Op::Cond(_) | Op::Eflags => panic!("flag reads must be lowered before codegen"),
         }
         match inst.dst {
+            Some(_) if keep => {}
             Some(d) => self.set(d),
             None => {
                 if matches!(inst.op, Op::AtomicRmw { .. } | Op::AtomicCmpxchg { .. }) {
@@ -1487,6 +1570,91 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 }
             }
         }
+    }
+
+    // ---- Stackifying -----------------------------------------------------------
+    //
+    // A temporary used once, in the same block, by an instruction that reads
+    // its operands straight from locals in order, can stay on the
+    // WebAssembly stack: its instruction is emitted where the use reads it
+    // instead of before, saving a local.set/local.get pair. Over half of a
+    // module's instructions were local.get/set; fewer instructions compile
+    // faster and run faster before the engine optimizes them. The producers
+    // of a use's operands must be the instructions right before it, in
+    // operand order (so nothing is reordered), and a producer with effects
+    // (a load, which may fault) only when the use emits nothing before
+    // reading it.
+
+    /// Operands of `op` that its emission reads once each, in order, with
+    /// nothing emitted before them; and whether producers with effects may
+    /// supply them.
+    fn stack_operands(op: &Op) -> (Vec<V>, bool) {
+        match op {
+            Op::Copy(a) | Op::Un(_, a) => (vec![*a], true),
+            Op::Bin(_, a, b) => (vec![*a, *b], true),
+            Op::Select { cond, t, f } => (vec![*t, *f, *cond], true),
+            // The value is read after the address checks.
+            Op::Store { val, mem, .. } if !mem.atomic || mem.size == 1 => (vec![*val], false),
+            _ => (vec![], false),
+        }
+    }
+
+    /// Whether `inst` can be emitted at its use: pure, or (with `effects`) a
+    /// plain load.
+    fn stackable(inst: &Inst, effects: bool) -> bool {
+        match &inst.op {
+            Op::Const(_) | Op::Copy(_) | Op::Un(..) | Op::Select { .. } => true,
+            Op::Bin(op, ..) => effects || !op.can_trap(),
+            Op::Load { mem, .. } => effects && !mem.atomic,
+            _ => false,
+        }
+    }
+
+    /// Marks the instructions of a block that are emitted at their use.
+    fn stackify(&self, blk: &Block) -> Vec<bool> {
+        let n = blk.insts.len();
+        let mut deferred = vec![false; n];
+        let one_use = |v: V| {
+            v >= NUM_STATE
+                && self.use_count[v as usize] == 1
+                && self.a.dense[v as usize] == u32::MAX
+        };
+        // Claims producers for `operands`, last operand first, from the
+        // instructions just before `cursor`; returns where they start.
+        fn claim(
+            blk: &Block,
+            deferred: &mut [bool],
+            one_use: &dyn Fn(V) -> bool,
+            operands: &[V],
+            effects: bool,
+            mut cursor: usize,
+        ) -> usize {
+            for &o in operands.iter().rev() {
+                if cursor == 0 {
+                    break;
+                }
+                let j = cursor - 1;
+                let p = &blk.insts[j];
+                if p.dst != Some(o) || !one_use(o) || deferred[j] || !FnGen::stackable(p, effects) {
+                    break;
+                }
+                deferred[j] = true;
+                let (sub, sub_effects) = FnGen::stack_operands(&p.op);
+                cursor = claim(blk, deferred, one_use, &sub, sub_effects, j);
+            }
+            cursor
+        }
+        if let Term::Branch { cond, .. } = blk.term {
+            claim(blk, &mut deferred, &one_use, &[cond], true, n);
+        }
+        for c in (0..n).rev() {
+            if deferred[c] {
+                continue;
+            }
+            let (ops, effects) = FnGen::stack_operands(&blk.insts[c].op);
+            claim(blk, &mut deferred, &one_use, &ops, effects, c);
+        }
+        deferred
     }
 
     /// Checks that [addr, addr+len) lies in the guest region.

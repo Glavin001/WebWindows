@@ -19,7 +19,77 @@ The tools live in `tools/bench/`:
 | `coremark.mjs` | Builds every tier, checks the checksums agree, benchmarks, prints the table (`--variants` attributes the cost of the memory checks) |
 | `profile.mjs` | Self time per function for the Emscripten and translated builds side by side (or any Node command) |
 | `inspect.mjs` | One function from both builds: instruction counts by kind, plus the x86, IR and both WebAssembly listings |
-| `ab.mjs` | A/B test of translator variants: interleaved rounds, medians, ratio to the first variant |
+| `ab.mjs` | A/B test of translator variants: interleaved rounds, medians, ratio to the first variant (`--wine` for any Windows program on translated Wine) |
+| `suite.mjs` | The benchmark suite: real programs and Windows API workloads on every tier, checksums compared (see below) |
+
+## The benchmark suite
+
+CoreMark is pure computation, and real programs are not. `suite.mjs` runs
+workloads that look like real applications on every tier that can run
+them, and checks that every tier prints the same checksums:
+
+| Workload | What it exercises | Tiers |
+| --- | --- | --- |
+| `coremark` | CoreMark at a fixed iteration count: computation | native, emcc, wine, wwt-wine |
+| `sqlite` | SQLite 3.50.4's `speedtest1 --verify --size 50`: a database engine, file I/O through the file system | native, emcc, wine, wwt-wine |
+| `lua` | Lua 5.4.7 running `workloads/bench.lua` (recursion, tables, strings, sorting with a comparator, objects, floating point): an interpreter, allocation | native, emcc, wine, wwt-wine |
+| `apibench` | `workloads/apibench.c`: heap, malloc, files, seeks, strings and locale, critical sections and TLS, `qsort` calling back into the program, registry | wine, wwt-wine |
+
+The tiers:
+
+- **native**: the C source built with `gcc -m32 -O2` for Linux;
+- **emcc**: the C source built with Emscripten, in Node: the WebAssembly
+  ceiling;
+- **wine**: the same `.exe` on Wine running natively (Ubuntu's `wine32`),
+  i.e. Wine without translation: the fair reference for Windows API work;
+- **wwt-wine**: the `.exe` translated, on translated Wine, in Node: what we
+  ship.
+
+```sh
+apt-get install wine wine32:i386          # after dpkg --add-architecture i386
+node tools/bench/suite.mjs                 # all workloads, 3 rounds
+node tools/bench/suite.mjs --only lua,sqlite --rounds 5 --json out.json
+```
+
+Sources are pinned and checked by SHA-256 (SQLite's amalgamation and
+`speedtest1.c`, Lua's release tarball). The translation cache is warmed by
+one untimed run, so the numbers are warm starts; a run's first launch,
+which translates, is slower.
+
+To try a change against the suite's programs, A/B it:
+
+```sh
+node tools/bench/ab.mjs --rounds 7 --file tools/bench/workloads/bench.lua=C:\\bench.lua \
+  --wine "target/bench/suite-lua.exe C:\\bench.lua 4" base= noosr=--no-osr
+node tools/bench/ab.mjs --wine "target/bench/suite-apibench.exe 2" \
+  "old=WWT=/path/to/old/wwt" new=           # two translator builds
+```
+
+What running real programs found that CoreMark could not:
+
+- **The Wine runtime's file system** wrote to the wrong offset, copied a
+  whole file on every extending write, never deleted files, had no locks
+  and no `FindFirstFile` for Wine 11, and made directories as empty files.
+  SQLite failed ("database is locked"); now its verification hash matches
+  native.
+- **Long-running functions stayed in V8's baseline code.** V8 switches a
+  function to optimized code only for later calls; Lua runs a whole program
+  inside one `luaV_execute` call. Translated functions now re-enter
+  themselves at loop headers (`crates/wwt/src/osr.rs`): Lua's `float` 2.2x
+  faster.
+- **Interpreters' dispatch** made functions irreducible (the compiler copies
+  the jump table into every handler); merging identical jump tables gives
+  one dispatch loop.
+- **Compile time matters**: compiling everything optimized up front made
+  SQLite slower, not faster. Smaller modules start faster: shared fault
+  blocks and keeping single-use values on the WebAssembly stack made
+  modules 26% smaller and SQLite's short run ~8% faster.
+- **`memmove`/`memset`** (12% of SQLite's time) now use WebAssembly's bulk
+  memory operations (`crates/wwt/src/builtin.rs`).
+- **Calls between DLLs** remain the largest gap for API-heavy code: every
+  hop (program → msvcrt → kernelbase → ntdll) writes the registers back and
+  reloads them, and calls through the lookup.
+
 
 ## Results
 

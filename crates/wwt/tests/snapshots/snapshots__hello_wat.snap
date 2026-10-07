@@ -1874,7 +1874,7 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
     i32.const 0
   )
   (func $_fib@401000 (;4;) (type 0) (param i32) (result i32)
-    (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i64 i32)
+    (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i64 i32)
     local.get 0
     i32.load
     local.set 1
@@ -1904,26 +1904,18 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
         block ;; label = @3
           block ;; label = @4
             i32.const 65536
-            local.set 15
-            local.get 15
             local.set 13
             local.get 0
             i32.load offset=364 align=1
             local.set 14
             local.get 14
             if ;; label = @5
-              i32.const 1
-              local.set 15
               local.get 14
-              local.get 15
+              i32.const 1
               i32.eq
-              local.set 15
-              local.get 15
               if ;; label = @6
-                i32.const 0
-                local.set 15
                 local.get 0
-                local.get 15
+                i32.const 0
                 i32.store offset=364 align=1
                 br 3 (;@3;)
               else
@@ -1933,10 +1925,8 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
               br 1 (;@4;)
             end
           end
-          i32.const 4
-          local.set 15
           local.get 5
-          local.get 15
+          i32.const 4
           i32.sub
           local.set 15
           local.get 15
@@ -1944,55 +1934,39 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
           i32.store align=1
           local.get 1
           local.set 6
-          i32.const 4
-          local.set 18
           local.get 15
-          local.get 18
+          i32.const 4
           i32.sub
           local.set 18
           local.get 18
           local.get 8
           i32.store align=1
-          i32.const 4
-          local.set 15
           local.get 18
-          local.get 15
+          i32.const 4
           i32.sub
           local.set 15
           local.get 15
           local.get 7
           i32.store align=1
-          i32.const 4
-          local.set 18
           local.get 15
-          local.get 18
+          i32.const 4
           i32.sub
           local.set 18
           local.get 18
           local.get 4
           i32.store align=1
-          i32.const 108
-          local.set 15
           local.get 18
-          local.get 15
+          i32.const 108
           i32.sub
-          local.set 15
-          local.get 15
           local.set 5
-          i32.const 1
-          local.set 15
           local.get 1
-          local.get 15
+          i32.const 1
           i32.eq
-          local.set 15
-          local.get 15
           if ;; label = @4
             br 3 (;@1;)
           else
-            i32.const -1
-            local.set 15
             local.get 1
-            local.get 15
+            i32.const -1
             i32.add
             local.set 15
             local.get 15
@@ -2001,41 +1975,29 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
             local.set 7
             local.get 15
             local.set 8
-            i32.const -2
-            local.set 16
-            local.get 15
-            local.get 16
-            i32.and
-            local.set 16
             local.get 6
-            local.get 16
+            local.get 15
+            i32.const -2
+            i32.and
             i32.sub
             local.set 16
             local.get 16
             local.set 2
-            i32.const 72
-            local.set 15
             local.get 5
-            local.get 15
+            i32.const 72
             i32.add
             local.set 15
             local.get 15
             local.get 16
             i32.store align=1
-            i32.const 72
-            local.set 15
             local.get 5
-            local.get 15
+            i32.const 72
             i32.add
-            local.set 15
-            local.get 15
-            i32.load align=1
             local.set 15
             local.get 6
             local.get 15
+            i32.load align=1
             i32.eq
-            local.set 15
-            local.get 15
             if ;; label = @5
               br 3 (;@2;)
             else
@@ -2044,39 +2006,29 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
           end
         end
         loop ;; label = @3
-          i32.const 2
-          local.set 15
           local.get 6
-          local.get 15
+          i32.const 2
           i32.sub
           local.set 15
           local.get 15
           local.set 6
-          i32.const 40
-          local.set 16
           local.get 5
-          local.get 16
+          i32.const 40
           i32.add
           local.set 16
           local.get 16
           local.get 7
           i32.store align=1
-          i32.const -2
-          local.set 16
-          local.get 15
-          local.get 16
-          i32.and
-          local.set 16
           local.get 3
-          local.get 16
+          local.get 15
+          i32.const -2
+          i32.and
           i32.sub
           local.set 16
           local.get 16
           local.set 2
-          i32.const 76
-          local.set 15
           local.get 5
-          local.get 15
+          i32.const 76
           i32.add
           local.set 15
           local.get 15
@@ -2088,53 +2040,39 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
             block ;; label = @5
               block ;; label = @6
                 block ;; label = @7
-                  i32.const 76
-                  local.set 15
                   local.get 5
-                  local.get 15
+                  i32.const 76
                   i32.add
                   local.set 15
                   local.get 15
                   i32.load align=1
                   local.set 15
-                  i32.const -1
-                  local.set 16
                   local.get 8
-                  local.get 16
+                  i32.const -1
                   i32.add
-                  local.set 16
-                  local.get 16
                   local.set 4
                   local.get 8
                   local.get 15
                   i32.eq
-                  local.set 15
-                  local.get 15
                   if ;; label = @8
                     br 1 (;@7;)
                   else
                     loop ;; label = @9
-                      i32.const 2
-                      local.set 16
                       local.get 8
-                      local.get 16
+                      i32.const 2
                       i32.sub
                       local.set 16
                       local.get 16
                       local.set 8
-                      i32.const 48
-                      local.set 15
                       local.get 5
-                      local.get 15
+                      i32.const 48
                       i32.add
                       local.set 15
                       local.get 15
                       local.get 6
                       i32.store align=1
-                      i32.const 44
-                      local.set 15
                       local.get 5
-                      local.get 15
+                      i32.const 44
                       i32.add
                       local.set 15
                       local.get 15
@@ -2142,20 +2080,14 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                       i32.store align=1
                       i32.const 0
                       local.set 7
-                      i32.const -2
-                      local.set 15
-                      local.get 16
-                      local.get 15
-                      i32.and
-                      local.set 15
                       local.get 4
-                      local.get 15
+                      local.get 16
+                      i32.const -2
+                      i32.and
                       i32.sub
                       local.set 15
-                      i32.const 80
-                      local.set 16
                       local.get 5
-                      local.get 16
+                      i32.const 80
                       i32.add
                       local.set 16
                       local.get 16
@@ -2163,50 +2095,36 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                       i32.store align=1
                       loop ;; label = @10
                         block ;; label = @11
-                          i32.const 80
-                          local.set 16
                           local.get 5
-                          local.get 16
+                          i32.const 80
                           i32.add
                           local.set 16
                           local.get 16
                           i32.load align=1
                           local.set 16
-                          i32.const -1
-                          local.set 15
                           local.get 4
-                          local.get 15
+                          i32.const -1
                           i32.add
-                          local.set 15
-                          local.get 15
                           local.set 6
                           local.get 4
                           local.get 16
                           i32.eq
-                          local.set 16
-                          local.get 16
                           if ;; label = @12
                             local.get 6
                             local.set 2
+                            local.get 5
                             i32.const 44
-                            local.set 16
-                            local.get 5
-                            local.get 16
                             i32.add
                             local.set 16
                             local.get 16
                             i32.load align=1
                             local.set 16
+                            local.get 5
                             i32.const 48
-                            local.set 15
-                            local.get 5
-                            local.get 15
                             i32.add
                             local.set 15
                             local.get 15
                             i32.load align=1
-                            local.set 15
-                            local.get 15
                             local.set 6
                             local.get 7
                             local.get 2
@@ -2217,41 +2135,27 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                             local.get 16
                             local.get 15
                             i32.add
-                            local.set 15
-                            local.get 15
                             local.set 7
-                            i32.const 1
-                            local.set 15
                             local.get 8
-                            local.get 15
+                            i32.const 1
                             i32.le_u
-                            local.set 15
-                            local.get 15
                             if ;; label = @13
                               br 2 (;@11;)
                             else
-                              i32.const 76
-                              local.set 16
                               local.get 5
-                              local.get 16
+                              i32.const 76
                               i32.add
                               local.set 16
                               local.get 16
                               i32.load align=1
                               local.set 16
-                              i32.const -1
-                              local.set 15
                               local.get 8
-                              local.get 15
+                              i32.const -1
                               i32.add
-                              local.set 15
-                              local.get 15
                               local.set 4
                               local.get 8
                               local.get 16
                               i32.ne
-                              local.set 16
-                              local.get 16
                               if ;; label = @14
                                 br 5 (;@9;)
                               else
@@ -2259,16 +2163,12 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                               end
                             end
                           else
-                            i32.const 2
-                            local.set 15
                             local.get 4
-                            local.get 15
+                            i32.const 2
                             i32.sub
                             local.set 15
-                            i32.const 52
-                            local.set 16
                             local.get 5
-                            local.get 16
+                            i32.const 52
                             i32.add
                             local.set 16
                             local.get 16
@@ -2276,10 +2176,8 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                             i32.store align=1
                             i32.const 0
                             local.set 3
-                            i32.const 56
-                            local.set 16
                             local.get 5
-                            local.get 16
+                            i32.const 56
                             i32.add
                             local.set 16
                             local.get 16
@@ -2287,22 +2185,16 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                             i32.store align=1
                             local.get 6
                             local.set 7
-                            i32.const -2
-                            local.set 16
-                            local.get 15
-                            local.get 16
-                            i32.and
-                            local.set 16
                             local.get 6
-                            local.get 16
+                            local.get 15
+                            i32.const -2
+                            i32.and
                             i32.sub
                             local.set 16
                             local.get 16
                             local.set 2
-                            i32.const 84
-                            local.set 15
                             local.get 5
-                            local.get 15
+                            i32.const 84
                             i32.add
                             local.set 15
                             local.get 15
@@ -2310,95 +2202,67 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                             i32.store align=1
                             loop ;; label = @13
                               block ;; label = @14
-                                i32.const 84
-                                local.set 16
                                 local.get 5
-                                local.get 16
+                                i32.const 84
                                 i32.add
                                 local.set 16
                                 local.get 16
                                 i32.load align=1
                                 local.set 16
-                                i32.const -1
-                                local.set 15
                                 local.get 7
-                                local.get 15
+                                i32.const -1
                                 i32.add
-                                local.set 15
-                                local.get 15
                                 local.set 4
                                 local.get 7
                                 local.get 16
                                 i32.eq
-                                local.set 16
-                                local.get 16
                                 if ;; label = @15
                                   local.get 4
                                   local.set 1
+                                  local.get 5
                                   i32.const 52
-                                  local.set 16
-                                  local.get 5
-                                  local.get 16
                                   i32.add
                                   local.set 16
                                   local.get 16
                                   i32.load align=1
-                                  local.set 16
-                                  local.get 16
                                   local.set 7
-                                  i32.const 56
-                                  local.set 16
                                   local.get 5
-                                  local.get 16
+                                  i32.const 56
                                   i32.add
                                   local.set 16
                                   local.get 16
                                   i32.load align=1
-                                  local.set 16
-                                  local.get 16
                                   local.set 4
                                   local.get 3
                                   local.get 1
                                   i32.add
-                                  local.set 16
-                                  local.get 16
                                   local.set 3
                                   br 1 (;@14;)
                                 else
-                                  i32.const 2
-                                  local.set 16
                                   local.get 7
-                                  local.get 16
+                                  i32.const 2
                                   i32.sub
                                   local.set 16
-                                  i32.const 60
-                                  local.set 15
                                   local.get 5
-                                  local.get 15
+                                  i32.const 60
                                   i32.add
                                   local.set 15
                                   local.get 15
                                   local.get 3
                                   i32.store align=1
-                                  i32.const 64
-                                  local.set 15
                                   local.get 5
-                                  local.get 15
+                                  i32.const 64
                                   i32.add
                                   local.set 15
                                   local.get 15
                                   local.get 8
                                   i32.store align=1
-                                  i32.const -2
-                                  local.set 15
                                   local.get 16
-                                  local.get 15
+                                  i32.const -2
                                   i32.and
                                   local.set 15
-                                  i32.const 68
-                                  local.set 18
                                   local.get 5
-                                  local.get 18
+                                  i32.const 68
                                   i32.add
                                   local.set 18
                                   local.get 18
@@ -2410,10 +2274,8 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                   local.get 15
                                   i32.sub
                                   local.set 15
-                                  i32.const 20
-                                  local.set 18
                                   local.get 5
-                                  local.get 18
+                                  i32.const 20
                                   i32.add
                                   local.set 18
                                   local.get 18
@@ -2421,98 +2283,68 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                   i32.store align=1
                                   loop ;; label = @16
                                     block ;; label = @17
-                                      i32.const 20
-                                      local.set 18
                                       local.get 5
-                                      local.get 18
+                                      i32.const 20
                                       i32.add
                                       local.set 18
                                       local.get 18
                                       i32.load align=1
                                       local.set 18
-                                      i32.const -1
-                                      local.set 15
                                       local.get 4
-                                      local.get 15
+                                      i32.const -1
                                       i32.add
-                                      local.set 15
-                                      local.get 15
                                       local.set 6
                                       local.get 4
                                       local.get 18
                                       i32.eq
-                                      local.set 18
-                                      local.get 18
                                       if ;; label = @18
                                         local.get 6
                                         local.set 2
                                         local.get 7
                                         local.set 6
+                                        local.get 5
                                         i32.const 60
-                                        local.set 15
-                                        local.get 5
-                                        local.get 15
                                         i32.add
                                         local.set 15
                                         local.get 15
                                         i32.load align=1
-                                        local.set 15
-                                        local.get 15
                                         local.set 3
+                                        local.get 5
                                         i32.const 64
-                                        local.set 15
-                                        local.get 5
-                                        local.get 15
                                         i32.add
                                         local.set 15
                                         local.get 15
                                         i32.load align=1
-                                        local.set 15
-                                        local.get 15
                                         local.set 8
-                                        i32.const 68
-                                        local.set 15
                                         local.get 5
-                                        local.get 15
+                                        i32.const 68
                                         i32.add
                                         local.set 15
                                         local.get 15
                                         i32.load align=1
-                                        local.set 15
-                                        local.get 15
                                         local.set 7
                                         local.get 6
                                         local.get 2
                                         i32.add
-                                        local.set 15
-                                        local.get 15
                                         local.set 6
                                         br 1 (;@17;)
                                       else
-                                        i32.const 2
-                                        local.set 15
                                         local.get 4
-                                        local.get 15
+                                        i32.const 2
                                         i32.sub
                                         local.set 15
                                         local.get 7
                                         local.set 3
                                         i32.const 0
                                         local.set 7
-                                        i32.const -2
-                                        local.set 18
-                                        local.get 15
-                                        local.get 18
-                                        i32.and
-                                        local.set 18
                                         local.get 6
-                                        local.get 18
+                                        local.get 15
+                                        i32.const -2
+                                        i32.and
                                         i32.sub
                                         local.set 18
-                                        i32.const 24
-                                        local.set 16
                                         local.get 5
-                                        local.get 16
+                                        i32.const 24
                                         i32.add
                                         local.set 16
                                         local.get 16
@@ -2522,28 +2354,20 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                         local.set 8
                                         loop ;; label = @19
                                           block ;; label = @20
-                                            i32.const 24
-                                            local.set 15
                                             local.get 5
-                                            local.get 15
+                                            i32.const 24
                                             i32.add
                                             local.set 15
                                             local.get 15
                                             i32.load align=1
                                             local.set 15
-                                            i32.const -1
-                                            local.set 16
                                             local.get 6
-                                            local.get 16
+                                            i32.const -1
                                             i32.add
-                                            local.set 16
-                                            local.get 16
                                             local.set 2
                                             local.get 6
                                             local.get 15
                                             i32.eq
-                                            local.set 15
-                                            local.get 15
                                             if ;; label = @21
                                               local.get 2
                                               local.set 1
@@ -2556,49 +2380,35 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                               local.get 2
                                               local.get 1
                                               i32.add
-                                              local.set 15
-                                              local.get 15
                                               local.set 2
                                               br 1 (;@20;)
                                             else
-                                              i32.const -3
-                                              local.set 15
                                               local.get 6
-                                              local.get 15
+                                              i32.const -3
                                               i32.add
                                               local.set 15
-                                              i32.const 2
-                                              local.set 16
                                               local.get 6
-                                              local.get 16
+                                              i32.const 2
                                               i32.sub
                                               local.set 16
                                               local.get 16
                                               local.set 6
+                                              local.get 5
                                               i32.const 0
-                                              local.set 18
-                                              local.get 5
-                                              local.get 18
                                               i32.store align=1
-                                              i32.const 12
-                                              local.set 18
                                               local.get 5
-                                              local.get 18
+                                              i32.const 12
                                               i32.add
                                               local.set 18
                                               local.get 18
                                               local.get 15
                                               i32.store align=1
-                                              i32.const -2
-                                              local.set 18
                                               local.get 16
-                                              local.get 18
+                                              i32.const -2
                                               i32.and
                                               local.set 18
-                                              i32.const 8
-                                              local.set 16
                                               local.get 5
-                                              local.get 16
+                                              i32.const 8
                                               i32.add
                                               local.set 16
                                               local.get 16
@@ -2608,10 +2418,8 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                               local.get 18
                                               i32.sub
                                               local.set 18
-                                              i32.const 36
-                                              local.set 16
                                               local.get 5
-                                              local.get 16
+                                              i32.const 36
                                               i32.add
                                               local.set 16
                                               local.get 16
@@ -2619,55 +2427,39 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                               i32.store align=1
                                               loop ;; label = @22
                                                 block ;; label = @23
-                                                  i32.const 36
-                                                  local.set 16
                                                   local.get 5
-                                                  local.get 16
+                                                  i32.const 36
                                                   i32.add
                                                   local.set 16
                                                   local.get 16
                                                   i32.load align=1
                                                   local.set 16
-                                                  i32.const -1
-                                                  local.set 18
                                                   local.get 2
-                                                  local.get 18
+                                                  i32.const -1
                                                   i32.add
-                                                  local.set 18
-                                                  local.get 18
                                                   local.set 4
                                                   local.get 2
                                                   local.get 16
                                                   i32.eq
-                                                  local.set 16
-                                                  local.get 16
                                                   if ;; label = @24
                                                     local.get 5
                                                     i32.load align=1
                                                     local.set 16
-                                                    i32.const 8
-                                                    local.set 18
                                                     local.get 5
-                                                    local.get 18
+                                                    i32.const 8
                                                     i32.add
                                                     local.set 18
                                                     local.get 18
                                                     i32.load align=1
-                                                    local.set 18
-                                                    local.get 18
                                                     local.set 7
                                                     local.get 4
                                                     local.get 16
                                                     i32.add
-                                                    local.set 16
-                                                    local.get 16
                                                     local.set 1
                                                     br 1 (;@23;)
                                                   else
-                                                    i32.const 12
-                                                    local.set 16
                                                     local.get 5
-                                                    local.get 16
+                                                    i32.const 12
                                                     i32.add
                                                     local.set 16
                                                     local.get 16
@@ -2675,34 +2467,26 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                                     local.set 16
                                                     i32.const 0
                                                     local.set 18
-                                                    i32.const 4
-                                                    local.set 15
                                                     local.get 5
-                                                    local.get 15
+                                                    i32.const 4
                                                     i32.add
                                                     local.set 15
                                                     local.get 15
                                                     local.get 18
                                                     i32.store align=1
-                                                    i32.const 28
-                                                    local.set 15
                                                     local.get 5
-                                                    local.get 15
+                                                    i32.const 28
                                                     i32.add
                                                     local.set 15
                                                     local.get 15
                                                     local.get 3
                                                     i32.store align=1
-                                                    i32.const -2
-                                                    local.set 15
                                                     local.get 16
-                                                    local.get 15
+                                                    i32.const -2
                                                     i32.and
                                                     local.set 15
-                                                    i32.const 32
-                                                    local.set 16
                                                     local.get 5
-                                                    local.get 16
+                                                    i32.const 32
                                                     i32.add
                                                     local.set 16
                                                     local.get 16
@@ -2714,10 +2498,8 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                                     local.get 15
                                                     i32.sub
                                                     local.set 15
-                                                    i32.const 16
-                                                    local.set 16
                                                     local.get 5
-                                                    local.get 16
+                                                    i32.const 16
                                                     i32.add
                                                     local.set 16
                                                     local.get 16
@@ -2725,33 +2507,23 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                                     i32.store align=1
                                                     loop ;; label = @25
                                                       block ;; label = @26
-                                                        i32.const 16
-                                                        local.set 16
                                                         local.get 5
-                                                        local.get 16
+                                                        i32.const 16
                                                         i32.add
                                                         local.set 16
                                                         local.get 16
                                                         i32.load align=1
                                                         local.set 16
-                                                        i32.const -1
-                                                        local.set 15
                                                         local.get 4
-                                                        local.get 15
+                                                        i32.const -1
                                                         i32.add
-                                                        local.set 15
-                                                        local.get 15
                                                         local.set 7
                                                         local.get 4
                                                         local.get 16
                                                         i32.eq
-                                                        local.set 16
-                                                        local.get 16
                                                         if ;; label = @27
-                                                          i32.const 4
-                                                          local.set 16
                                                           local.get 5
-                                                          local.get 16
+                                                          i32.const 4
                                                           i32.add
                                                           local.set 16
                                                           local.get 16
@@ -2759,33 +2531,23 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                                           local.set 16
                                                           local.get 6
                                                           local.set 8
+                                                          local.get 5
                                                           i32.const 28
-                                                          local.set 15
-                                                          local.get 5
-                                                          local.get 15
                                                           i32.add
                                                           local.set 15
                                                           local.get 15
                                                           i32.load align=1
-                                                          local.set 15
-                                                          local.get 15
                                                           local.set 3
-                                                          i32.const 32
-                                                          local.set 15
                                                           local.get 5
-                                                          local.get 15
+                                                          i32.const 32
                                                           i32.add
                                                           local.set 15
                                                           local.get 15
                                                           i32.load align=1
-                                                          local.set 15
-                                                          local.get 15
                                                           local.set 6
                                                           local.get 16
                                                           local.get 7
                                                           i32.add
-                                                          local.set 16
-                                                          local.get 16
                                                           local.set 1
                                                           br 1 (;@26;)
                                                         else
@@ -2794,18 +2556,12 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                                           i32.const 0
                                                           local.set 3
                                                           loop ;; label = @28
-                                                            i32.const -1
-                                                            local.set 17
                                                             local.get 8
-                                                            local.get 17
+                                                            i32.const -1
                                                             i32.add
-                                                            local.set 17
-                                                            local.get 17
                                                             local.set 1
-                                                            i32.const 92
-                                                            local.set 17
                                                             local.get 5
-                                                            local.get 17
+                                                            i32.const 92
                                                             i32.add
                                                             local.set 17
                                                             local.get 17
@@ -2829,10 +2585,8 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                                             local.set 11
                                                             i32.const 2
                                                             local.set 12
-                                                            i32.const 88
-                                                            local.set 16
                                                             local.get 5
-                                                            local.get 16
+                                                            i32.const 88
                                                             i32.add
                                                             local.set 16
                                                             local.get 16
@@ -2840,10 +2594,8 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                                             i32.store align=1
                                                             i32.const 4198781
                                                             local.set 16
-                                                            i32.const 4
-                                                            local.set 17
                                                             local.get 5
-                                                            local.get 17
+                                                            i32.const 4
                                                             i32.sub
                                                             local.set 17
                                                             local.get 17
@@ -2914,112 +2666,78 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                                             local.get 0
                                                             i32.load offset=28
                                                             local.set 8
+                                                            local.get 5
                                                             i32.const 92
-                                                            local.set 16
-                                                            local.get 5
-                                                            local.get 16
                                                             i32.add
                                                             local.set 16
                                                             local.get 16
                                                             i32.load align=1
                                                             local.set 16
+                                                            local.get 5
                                                             i32.const 88
-                                                            local.set 17
-                                                            local.get 5
-                                                            local.get 17
                                                             i32.add
                                                             local.set 17
                                                             local.get 17
                                                             i32.load align=1
-                                                            local.set 17
-                                                            local.get 17
                                                             local.set 2
                                                             local.get 16
                                                             local.get 1
                                                             i32.add
-                                                            local.set 16
-                                                            local.get 16
                                                             local.set 3
-                                                            i32.const 1
-                                                            local.set 16
                                                             local.get 8
-                                                            local.get 16
+                                                            i32.const 1
                                                             i32.gt_u
-                                                            local.set 16
-                                                            local.get 16
                                                             if ;; label = @29
                                                               br 1 (;@28;)
                                                             else
-                                                              i32.const 4
-                                                              local.set 16
                                                               local.get 5
-                                                              local.get 16
+                                                              i32.const 4
                                                               i32.add
                                                               local.set 16
                                                               local.get 16
                                                               i32.load align=1
                                                               local.set 16
-                                                              i32.const -3
-                                                              local.set 17
                                                               local.get 4
-                                                              local.get 17
+                                                              i32.const -3
                                                               i32.add
                                                               local.set 17
-                                                              i32.const 2
-                                                              local.set 15
                                                               local.get 4
-                                                              local.get 15
+                                                              i32.const 2
                                                               i32.sub
                                                               local.set 15
                                                               local.get 15
                                                               local.set 4
-                                                              i32.const -2
-                                                              local.set 18
                                                               local.get 17
-                                                              local.get 18
+                                                              i32.const -2
                                                               i32.and
                                                               local.set 18
                                                               local.get 7
                                                               local.get 16
                                                               i32.add
-                                                              local.set 16
                                                               i32.const -2
-                                                              local.set 17
-                                                              local.get 16
-                                                              local.get 17
                                                               i32.add
-                                                              local.set 17
-                                                              local.get 17
-                                                              local.get 18
-                                                              i32.sub
                                                               local.set 17
                                                               local.get 3
                                                               local.get 17
+                                                              local.get 18
+                                                              i32.sub
                                                               i32.add
                                                               local.set 17
-                                                              i32.const 4
-                                                              local.set 18
                                                               local.get 5
-                                                              local.get 18
+                                                              i32.const 4
                                                               i32.add
                                                               local.set 18
                                                               local.get 18
                                                               local.get 17
                                                               i32.store align=1
-                                                              i32.const 1
-                                                              local.set 18
                                                               local.get 15
-                                                              local.get 18
+                                                              i32.const 1
                                                               i32.ne
-                                                              local.set 18
-                                                              local.get 18
                                                               if ;; label = @30
                                                                 br 5 (;@25;)
                                                               else
-                                                                i32.const 4
-                                                                local.set 18
                                                                 local.get 5
-                                                                local.get 18
+                                                                i32.const 4
                                                                 i32.add
                                                                 local.set 18
                                                                 local.get 18
@@ -3027,35 +2745,23 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                                                 local.set 18
                                                                 local.get 6
                                                                 local.set 8
+                                                                local.get 5
                                                                 i32.const 28
-                                                                local.set 15
-                                                                local.get 5
-                                                                local.get 15
                                                                 i32.add
                                                                 local.set 15
                                                                 local.get 15
                                                                 i32.load align=1
-                                                                local.set 15
-                                                                local.get 15
                                                                 local.set 3
-                                                                i32.const 32
-                                                                local.set 15
                                                                 local.get 5
-                                                                local.get 15
+                                                                i32.const 32
                                                                 i32.add
                                                                 local.set 15
                                                                 local.get 15
                                                                 i32.load align=1
-                                                                local.set 15
-                                                                local.get 15
                                                                 local.set 6
-                                                                i32.const 1
-                                                                local.set 15
                                                                 local.get 18
-                                                                local.get 15
+                                                                i32.const 1
                                                                 i32.add
-                                                                local.set 15
-                                                                local.get 15
                                                                 local.set 1
                                                                 br 4 (;@26;)
                                                               end
@@ -3063,10 +2769,8 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                                           end
                                                         end
                                                       end
-                                                      i32.const 2
-                                                      local.set 16
                                                       local.get 2
-                                                      local.get 16
+                                                      i32.const 2
                                                       i32.sub
                                                       local.set 16
                                                       local.get 16
@@ -3074,17 +2778,13 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                                       local.get 5
                                                       i32.load align=1
                                                       local.set 15
+                                                      local.get 5
                                                       local.get 15
                                                       local.get 1
                                                       i32.add
-                                                      local.set 15
-                                                      local.get 5
-                                                      local.get 15
                                                       i32.store align=1
-                                                      i32.const 12
-                                                      local.set 15
                                                       local.get 5
-                                                      local.get 15
+                                                      i32.const 12
                                                       i32.add
                                                       local.set 15
                                                       i32.const 2
@@ -3092,44 +2792,30 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                                       local.get 15
                                                       i32.load align=1
                                                       local.set 17
+                                                      local.get 15
                                                       local.get 17
                                                       local.get 18
                                                       i32.sub
-                                                      local.set 17
-                                                      local.get 15
-                                                      local.get 17
                                                       i32.store align=1
-                                                      i32.const 1
-                                                      local.set 17
                                                       local.get 16
-                                                      local.get 17
+                                                      i32.const 1
                                                       i32.ne
-                                                      local.set 17
-                                                      local.get 17
                                                       if ;; label = @26
                                                         br 4 (;@22;)
                                                       else
                                                         local.get 5
                                                         i32.load align=1
                                                         local.set 17
-                                                        i32.const 8
-                                                        local.set 16
                                                         local.get 5
-                                                        local.get 16
+                                                        i32.const 8
                                                         i32.add
                                                         local.set 16
                                                         local.get 16
                                                         i32.load align=1
-                                                        local.set 16
-                                                        local.get 16
                                                         local.set 7
-                                                        i32.const 1
-                                                        local.set 16
                                                         local.get 17
-                                                        local.get 16
+                                                        i32.const 1
                                                         i32.add
-                                                        local.set 16
-                                                        local.get 16
                                                         local.set 1
                                                         br 3 (;@23;)
                                                       end
@@ -3139,16 +2825,10 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                                 local.get 7
                                                 local.get 1
                                                 i32.add
-                                                local.set 16
-                                                local.get 16
                                                 local.set 7
-                                                i32.const 1
-                                                local.set 16
                                                 local.get 6
-                                                local.get 16
+                                                i32.const 1
                                                 i32.gt_u
-                                                local.set 16
-                                                local.get 16
                                                 if ;; label = @23
                                                   br 4 (;@19;)
                                                 else
@@ -3161,8 +2841,6 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                                   local.get 2
                                                   local.get 6
                                                   i32.add
-                                                  local.set 16
-                                                  local.get 16
                                                   local.set 2
                                                   br 3 (;@20;)
                                                 end
@@ -3172,59 +2850,39 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                           local.get 7
                                           local.get 2
                                           i32.add
-                                          local.set 16
-                                          local.get 16
                                           local.set 7
-                                          i32.const 1
-                                          local.set 16
                                           local.get 4
-                                          local.get 16
+                                          i32.const 1
                                           i32.gt_u
-                                          local.set 16
-                                          local.get 16
                                           if ;; label = @20
                                             br 4 (;@16;)
                                           else
                                             local.get 7
                                             local.set 6
+                                            local.get 5
                                             i32.const 60
-                                            local.set 16
-                                            local.get 5
-                                            local.get 16
                                             i32.add
                                             local.set 16
                                             local.get 16
                                             i32.load align=1
-                                            local.set 16
-                                            local.get 16
                                             local.set 3
+                                            local.get 5
                                             i32.const 64
-                                            local.set 16
-                                            local.get 5
-                                            local.get 16
                                             i32.add
                                             local.set 16
                                             local.get 16
                                             i32.load align=1
-                                            local.set 16
-                                            local.get 16
                                             local.set 8
-                                            i32.const 68
-                                            local.set 16
                                             local.get 5
-                                            local.get 16
+                                            i32.const 68
                                             i32.add
                                             local.set 16
                                             local.get 16
                                             i32.load align=1
-                                            local.set 16
-                                            local.get 16
                                             local.set 7
                                             local.get 6
                                             local.get 4
                                             i32.add
-                                            local.set 16
-                                            local.get 16
                                             local.set 6
                                             br 3 (;@17;)
                                           end
@@ -3234,48 +2892,32 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                     local.get 3
                                     local.get 6
                                     i32.add
-                                    local.set 15
-                                    local.get 15
                                     local.set 3
-                                    i32.const 1
-                                    local.set 15
                                     local.get 7
-                                    local.get 15
+                                    i32.const 1
                                     i32.gt_u
-                                    local.set 15
-                                    local.get 15
                                     if ;; label = @17
                                       br 4 (;@13;)
                                     else
                                       local.get 7
                                       local.set 6
+                                      local.get 5
                                       i32.const 56
-                                      local.set 15
-                                      local.get 5
-                                      local.get 15
                                       i32.add
                                       local.set 15
                                       local.get 15
                                       i32.load align=1
-                                      local.set 15
-                                      local.get 15
                                       local.set 4
-                                      i32.const 52
-                                      local.set 15
                                       local.get 5
-                                      local.get 15
+                                      i32.const 52
                                       i32.add
                                       local.set 15
                                       local.get 15
                                       i32.load align=1
-                                      local.set 15
-                                      local.get 15
                                       local.set 7
                                       local.get 3
                                       local.get 6
                                       i32.add
-                                      local.set 15
-                                      local.get 15
                                       local.set 3
                                       br 3 (;@14;)
                                     end
@@ -3285,38 +2927,26 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                               local.get 7
                               local.get 3
                               i32.add
-                              local.set 18
-                              local.get 18
                               local.set 7
-                              i32.const 1
-                              local.set 18
                               local.get 4
-                              local.get 18
+                              i32.const 1
                               i32.gt_u
-                              local.set 18
-                              local.get 18
                               if ;; label = @14
                                 br 4 (;@10;)
                               else
+                                local.get 5
                                 i32.const 44
-                                local.set 18
-                                local.get 5
-                                local.get 18
                                 i32.add
                                 local.set 18
                                 local.get 18
                                 i32.load align=1
                                 local.set 18
+                                local.get 5
                                 i32.const 48
-                                local.set 15
-                                local.get 5
-                                local.get 15
                                 i32.add
                                 local.set 15
                                 local.get 15
                                 i32.load align=1
-                                local.set 15
-                                local.get 15
                                 local.set 6
                                 local.get 7
                                 local.get 4
@@ -3327,16 +2957,10 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                 local.get 18
                                 local.get 15
                                 i32.add
-                                local.set 15
-                                local.get 15
                                 local.set 7
-                                i32.const 1
-                                local.set 15
                                 local.get 8
-                                local.get 15
+                                i32.const 1
                                 i32.gt_u
-                                local.set 15
-                                local.get 15
                                 if ;; label = @15
                                   br 11 (;@4;)
                                 else
@@ -3346,32 +2970,20 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                             end
                           end
                         end
-                        i32.const 40
-                        local.set 15
                         local.get 5
-                        local.get 15
+                        i32.const 40
                         i32.add
                         local.set 15
                         local.get 15
                         i32.load align=1
-                        local.set 15
                         local.get 7
                         local.get 8
                         i32.add
-                        local.set 16
-                        local.get 15
-                        local.get 16
                         i32.add
-                        local.set 16
-                        local.get 16
                         local.set 7
-                        i32.const 1
-                        local.set 16
                         local.get 6
-                        local.get 16
+                        i32.const 1
                         i32.gt_u
-                        local.set 16
-                        local.get 16
                         if ;; label = @11
                           br 5 (;@6;)
                         else
@@ -3381,51 +2993,35 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                     end
                   end
                 end
-                i32.const 40
-                local.set 15
                 local.get 5
-                local.get 15
+                i32.const 40
                 i32.add
                 local.set 15
                 local.get 15
                 i32.load align=1
-                local.set 15
                 local.get 7
                 local.get 4
                 i32.add
-                local.set 16
-                local.get 15
-                local.get 16
                 i32.add
-                local.set 16
-                local.get 16
                 local.set 7
-                i32.const 1
-                local.set 16
                 local.get 6
-                local.get 16
+                i32.const 1
                 i32.le_u
-                local.set 16
-                local.get 16
                 if ;; label = @7
                   br 2 (;@5;)
                 else
                   br 1 (;@6;)
                 end
               end
-              i32.const 72
-              local.set 16
               local.get 5
-              local.get 16
+              i32.const 72
               i32.add
               local.set 16
               local.get 16
               i32.load align=1
               local.set 16
-              i32.const -1
-              local.set 15
               local.get 6
-              local.get 15
+              i32.const -1
               i32.add
               local.set 15
               local.get 15
@@ -3435,26 +3031,18 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
               local.get 6
               local.get 16
               i32.ne
-              local.set 16
-              local.get 16
               if ;; label = @6
-                i32.const 1
-                local.set 15
                 local.get 13
-                local.get 15
+                i32.const 1
                 i32.sub
                 local.set 15
                 local.get 15
                 local.set 13
                 local.get 15
                 i32.eqz
-                local.set 15
-                local.get 15
                 if ;; label = @7
-                  i32.const 1
-                  local.set 15
                   local.get 0
-                  local.get 15
+                  i32.const 1
                   i32.store offset=364 align=1
                   local.get 0
                   local.get 1
@@ -3488,10 +3076,8 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                 br 4 (;@2;)
               end
             end
-            i32.const 108
-            local.set 16
             local.get 5
-            local.get 16
+            i32.const 108
             i32.add
             local.set 16
             local.get 6
@@ -3509,10 +3095,8 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
             local.get 16
             i32.load align=1
             local.set 17
-            i32.const 4
-            local.set 18
             local.get 16
-            local.get 18
+            i32.const 4
             i32.add
             local.set 18
             local.get 17
@@ -3522,10 +3106,8 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
             local.get 16
             i32.load offset=4 align=1
             local.set 16
-            i32.const 4
-            local.set 15
             local.get 18
-            local.get 15
+            i32.const 4
             i32.add
             local.set 15
             local.get 16
@@ -3533,10 +3115,8 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
             local.get 18
             i32.load offset=4 align=1
             local.set 18
-            i32.const 4
-            local.set 16
             local.get 15
-            local.get 16
+            i32.const 4
             i32.add
             local.set 16
             local.get 18
@@ -3544,10 +3124,8 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
             local.get 15
             i32.load offset=4 align=1
             local.set 15
-            i32.const 4
-            local.set 18
             local.get 16
-            local.get 18
+            i32.const 4
             i32.add
             local.set 18
             local.get 15
@@ -3555,13 +3133,9 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
             local.get 16
             i32.load offset=4 align=1
             local.set 16
-            i32.const 4
-            local.set 15
             local.get 18
-            local.get 15
+            i32.const 4
             i32.add
-            local.set 15
-            local.get 15
             local.set 5
             local.get 0
             local.get 1
@@ -3607,15 +3181,11 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
       local.get 3
       local.get 7
       i32.add
-      local.set 15
-      local.get 15
       local.set 6
       br 0 (;@1;)
     end
-    i32.const 108
-    local.set 15
     local.get 5
-    local.get 15
+    i32.const 108
     i32.add
     local.set 15
     i32.const 513
@@ -3631,10 +3201,8 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
     local.get 15
     i32.load align=1
     local.set 16
-    i32.const 4
-    local.set 17
     local.get 15
-    local.get 17
+    i32.const 4
     i32.add
     local.set 17
     local.get 16
@@ -3642,10 +3210,8 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
     local.get 15
     i32.load offset=4 align=1
     local.set 15
-    i32.const 4
-    local.set 16
     local.get 17
-    local.get 16
+    i32.const 4
     i32.add
     local.set 16
     local.get 15
@@ -3653,10 +3219,8 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
     local.get 17
     i32.load offset=4 align=1
     local.set 17
-    i32.const 4
-    local.set 15
     local.get 16
-    local.get 15
+    i32.const 4
     i32.add
     local.set 15
     local.get 17
@@ -3664,10 +3228,8 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
     local.get 16
     i32.load offset=4 align=1
     local.set 16
-    i32.const 4
-    local.set 17
     local.get 15
-    local.get 17
+    i32.const 4
     i32.add
     local.set 17
     local.get 16
@@ -3675,13 +3237,9 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
     local.get 15
     i32.load offset=4 align=1
     local.set 15
-    i32.const 4
-    local.set 16
     local.get 17
-    local.get 16
+    i32.const 4
     i32.add
-    local.set 16
-    local.get 16
     local.set 5
     local.get 0
     local.get 1
@@ -3724,380 +3282,19 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
     unreachable
   )
   (func $_start@401320 (;5;) (type 0) (param i32) (result i32)
-    (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i64 i64 i32 i32 i32 i64 i32)
-    local.get 0
-    i32.load
-    local.set 1
-    local.get 0
-    i32.load offset=4
-    local.set 2
-    local.get 0
-    i32.load offset=8
-    local.set 3
-    local.get 0
-    i32.load offset=12
-    local.set 4
-    local.get 0
-    i32.load offset=16
-    local.set 5
-    local.get 0
-    i32.load offset=20
-    local.set 6
-    local.get 0
-    i32.load offset=24
-    local.set 7
-    local.get 0
-    i32.load offset=28
-    local.set 8
+    (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i64 i64 i32 i32 i32 i32 i64 i32)
     block ;; label = @1
       block ;; label = @2
         block ;; label = @3
-          block ;; label = @4
-            i32.const 65536
-            local.set 15
-            local.get 15
-            local.set 13
-            local.get 0
-            i32.load offset=364 align=1
-            local.set 14
-            local.get 14
-            if ;; label = @5
-              i32.const 1
-              local.set 18
-              local.get 14
-              local.get 18
-              i32.eq
-              local.set 18
-              local.get 18
-              if ;; label = @6
-                i32.const 0
-                local.set 18
-                local.get 0
-                local.get 18
-                i32.store offset=364 align=1
-                br 3 (;@3;)
-              else
-                i32.const 2
-                local.set 18
-                local.get 14
-                local.get 18
-                i32.eq
-                local.set 18
-                local.get 18
-                if ;; label = @7
-                  i32.const 0
-                  local.set 18
-                  local.get 0
-                  local.get 18
-                  i32.store offset=364 align=1
-                  br 5 (;@2;)
-                else
-                  i32.const 3
-                  local.set 18
-                  local.get 14
-                  local.get 18
-                  i32.eq
-                  local.set 18
-                  local.get 18
-                  if ;; label = @8
-                    i32.const 0
-                    local.set 18
-                    local.get 0
-                    local.get 18
-                    i32.store offset=364 align=1
-                    br 7 (;@1;)
-                  else
-                    br 4 (;@4;)
-                  end
-                end
-              end
-            else
-              br 1 (;@4;)
-            end
-          end
-          i32.const 4
-          local.set 15
-          local.get 5
-          local.get 15
-          i32.sub
-          local.set 15
-          local.get 15
-          local.get 6
-          i32.store align=1
-          i32.const 4
-          local.set 18
-          local.get 15
-          local.get 18
-          i32.sub
-          local.set 18
-          local.get 18
-          local.get 8
-          i32.store align=1
-          i32.const 4
-          local.set 15
-          local.get 18
-          local.get 15
-          i32.sub
-          local.set 15
-          local.get 15
-          local.get 7
-          i32.store align=1
-          i32.const 4
-          local.set 18
-          local.get 15
-          local.get 18
-          i32.sub
-          local.set 18
-          local.get 18
-          local.get 4
-          i32.store align=1
-          i32.const 0
-          local.set 4
-          i32.const 188
-          local.set 15
-          local.get 18
-          local.get 15
-          i32.sub
-          local.set 15
-          i32.const 515
-          local.set 9
-          local.get 15
-          local.set 10
-          local.get 18
-          local.set 11
-          i32.const 188
-          local.set 12
-          i32.const -11
-          local.set 18
-          local.get 15
-          local.get 18
-          i32.store align=1
-          i32.const 4210748
-          local.set 18
-          local.get 18
-          i32.load align=1
-          local.set 18
-          i32.const 4199225
-          local.set 16
-          i32.const 4
-          local.set 17
-          local.get 15
-          local.get 17
-          i32.sub
-          local.set 17
-          local.get 17
-          local.get 16
-          i32.store align=1
-          local.get 17
-          local.set 5
-          local.get 0
-          local.get 4
-          i32.store offset=12
-          local.get 0
-          local.get 5
-          i32.store offset=16
-          local.get 0
-          local.get 9
-          i32.store offset=36
-          local.get 0
-          local.get 10
-          i32.store offset=40
-          local.get 0
-          local.get 11
-          i32.store offset=44
-          local.get 0
-          local.get 12
-          i32.store offset=48
-          local.get 18
-          local.set 21
-          local.get 0
-          local.get 21
-          i32.store offset=32
-          local.get 0
-          local.get 21
-          i32.const 12
-          i32.shr_u
-          i32.const 2
-          i32.shl
-          global.get 1
-          i32.add
-          i32.load
-          local.get 21
-          i32.const 4095
-          i32.and
-          i32.const 2
-          i32.shl
-          i32.add
-          i32.load
-          call_indirect (type 0)
-          local.tee 21
-          i32.const 4199225
-          i32.ne
-          if ;; label = @4
-            local.get 21
-            return
-          end
           local.get 0
           i32.load
           local.set 1
           local.get 0
-          i32.load offset=16
-          local.set 5
-          i32.const 4
-          local.set 15
-          local.get 5
-          local.get 15
-          i32.sub
-          local.set 15
-          i32.const 515
-          local.set 9
-          local.get 15
-          local.set 10
-          local.get 5
-          local.set 11
-          i32.const 4
-          local.set 12
-          local.get 1
-          local.set 6
-          i32.const 52
-          local.set 16
-          local.get 15
-          local.get 16
-          i32.add
-          local.set 16
-          i32.const 1819043144
-          local.set 17
-          local.get 15
-          local.get 17
-          i32.store offset=84 align=1
-          local.get 15
-          local.get 16
-          i32.store offset=12 align=1
-          i32.const 84
-          local.set 16
-          local.get 15
-          local.get 16
-          i32.add
-          local.set 16
-          local.get 15
-          local.get 16
-          i32.store offset=4 align=1
-          i32.const 4210752
-          local.set 16
-          local.get 16
-          i32.load align=1
-          local.set 16
-          local.get 16
-          local.set 1
-          i32.const 1919295599
-          local.set 17
-          local.get 15
-          local.get 17
-          i32.store offset=88 align=1
-          i32.const 1948282223
-          local.set 17
-          local.get 15
-          local.get 17
-          i32.store offset=92 align=1
-          i32.const 1936613746
-          local.set 17
-          local.get 15
-          local.get 17
-          i32.store offset=96 align=1
-          i32.const 1702125932
-          local.set 17
-          local.get 15
-          local.get 17
-          i32.store offset=100 align=1
-          i32.const 947396708
-          local.set 17
-          local.get 15
-          local.get 17
-          i32.store offset=104 align=1
-          i32.const 663862
-          local.set 17
-          local.get 15
-          local.get 17
-          i32.store offset=108 align=1
-          i32.const 0
-          local.set 17
-          local.get 15
-          local.get 17
-          i32.store offset=16 align=1
-          i32.const 27
-          local.set 17
-          local.get 15
-          local.get 17
-          i32.store offset=8 align=1
-          local.get 15
-          local.get 6
-          i32.store align=1
-          local.get 15
-          local.get 16
-          i32.store offset=40 align=1
-          i32.const 4199332
-          local.set 17
-          i32.const 4
-          local.set 18
-          local.get 15
-          local.get 18
-          i32.sub
-          local.set 18
-          local.get 18
-          local.get 17
-          i32.store align=1
-          local.get 18
-          local.set 5
+          i32.load offset=4
+          local.set 2
           local.get 0
-          local.get 1
-          i32.store
-          local.get 0
-          local.get 5
-          i32.store offset=16
-          local.get 0
-          local.get 6
-          i32.store offset=20
-          local.get 0
-          local.get 9
-          i32.store offset=36
-          local.get 0
-          local.get 10
-          i32.store offset=40
-          local.get 0
-          local.get 11
-          i32.store offset=44
-          local.get 0
-          local.get 12
-          i32.store offset=48
-          local.get 16
-          local.set 21
-          local.get 0
-          local.get 21
-          i32.store offset=32
-          local.get 0
-          local.get 21
-          i32.const 12
-          i32.shr_u
-          i32.const 2
-          i32.shl
-          global.get 1
-          i32.add
-          i32.load
-          local.get 21
-          i32.const 4095
-          i32.and
-          i32.const 2
-          i32.shl
-          i32.add
-          i32.load
-          call_indirect (type 0)
-          local.tee 21
-          i32.const 4199332
-          i32.ne
-          if ;; label = @4
-            local.get 21
-            return
-          end
+          i32.load offset=8
+          local.set 3
           local.get 0
           i32.load offset=12
           local.set 4
@@ -4105,81 +3302,1035 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
           i32.load offset=16
           local.set 5
           local.get 0
+          i32.load offset=20
+          local.set 6
+          local.get 0
           i32.load offset=24
           local.set 7
-          i32.const 102
-          local.set 1
-          i32.const 20
-          local.set 16
-          local.get 5
-          local.get 16
-          i32.sub
-          local.set 16
-          local.get 16
-          local.set 5
-          i32.const 539570226
-          local.set 18
-          local.get 16
-          local.get 18
-          i32.store offset=61 align=1
-          i32.const 677538150
-          local.set 18
-          local.get 16
-          local.get 18
-          i32.store offset=57 align=1
-          i32.const 2112800
-          local.set 18
-          local.get 16
-          local.get 18
-          i32.store offset=64 align=1
-          local.get 7
-          local.set 7
-          br 0 (;@3;)
-        end
-        loop ;; label = @3
-          i32.const 1
-          local.set 18
-          local.get 4
-          local.get 18
-          i32.add
-          local.set 18
-          local.get 18
-          local.set 4
-          i32.const 1
-          local.set 12
-          i32.const 255
-          local.set 16
-          local.get 1
-          local.get 16
-          i32.and
-          local.set 16
-          local.get 5
-          local.get 18
-          i32.add
-          local.set 17
-          local.get 17
-          i32.const 111
-          i32.add
-          local.set 23
-          local.get 23
-          i32.const 12
-          i32.shr_u
-          global.get 3
-          i32.add
-          i32.load8_u
-          if ;; label = @4
-            local.get 17
-            i32.const 111
-            i32.add
-            local.tee 23
+          local.get 0
+          i32.load offset=28
+          local.set 8
+          block ;; label = @4
+            block ;; label = @5
+              block ;; label = @6
+                block ;; label = @7
+                  i32.const 65536
+                  local.set 13
+                  local.get 0
+                  i32.load offset=364 align=1
+                  local.set 14
+                  local.get 14
+                  if ;; label = @8
+                    local.get 14
+                    i32.const 1
+                    i32.eq
+                    if ;; label = @9
+                      local.get 0
+                      i32.const 0
+                      i32.store offset=364 align=1
+                      br 3 (;@6;)
+                    else
+                      local.get 14
+                      i32.const 2
+                      i32.eq
+                      if ;; label = @10
+                        local.get 0
+                        i32.const 0
+                        i32.store offset=364 align=1
+                        br 5 (;@5;)
+                      else
+                        local.get 14
+                        i32.const 3
+                        i32.eq
+                        if ;; label = @11
+                          local.get 0
+                          i32.const 0
+                          i32.store offset=364 align=1
+                          br 7 (;@4;)
+                        else
+                          br 4 (;@7;)
+                        end
+                      end
+                    end
+                  else
+                    br 1 (;@7;)
+                  end
+                end
+                local.get 5
+                i32.const 4
+                i32.sub
+                local.set 15
+                local.get 15
+                local.get 6
+                i32.store align=1
+                local.get 15
+                i32.const 4
+                i32.sub
+                local.set 18
+                local.get 18
+                local.get 8
+                i32.store align=1
+                local.get 18
+                i32.const 4
+                i32.sub
+                local.set 15
+                local.get 15
+                local.get 7
+                i32.store align=1
+                local.get 15
+                i32.const 4
+                i32.sub
+                local.set 18
+                local.get 18
+                local.get 4
+                i32.store align=1
+                i32.const 0
+                local.set 4
+                local.get 18
+                i32.const 188
+                i32.sub
+                local.set 15
+                i32.const 515
+                local.set 9
+                local.get 15
+                local.set 10
+                local.get 18
+                local.set 11
+                i32.const 188
+                local.set 12
+                local.get 15
+                i32.const -11
+                i32.store align=1
+                i32.const 4210748
+                local.set 18
+                local.get 18
+                i32.load align=1
+                local.set 18
+                i32.const 4199225
+                local.set 16
+                local.get 15
+                i32.const 4
+                i32.sub
+                local.set 17
+                local.get 17
+                local.get 16
+                i32.store align=1
+                local.get 17
+                local.set 5
+                local.get 0
+                local.get 4
+                i32.store offset=12
+                local.get 0
+                local.get 5
+                i32.store offset=16
+                local.get 0
+                local.get 9
+                i32.store offset=36
+                local.get 0
+                local.get 10
+                i32.store offset=40
+                local.get 0
+                local.get 11
+                i32.store offset=44
+                local.get 0
+                local.get 12
+                i32.store offset=48
+                local.get 18
+                local.set 21
+                local.get 0
+                local.get 21
+                i32.store offset=32
+                local.get 0
+                local.get 21
+                i32.const 12
+                i32.shr_u
+                i32.const 2
+                i32.shl
+                global.get 1
+                i32.add
+                i32.load
+                local.get 21
+                i32.const 4095
+                i32.and
+                i32.const 2
+                i32.shl
+                i32.add
+                i32.load
+                call_indirect (type 0)
+                local.tee 21
+                i32.const 4199225
+                i32.ne
+                if ;; label = @7
+                  local.get 21
+                  return
+                end
+                local.get 0
+                i32.load
+                local.set 1
+                local.get 0
+                i32.load offset=16
+                local.set 5
+                local.get 5
+                i32.const 4
+                i32.sub
+                local.set 15
+                i32.const 515
+                local.set 9
+                local.get 15
+                local.set 10
+                local.get 5
+                local.set 11
+                i32.const 4
+                local.set 12
+                local.get 1
+                local.set 6
+                local.get 15
+                i32.const 52
+                i32.add
+                local.set 16
+                local.get 15
+                i32.const 1819043144
+                i32.store offset=84 align=1
+                local.get 15
+                local.get 16
+                i32.store offset=12 align=1
+                local.get 15
+                local.get 15
+                i32.const 84
+                i32.add
+                i32.store offset=4 align=1
+                i32.const 4210752
+                local.set 16
+                local.get 16
+                i32.load align=1
+                local.set 16
+                local.get 16
+                local.set 1
+                local.get 15
+                i32.const 1919295599
+                i32.store offset=88 align=1
+                local.get 15
+                i32.const 1948282223
+                i32.store offset=92 align=1
+                local.get 15
+                i32.const 1936613746
+                i32.store offset=96 align=1
+                local.get 15
+                i32.const 1702125932
+                i32.store offset=100 align=1
+                local.get 15
+                i32.const 947396708
+                i32.store offset=104 align=1
+                local.get 15
+                i32.const 663862
+                i32.store offset=108 align=1
+                local.get 15
+                i32.const 0
+                i32.store offset=16 align=1
+                local.get 15
+                i32.const 27
+                i32.store offset=8 align=1
+                local.get 15
+                local.get 6
+                i32.store align=1
+                local.get 15
+                local.get 16
+                i32.store offset=40 align=1
+                i32.const 4199332
+                local.set 17
+                local.get 15
+                i32.const 4
+                i32.sub
+                local.set 18
+                local.get 18
+                local.get 17
+                i32.store align=1
+                local.get 18
+                local.set 5
+                local.get 0
+                local.get 1
+                i32.store
+                local.get 0
+                local.get 5
+                i32.store offset=16
+                local.get 0
+                local.get 6
+                i32.store offset=20
+                local.get 0
+                local.get 9
+                i32.store offset=36
+                local.get 0
+                local.get 10
+                i32.store offset=40
+                local.get 0
+                local.get 11
+                i32.store offset=44
+                local.get 0
+                local.get 12
+                i32.store offset=48
+                local.get 16
+                local.set 21
+                local.get 0
+                local.get 21
+                i32.store offset=32
+                local.get 0
+                local.get 21
+                i32.const 12
+                i32.shr_u
+                i32.const 2
+                i32.shl
+                global.get 1
+                i32.add
+                i32.load
+                local.get 21
+                i32.const 4095
+                i32.and
+                i32.const 2
+                i32.shl
+                i32.add
+                i32.load
+                call_indirect (type 0)
+                local.tee 21
+                i32.const 4199332
+                i32.ne
+                if ;; label = @7
+                  local.get 21
+                  return
+                end
+                local.get 0
+                i32.load offset=12
+                local.set 4
+                local.get 0
+                i32.load offset=16
+                local.set 5
+                local.get 0
+                i32.load offset=24
+                local.set 7
+                i32.const 102
+                local.set 1
+                local.get 5
+                i32.const 20
+                i32.sub
+                local.set 16
+                local.get 16
+                local.set 5
+                local.get 16
+                i32.const 539570226
+                i32.store offset=61 align=1
+                local.get 16
+                i32.const 677538150
+                i32.store offset=57 align=1
+                local.get 16
+                i32.const 2112800
+                i32.store offset=64 align=1
+                local.get 7
+                local.set 7
+                br 0 (;@6;)
+              end
+              loop ;; label = @6
+                local.get 4
+                i32.const 1
+                i32.add
+                local.set 18
+                local.get 18
+                local.set 4
+                i32.const 1
+                local.set 12
+                local.get 1
+                i32.const 255
+                i32.and
+                local.set 16
+                local.get 5
+                local.get 18
+                i32.add
+                local.set 17
+                local.get 17
+                i32.const 111
+                i32.add
+                local.set 24
+                local.get 24
+                i32.const 12
+                i32.shr_u
+                global.get 3
+                i32.add
+                i32.load8_u
+                if ;; label = @7
+                  local.get 17
+                  i32.const 111
+                  i32.add
+                  local.tee 24
+                  i32.const 65536
+                  i32.sub
+                  global.get 2
+                  i32.gt_u
+                  if ;; label = @8
+                    i32.const 4199371
+                    local.set 22
+                    br 5 (;@3;)
+                  end
+                  local.get 17
+                  i32.const 111
+                  i32.add
+                  i32.const 12
+                  i32.shr_u
+                  local.tee 24
+                  global.get 3
+                  i32.add
+                  i32.load8_u
+                  local.tee 23
+                  i32.const 1
+                  i32.and
+                  if ;; label = @8
+                    local.get 24
+                    i32.const 2
+                    i32.shl
+                    global.get 1
+                    i32.add
+                    global.get 4
+                    i32.store
+                    local.get 24
+                    global.get 3
+                    i32.add
+                    local.get 23
+                    i32.const -2
+                    i32.and
+                    i32.store8
+                  end
+                end
+                local.get 17
+                local.get 16
+                i32.store8 offset=111
+                local.get 5
+                local.get 18
+                i32.add
+                local.set 18
+                local.get 18
+                i32.const 57
+                i32.add
+                local.tee 24
+                i32.const 65536
+                i32.sub
+                global.get 2
+                i32.gt_u
+                if ;; label = @7
+                  i32.const 4199375
+                  local.set 22
+                  br 4 (;@3;)
+                end
+                local.get 18
+                i32.load8_u offset=57
+                local.set 18
+                local.get 18
+                local.set 1
+                local.get 18
+                i32.const 255
+                i32.and
+                local.set 17
+                local.get 18
+                i32.const 255
+                i32.and
+                local.set 16
+                local.get 16
+                local.get 17
+                i32.and
+                i32.const 255
+                i32.and
+                i32.const 0
+                i32.ne
+                if ;; label = @7
+                  local.get 13
+                  i32.const 1
+                  i32.sub
+                  local.set 18
+                  local.get 18
+                  local.set 13
+                  local.get 18
+                  i32.eqz
+                  if ;; label = @8
+                    local.get 0
+                    i32.const 1
+                    i32.store offset=364 align=1
+                    local.get 0
+                    local.get 1
+                    i32.store
+                    local.get 0
+                    local.get 4
+                    i32.store offset=12
+                    local.get 0
+                    local.get 5
+                    i32.store offset=16
+                    local.get 0
+                    local.get 7
+                    i32.store offset=24
+                    local.get 0
+                    local.get 12
+                    i32.store offset=48
+                    local.get 0
+                    return_call $_start@401320
+                  end
+                  br 1 (;@6;)
+                else
+                  i32.const 20
+                  local.set 1
+                  i32.const 0
+                  local.set 8
+                  i32.const 517
+                  local.set 9
+                  i32.const 0
+                  local.set 10
+                  i32.const 0
+                  local.set 11
+                  i32.const 4199396
+                  local.set 16
+                  local.get 5
+                  i32.const 4
+                  i32.sub
+                  local.set 17
+                  local.get 17
+                  local.get 16
+                  i32.store align=1
+                  local.get 17
+                  local.set 5
+                  local.get 0
+                  local.get 1
+                  i32.store
+                  local.get 0
+                  local.get 4
+                  i32.store offset=12
+                  local.get 0
+                  local.get 5
+                  i32.store offset=16
+                  local.get 0
+                  local.get 7
+                  i32.store offset=24
+                  local.get 0
+                  local.get 8
+                  i32.store offset=28
+                  local.get 0
+                  local.get 9
+                  i32.store offset=36
+                  local.get 0
+                  local.get 10
+                  i32.store offset=40
+                  local.get 0
+                  local.get 11
+                  i32.store offset=44
+                  local.get 0
+                  local.get 12
+                  i32.store offset=48
+                  local.get 0
+                  call $_fib@401000
+                  local.tee 21
+                  i32.const 4199396
+                  i32.ne
+                  if ;; label = @8
+                    local.get 21
+                    return
+                  end
+                  local.get 0
+                  i32.load
+                  local.set 1
+                  local.get 0
+                  i32.load offset=12
+                  local.set 4
+                  local.get 0
+                  i32.load offset=16
+                  local.set 5
+                  local.get 0
+                  i32.load offset=20
+                  local.set 6
+                  local.get 0
+                  i32.load offset=28
+                  local.set 8
+                  local.get 5
+                  i32.const 44
+                  i32.add
+                  local.set 17
+                  local.get 17
+                  local.get 6
+                  i32.store align=1
+                  local.get 1
+                  local.set 7
+                  br 2 (;@5;)
+                end
+              end
+            end
+            loop ;; label = @5
+              local.get 8
+              local.set 2
+              local.get 8
+              i32.const 1
+              i32.add
+              local.set 17
+              local.get 17
+              local.set 8
+              i64.const 3435973837
+              local.get 7
+              i64.extend_i32_u
+              i64.mul
+              i64.const 32
+              i64.shr_u
+              i32.wrap_i64
+              i32.const 3
+              i32.shr_u
+              local.set 18
+              local.get 18
+              local.set 3
+              local.get 18
+              local.get 18
+              i32.const 2
+              i32.shl
+              i32.add
+              local.set 16
+              local.get 16
+              local.get 16
+              i32.add
+              local.set 16
+              local.get 16
+              local.set 6
+              local.get 7
+              local.get 16
+              i32.sub
+              i32.const 48
+              i32.add
+              local.set 15
+              local.get 15
+              local.set 1
+              local.get 15
+              i32.const 255
+              i32.and
+              local.set 16
+              local.get 5
+              local.get 17
+              i32.add
+              local.set 17
+              local.get 17
+              i32.const 67
+              i32.add
+              local.set 24
+              local.get 24
+              i32.const 12
+              i32.shr_u
+              global.get 3
+              i32.add
+              i32.load8_u
+              if ;; label = @6
+                local.get 17
+                i32.const 67
+                i32.add
+                local.tee 24
+                i32.const 65536
+                i32.sub
+                global.get 2
+                i32.gt_u
+                if ;; label = @7
+                  i32.const 4199435
+                  local.set 22
+                  br 5 (;@2;)
+                end
+                local.get 17
+                i32.const 67
+                i32.add
+                i32.const 12
+                i32.shr_u
+                local.tee 24
+                global.get 3
+                i32.add
+                i32.load8_u
+                local.tee 23
+                i32.const 1
+                i32.and
+                if ;; label = @7
+                  local.get 24
+                  i32.const 2
+                  i32.shl
+                  global.get 1
+                  i32.add
+                  global.get 4
+                  i32.store
+                  local.get 24
+                  global.get 3
+                  i32.add
+                  local.get 23
+                  i32.const -2
+                  i32.and
+                  i32.store8
+                end
+              end
+              local.get 17
+              local.get 16
+              i32.store8 offset=67
+              local.get 7
+              local.set 1
+              local.get 18
+              local.set 7
+              local.get 1
+              i32.const 9
+              i32.gt_u
+              if ;; label = @6
+                local.get 13
+                i32.const 1
+                i32.sub
+                local.set 18
+                local.get 18
+                local.set 13
+                local.get 18
+                i32.eqz
+                if ;; label = @7
+                  local.get 0
+                  i32.const 2
+                  i32.store offset=364 align=1
+                  local.get 0
+                  local.get 1
+                  i32.store
+                  local.get 0
+                  local.get 2
+                  i32.store offset=4
+                  local.get 0
+                  local.get 3
+                  i32.store offset=8
+                  local.get 0
+                  local.get 6
+                  i32.store offset=20
+                  local.get 0
+                  local.get 7
+                  i32.store offset=24
+                  local.get 0
+                  local.get 8
+                  i32.store offset=28
+                  local.get 0
+                  return_call $_start@401320
+                end
+                br 1 (;@5;)
+              else
+                local.get 5
+                i32.const 44
+                i32.add
+                local.set 18
+                local.get 18
+                i32.load align=1
+                local.set 6
+                local.get 5
+                i32.const 44
+                i32.add
+                local.set 18
+                local.get 18
+                local.get 4
+                i32.store align=1
+                local.get 5
+                i32.const 68
+                i32.add
+                local.set 18
+                local.get 5
+                i32.const 112
+                i32.add
+                local.set 17
+                local.get 2
+                local.get 18
+                i32.add
+                local.set 2
+                local.get 17
+                local.get 4
+                i32.add
+                local.set 1
+                local.get 17
+                local.set 7
+                br 2 (;@4;)
+              end
+            end
+          end
+          loop ;; label = @4
+            local.get 2
+            local.tee 24
             i32.const 65536
             i32.sub
             global.get 2
             i32.gt_u
             if ;; label = @5
+              i32.const 4199472
+              local.set 22
+              br 4 (;@1;)
+            end
+            local.get 2
+            i32.load8_u
+            local.set 17
+            local.get 17
+            local.set 3
+            local.get 5
+            i32.const 68
+            i32.add
+            local.set 18
+            local.get 18
+            local.set 4
+            local.get 1
+            i32.const 1
+            i32.add
+            local.set 16
+            local.get 16
+            local.set 1
+            local.get 17
+            i32.const 255
+            i32.and
+            local.set 15
+            local.get 16
+            i32.const -1
+            i32.add
+            local.set 17
+            local.get 17
+            local.set 24
+            local.get 24
+            i32.const 12
+            i32.shr_u
+            global.get 3
+            i32.add
+            i32.load8_u
+            if ;; label = @5
+              local.get 17
+              local.tee 24
+              i32.const 65536
+              i32.sub
+              global.get 2
+              i32.gt_u
+              if ;; label = @6
+                i32.const 4199482
+                local.set 22
+                br 5 (;@1;)
+              end
+              local.get 17
+              i32.const 12
+              i32.shr_u
+              local.tee 24
+              global.get 3
+              i32.add
+              i32.load8_u
+              local.tee 23
+              i32.const 1
+              i32.and
+              if ;; label = @6
+                local.get 24
+                i32.const 2
+                i32.shl
+                global.get 1
+                i32.add
+                global.get 4
+                i32.store
+                local.get 24
+                global.get 3
+                i32.add
+                local.get 23
+                i32.const -2
+                i32.and
+                i32.store8
+              end
+            end
+            local.get 17
+            local.get 15
+            i32.store8
+            local.get 2
+            local.set 3
+            local.get 2
+            i32.const 1
+            i32.sub
+            local.set 2
+            local.get 3
+            local.get 18
+            i32.ne
+            if ;; label = @5
+              local.get 13
+              i32.const 1
+              i32.sub
+              local.set 18
+              local.get 18
+              local.set 13
+              local.get 18
+              i32.eqz
+              if ;; label = @6
+                local.get 0
+                i32.const 3
+                i32.store offset=364 align=1
+                local.get 0
+                local.get 1
+                i32.store
+                local.get 0
+                local.get 2
+                i32.store offset=4
+                local.get 0
+                local.get 3
+                i32.store offset=8
+                local.get 0
+                local.get 4
+                i32.store offset=12
+                local.get 0
+                local.get 6
+                i32.store offset=20
+                local.get 0
+                local.get 7
+                i32.store offset=24
+                local.get 0
+                local.get 8
+                i32.store offset=28
+                local.get 0
+                return_call $_start@401320
+              end
+              br 1 (;@4;)
+            else
+              local.get 5
+              i32.const 44
+              i32.add
+              local.set 18
+              local.get 18
+              i32.load align=1
+              local.set 18
+              local.get 5
+              i32.const 52
+              i32.add
+              local.set 17
+              local.get 17
+              local.set 1
+              local.get 18
+              local.get 8
+              i32.add
+              local.set 18
+              local.get 18
+              local.set 4
+              i32.const 10
+              local.set 15
+              local.get 5
+              local.get 18
+              i32.add
+              local.set 16
+              local.get 16
+              i32.const 112
+              i32.add
+              local.set 24
+              local.get 24
+              i32.const 12
+              i32.shr_u
+              global.get 3
+              i32.add
+              i32.load8_u
+              if ;; label = @6
+                local.get 16
+                i32.const 112
+                i32.add
+                local.tee 24
+                i32.const 65536
+                i32.sub
+                global.get 2
+                i32.gt_u
+                if ;; label = @7
+                  i32.const 4199504
+                  local.set 22
+                  br 6 (;@1;)
+                end
+                local.get 16
+                i32.const 112
+                i32.add
+                i32.const 12
+                i32.shr_u
+                local.tee 24
+                global.get 3
+                i32.add
+                i32.load8_u
+                local.tee 23
+                i32.const 1
+                i32.and
+                if ;; label = @7
+                  local.get 24
+                  i32.const 2
+                  i32.shl
+                  global.get 1
+                  i32.add
+                  global.get 4
+                  i32.store
+                  local.get 24
+                  global.get 3
+                  i32.add
+                  local.get 23
+                  i32.const -2
+                  i32.and
+                  i32.store8
+                end
+              end
+              local.get 16
+              local.get 15
+              i32.store8 offset=112
+              local.get 18
+              i32.const 1
+              i32.add
+              local.set 16
+              local.get 16
+              local.set 4
+              i32.const 513
+              local.set 9
+              local.get 16
+              local.set 10
+              local.get 18
+              local.set 11
+              i32.const 1
+              local.set 12
+              local.get 5
+              i32.const 12
+              i32.add
+              local.set 18
+              local.get 18
+              local.get 17
+              i32.store align=1
+              local.get 5
+              i32.const 40
+              i32.add
+              local.set 18
+              local.get 18
+              i32.load align=1
+              local.set 18
+              local.get 18
+              local.set 1
+              i32.const 0
+              local.set 17
+              local.get 5
+              i32.const 16
+              i32.add
+              local.set 15
+              local.get 15
+              local.get 17
+              i32.store align=1
+              local.get 5
+              i32.const 8
+              i32.add
+              local.set 15
+              local.get 15
+              local.get 16
+              i32.store align=1
+              local.get 5
+              i32.const 4
+              i32.add
+              local.set 15
+              local.get 15
+              local.get 7
+              i32.store align=1
+              local.get 5
+              local.get 6
+              i32.store align=1
+              i32.const 4199541
+              local.set 15
+              local.get 5
+              i32.const 4
+              i32.sub
+              local.set 16
+              local.get 16
+              local.get 15
+              i32.store align=1
+              local.get 16
+              local.set 5
               local.get 0
               local.get 1
               i32.store
+              local.get 0
+              local.get 2
+              i32.store offset=4
+              local.get 0
+              local.get 3
+              i32.store offset=8
               local.get 0
               local.get 4
               i32.store offset=12
@@ -4187,1151 +4338,301 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
               local.get 5
               i32.store offset=16
               local.get 0
+              local.get 6
+              i32.store offset=20
+              local.get 0
               local.get 7
               i32.store offset=24
               local.get 0
-              i32.const 4199371
+              local.get 8
+              i32.store offset=28
+              local.get 0
+              local.get 9
+              i32.store offset=36
+              local.get 0
+              local.get 10
+              i32.store offset=40
+              local.get 0
+              local.get 11
+              i32.store offset=44
+              local.get 0
+              local.get 12
+              i32.store offset=48
+              local.get 18
+              local.set 21
+              local.get 0
+              local.get 21
               i32.store offset=32
               local.get 0
-              i32.const -1073741819
-              i32.const 4199371
-              local.get 23
-              call 0
-              unreachable
-            end
-            local.get 17
-            i32.const 111
-            i32.add
-            i32.const 12
-            i32.shr_u
-            local.tee 23
-            global.get 3
-            i32.add
-            i32.load8_u
-            local.tee 22
-            i32.const 1
-            i32.and
-            if ;; label = @5
-              local.get 23
+              local.get 21
+              i32.const 12
+              i32.shr_u
               i32.const 2
               i32.shl
               global.get 1
               i32.add
-              global.get 4
-              i32.store
-              local.get 23
-              global.get 3
-              i32.add
-              local.get 22
-              i32.const -2
+              i32.load
+              local.get 21
+              i32.const 4095
               i32.and
-              i32.store8
-            end
-          end
-          local.get 17
-          local.get 16
-          i32.store8 offset=111
-          local.get 5
-          local.get 18
-          i32.add
-          local.set 18
-          local.get 18
-          i32.const 57
-          i32.add
-          local.tee 23
-          i32.const 65536
-          i32.sub
-          global.get 2
-          i32.gt_u
-          if ;; label = @4
-            local.get 0
-            local.get 1
-            i32.store
-            local.get 0
-            local.get 4
-            i32.store offset=12
-            local.get 0
-            local.get 5
-            i32.store offset=16
-            local.get 0
-            local.get 7
-            i32.store offset=24
-            local.get 0
-            i32.const 4199375
-            i32.store offset=32
-            local.get 0
-            i32.const -1073741819
-            i32.const 4199375
-            local.get 23
-            call 0
-            unreachable
-          end
-          local.get 18
-          i32.load8_u offset=57
-          local.set 18
-          local.get 18
-          local.set 1
-          i32.const 255
-          local.set 17
-          local.get 18
-          local.get 17
-          i32.and
-          local.set 17
-          i32.const 255
-          local.set 16
-          local.get 18
-          local.get 16
-          i32.and
-          local.set 16
-          local.get 16
-          local.get 17
-          i32.and
-          local.set 16
-          i32.const 255
-          local.set 17
-          local.get 16
-          local.get 17
-          i32.and
-          local.set 17
-          i32.const 0
-          local.set 16
-          local.get 17
-          local.get 16
-          i32.ne
-          local.set 16
-          local.get 16
-          if ;; label = @4
-            i32.const 1
-            local.set 18
-            local.get 13
-            local.get 18
-            i32.sub
-            local.set 18
-            local.get 18
-            local.set 13
-            local.get 18
-            i32.eqz
-            local.set 18
-            local.get 18
-            if ;; label = @5
-              i32.const 1
-              local.set 18
+              i32.const 2
+              i32.shl
+              i32.add
+              i32.load
+              call_indirect (type 0)
+              local.tee 21
+              i32.const 4199541
+              i32.ne
+              if ;; label = @6
+                local.get 21
+                return
+              end
               local.get 0
+              i32.load offset=16
+              local.set 5
+              i32.const 10
+              local.set 1
+              local.get 5
+              i32.const 20
+              i32.sub
+              local.set 18
+              i32.const 515
+              local.set 9
               local.get 18
-              i32.store offset=364 align=1
+              local.set 10
+              local.get 5
+              local.set 11
+              i32.const 20
+              local.set 12
+              i32.const 4199554
+              local.set 16
+              local.get 18
+              i32.const 4
+              i32.sub
+              local.set 15
+              local.get 15
+              local.get 16
+              i32.store align=1
+              local.get 15
+              local.set 5
               local.get 0
               local.get 1
               i32.store
               local.get 0
-              local.get 4
-              i32.store offset=12
-              local.get 0
               local.get 5
               i32.store offset=16
               local.get 0
-              local.get 7
-              i32.store offset=24
+              local.get 9
+              i32.store offset=36
+              local.get 0
+              local.get 10
+              i32.store offset=40
+              local.get 0
+              local.get 11
+              i32.store offset=44
               local.get 0
               local.get 12
               i32.store offset=48
               local.get 0
-              return_call $_start@401320
-            end
-            br 1 (;@3;)
-          else
-            i32.const 20
-            local.set 1
-            i32.const 0
-            local.set 8
-            i32.const 517
-            local.set 9
-            i32.const 0
-            local.set 10
-            i32.const 0
-            local.set 11
-            i32.const 4199396
-            local.set 16
-            i32.const 4
-            local.set 17
-            local.get 5
-            local.get 17
-            i32.sub
-            local.set 17
-            local.get 17
-            local.get 16
-            i32.store align=1
-            local.get 17
-            local.set 5
-            local.get 0
-            local.get 1
-            i32.store
-            local.get 0
-            local.get 4
-            i32.store offset=12
-            local.get 0
-            local.get 5
-            i32.store offset=16
-            local.get 0
-            local.get 7
-            i32.store offset=24
-            local.get 0
-            local.get 8
-            i32.store offset=28
-            local.get 0
-            local.get 9
-            i32.store offset=36
-            local.get 0
-            local.get 10
-            i32.store offset=40
-            local.get 0
-            local.get 11
-            i32.store offset=44
-            local.get 0
-            local.get 12
-            i32.store offset=48
-            local.get 0
-            call $_fib@401000
-            local.tee 21
-            i32.const 4199396
-            i32.ne
-            if ;; label = @5
+              call $_fib@401000
+              local.tee 21
+              i32.const 4199554
+              i32.ne
+              if ;; label = @6
+                local.get 21
+                return
+              end
+              local.get 0
+              i32.load
+              local.set 1
+              local.get 0
+              i32.load offset=16
+              local.set 5
+              i32.const 55
+              local.set 15
+              local.get 1
+              local.get 15
+              i32.sub
+              local.set 16
+              i32.const 515
+              local.set 9
+              local.get 16
+              local.set 10
+              local.get 1
+              local.set 11
+              i32.const 55
+              local.set 12
+              local.get 1
+              local.get 15
+              i32.ne
+              i32.const 255
+              i32.and
+              local.set 16
+              local.get 1
+              i32.const -256
+              i32.and
+              local.set 15
+              local.get 15
+              local.get 16
+              i32.or
+              local.set 1
+              local.get 1
+              i32.const 255
+              i32.and
+              local.set 15
+              local.get 15
+              local.set 1
+              local.get 5
+              local.get 15
+              i32.store align=1
+              i32.const 4210744
+              local.set 15
+              local.get 15
+              i32.load align=1
+              local.set 15
+              i32.const 4199572
+              local.set 16
+              local.get 5
+              i32.const 4
+              i32.sub
+              local.set 18
+              local.get 18
+              local.get 16
+              i32.store align=1
+              local.get 18
+              local.set 5
+              local.get 0
+              local.get 1
+              i32.store
+              local.get 0
+              local.get 5
+              i32.store offset=16
+              local.get 0
+              local.get 9
+              i32.store offset=36
+              local.get 0
+              local.get 10
+              i32.store offset=40
+              local.get 0
+              local.get 11
+              i32.store offset=44
+              local.get 0
+              local.get 12
+              i32.store offset=48
+              local.get 15
+              local.set 21
+              local.get 0
               local.get 21
+              i32.store offset=32
+              local.get 0
+              local.get 21
+              i32.const 12
+              i32.shr_u
+              i32.const 2
+              i32.shl
+              global.get 1
+              i32.add
+              i32.load
+              local.get 21
+              i32.const 4095
+              i32.and
+              i32.const 2
+              i32.shl
+              i32.add
+              i32.load
+              call_indirect (type 0)
+              local.tee 21
+              i32.const 4199572
+              i32.ne
+              if ;; label = @6
+                local.get 21
+                return
+              end
+              i32.const 4199584
               return
             end
-            local.get 0
-            i32.load
-            local.set 1
-            local.get 0
-            i32.load offset=12
-            local.set 4
-            local.get 0
-            i32.load offset=16
-            local.set 5
-            local.get 0
-            i32.load offset=20
-            local.set 6
-            local.get 0
-            i32.load offset=28
-            local.set 8
-            i32.const 44
-            local.set 17
-            local.get 5
-            local.get 17
-            i32.add
-            local.set 17
-            local.get 17
-            local.get 6
-            i32.store align=1
-            local.get 1
-            local.set 7
-            br 2 (;@2;)
           end
+          unreachable
         end
-      end
-      loop ;; label = @2
-        local.get 8
-        local.set 2
-        i32.const 1
-        local.set 17
-        local.get 8
-        local.get 17
-        i32.add
-        local.set 17
-        local.get 17
-        local.set 8
-        i64.const 3435973837
-        local.set 19
-        local.get 7
-        i64.extend_i32_u
-        local.set 20
-        local.get 19
-        local.get 20
-        i64.mul
-        local.set 20
-        i64.const 32
-        local.set 19
-        local.get 20
-        local.get 19
-        i64.shr_u
-        local.set 19
-        local.get 19
-        i32.wrap_i64
-        local.set 16
-        i32.const 3
-        local.set 18
-        local.get 16
-        local.get 18
-        i32.shr_u
-        local.set 18
-        local.get 18
-        local.set 3
-        i32.const 2
-        local.set 16
-        local.get 18
-        local.get 16
-        i32.shl
-        local.set 16
-        local.get 18
-        local.get 16
-        i32.add
-        local.set 16
-        local.get 16
-        local.get 16
-        i32.add
-        local.set 16
-        local.get 16
-        local.set 6
-        local.get 7
-        local.get 16
-        i32.sub
-        local.set 16
-        i32.const 48
-        local.set 15
-        local.get 16
-        local.get 15
-        i32.add
-        local.set 15
-        local.get 15
-        local.set 1
-        i32.const 255
-        local.set 16
-        local.get 15
-        local.get 16
-        i32.and
-        local.set 16
-        local.get 5
-        local.get 17
-        i32.add
-        local.set 17
-        local.get 17
-        i32.const 67
-        i32.add
-        local.set 23
-        local.get 23
-        i32.const 12
-        i32.shr_u
-        global.get 3
-        i32.add
-        i32.load8_u
-        if ;; label = @3
-          local.get 17
-          i32.const 67
-          i32.add
-          local.tee 23
-          i32.const 65536
-          i32.sub
-          global.get 2
-          i32.gt_u
-          if ;; label = @4
-            local.get 0
-            local.get 1
-            i32.store
-            local.get 0
-            local.get 2
-            i32.store offset=4
-            local.get 0
-            local.get 3
-            i32.store offset=8
-            local.get 0
-            local.get 6
-            i32.store offset=20
-            local.get 0
-            local.get 7
-            i32.store offset=24
-            local.get 0
-            local.get 8
-            i32.store offset=28
-            local.get 0
-            i32.const 4199435
-            i32.store offset=32
-            local.get 0
-            i32.const -1073741819
-            i32.const 4199435
-            local.get 23
-            call 0
-            unreachable
-          end
-          local.get 17
-          i32.const 67
-          i32.add
-          i32.const 12
-          i32.shr_u
-          local.tee 23
-          global.get 3
-          i32.add
-          i32.load8_u
-          local.tee 22
-          i32.const 1
-          i32.and
-          if ;; label = @4
-            local.get 23
-            i32.const 2
-            i32.shl
-            global.get 1
-            i32.add
-            global.get 4
-            i32.store
-            local.get 23
-            global.get 3
-            i32.add
-            local.get 22
-            i32.const -2
-            i32.and
-            i32.store8
-          end
-        end
-        local.get 17
-        local.get 16
-        i32.store8 offset=67
-        local.get 7
-        local.set 1
-        local.get 18
-        local.set 7
-        i32.const 9
-        local.set 18
-        local.get 1
-        local.get 18
-        i32.gt_u
-        local.set 18
-        local.get 18
-        if ;; label = @3
-          i32.const 1
-          local.set 18
-          local.get 13
-          local.get 18
-          i32.sub
-          local.set 18
-          local.get 18
-          local.set 13
-          local.get 18
-          i32.eqz
-          local.set 18
-          local.get 18
-          if ;; label = @4
-            i32.const 2
-            local.set 18
-            local.get 0
-            local.get 18
-            i32.store offset=364 align=1
-            local.get 0
-            local.get 1
-            i32.store
-            local.get 0
-            local.get 2
-            i32.store offset=4
-            local.get 0
-            local.get 3
-            i32.store offset=8
-            local.get 0
-            local.get 6
-            i32.store offset=20
-            local.get 0
-            local.get 7
-            i32.store offset=24
-            local.get 0
-            local.get 8
-            i32.store offset=28
-            local.get 0
-            return_call $_start@401320
-          end
-          br 1 (;@2;)
-        else
-          i32.const 44
-          local.set 18
-          local.get 5
-          local.get 18
-          i32.add
-          local.set 18
-          local.get 18
-          i32.load align=1
-          local.set 18
-          local.get 18
-          local.set 6
-          i32.const 44
-          local.set 18
-          local.get 5
-          local.get 18
-          i32.add
-          local.set 18
-          local.get 18
-          local.get 4
-          i32.store align=1
-          i32.const 68
-          local.set 18
-          local.get 5
-          local.get 18
-          i32.add
-          local.set 18
-          i32.const 112
-          local.set 17
-          local.get 5
-          local.get 17
-          i32.add
-          local.set 17
-          local.get 2
-          local.get 18
-          i32.add
-          local.set 18
-          local.get 18
-          local.set 2
-          local.get 17
-          local.get 4
-          i32.add
-          local.set 18
-          local.get 18
-          local.set 1
-          local.get 17
-          local.set 7
-          br 2 (;@1;)
-        end
-      end
-    end
-    loop ;; label = @1
-      local.get 2
-      local.tee 23
-      i32.const 65536
-      i32.sub
-      global.get 2
-      i32.gt_u
-      if ;; label = @2
         local.get 0
         local.get 1
         i32.store
         local.get 0
-        local.get 2
-        i32.store offset=4
-        local.get 0
-        local.get 3
-        i32.store offset=8
-        local.get 0
         local.get 4
         i32.store offset=12
         local.get 0
-        local.get 6
-        i32.store offset=20
+        local.get 5
+        i32.store offset=16
         local.get 0
         local.get 7
         i32.store offset=24
         local.get 0
-        local.get 8
-        i32.store offset=28
-        local.get 0
-        i32.const 4199472
+        local.get 22
         i32.store offset=32
         local.get 0
         i32.const -1073741819
-        i32.const 4199472
-        local.get 23
+        local.get 22
+        local.get 24
         call 0
         unreachable
       end
-      local.get 2
-      i32.load8_u
-      local.set 17
-      local.get 17
-      local.set 3
-      i32.const 68
-      local.set 18
-      local.get 5
-      local.get 18
-      i32.add
-      local.set 18
-      local.get 18
-      local.set 4
-      i32.const 1
-      local.set 16
+      local.get 0
       local.get 1
-      local.get 16
-      i32.add
-      local.set 16
-      local.get 16
-      local.set 1
-      i32.const 255
-      local.set 15
-      local.get 17
-      local.get 15
-      i32.and
-      local.set 15
-      i32.const -1
-      local.set 17
-      local.get 16
-      local.get 17
-      i32.add
-      local.set 17
-      local.get 17
-      local.set 23
-      local.get 23
-      i32.const 12
-      i32.shr_u
-      global.get 3
-      i32.add
-      i32.load8_u
-      if ;; label = @2
-        local.get 17
-        local.tee 23
-        i32.const 65536
-        i32.sub
-        global.get 2
-        i32.gt_u
-        if ;; label = @3
-          local.get 0
-          local.get 1
-          i32.store
-          local.get 0
-          local.get 2
-          i32.store offset=4
-          local.get 0
-          local.get 3
-          i32.store offset=8
-          local.get 0
-          local.get 4
-          i32.store offset=12
-          local.get 0
-          local.get 6
-          i32.store offset=20
-          local.get 0
-          local.get 7
-          i32.store offset=24
-          local.get 0
-          local.get 8
-          i32.store offset=28
-          local.get 0
-          i32.const 4199482
-          i32.store offset=32
-          local.get 0
-          i32.const -1073741819
-          i32.const 4199482
-          local.get 23
-          call 0
-          unreachable
-        end
-        local.get 17
-        i32.const 12
-        i32.shr_u
-        local.tee 23
-        global.get 3
-        i32.add
-        i32.load8_u
-        local.tee 22
-        i32.const 1
-        i32.and
-        if ;; label = @3
-          local.get 23
-          i32.const 2
-          i32.shl
-          global.get 1
-          i32.add
-          global.get 4
-          i32.store
-          local.get 23
-          global.get 3
-          i32.add
-          local.get 22
-          i32.const -2
-          i32.and
-          i32.store8
-        end
-      end
-      local.get 17
-      local.get 15
-      i32.store8
+      i32.store
+      local.get 0
       local.get 2
-      local.set 3
-      i32.const 1
-      local.set 17
-      local.get 2
-      local.get 17
-      i32.sub
-      local.set 17
-      local.get 17
-      local.set 2
+      i32.store offset=4
+      local.get 0
       local.get 3
-      local.get 18
-      i32.ne
-      local.set 18
-      local.get 18
-      if ;; label = @2
-        i32.const 1
-        local.set 18
-        local.get 13
-        local.get 18
-        i32.sub
-        local.set 18
-        local.get 18
-        local.set 13
-        local.get 18
-        i32.eqz
-        local.set 18
-        local.get 18
-        if ;; label = @3
-          i32.const 3
-          local.set 18
-          local.get 0
-          local.get 18
-          i32.store offset=364 align=1
-          local.get 0
-          local.get 1
-          i32.store
-          local.get 0
-          local.get 2
-          i32.store offset=4
-          local.get 0
-          local.get 3
-          i32.store offset=8
-          local.get 0
-          local.get 4
-          i32.store offset=12
-          local.get 0
-          local.get 6
-          i32.store offset=20
-          local.get 0
-          local.get 7
-          i32.store offset=24
-          local.get 0
-          local.get 8
-          i32.store offset=28
-          local.get 0
-          return_call $_start@401320
-        end
-        br 1 (;@1;)
-      else
-        i32.const 44
-        local.set 18
-        local.get 5
-        local.get 18
-        i32.add
-        local.set 18
-        local.get 18
-        i32.load align=1
-        local.set 18
-        i32.const 52
-        local.set 17
-        local.get 5
-        local.get 17
-        i32.add
-        local.set 17
-        local.get 17
-        local.set 1
-        local.get 18
-        local.get 8
-        i32.add
-        local.set 18
-        local.get 18
-        local.set 4
-        i32.const 10
-        local.set 15
-        local.get 5
-        local.get 18
-        i32.add
-        local.set 16
-        local.get 16
-        i32.const 112
-        i32.add
-        local.set 23
-        local.get 23
-        i32.const 12
-        i32.shr_u
-        global.get 3
-        i32.add
-        i32.load8_u
-        if ;; label = @3
-          local.get 16
-          i32.const 112
-          i32.add
-          local.tee 23
-          i32.const 65536
-          i32.sub
-          global.get 2
-          i32.gt_u
-          if ;; label = @4
-            local.get 0
-            local.get 1
-            i32.store
-            local.get 0
-            local.get 2
-            i32.store offset=4
-            local.get 0
-            local.get 3
-            i32.store offset=8
-            local.get 0
-            local.get 4
-            i32.store offset=12
-            local.get 0
-            local.get 6
-            i32.store offset=20
-            local.get 0
-            local.get 7
-            i32.store offset=24
-            local.get 0
-            local.get 8
-            i32.store offset=28
-            local.get 0
-            i32.const 4199504
-            i32.store offset=32
-            local.get 0
-            i32.const -1073741819
-            i32.const 4199504
-            local.get 23
-            call 0
-            unreachable
-          end
-          local.get 16
-          i32.const 112
-          i32.add
-          i32.const 12
-          i32.shr_u
-          local.tee 23
-          global.get 3
-          i32.add
-          i32.load8_u
-          local.tee 22
-          i32.const 1
-          i32.and
-          if ;; label = @4
-            local.get 23
-            i32.const 2
-            i32.shl
-            global.get 1
-            i32.add
-            global.get 4
-            i32.store
-            local.get 23
-            global.get 3
-            i32.add
-            local.get 22
-            i32.const -2
-            i32.and
-            i32.store8
-          end
-        end
-        local.get 16
-        local.get 15
-        i32.store8 offset=112
-        i32.const 1
-        local.set 16
-        local.get 18
-        local.get 16
-        i32.add
-        local.set 16
-        local.get 16
-        local.set 4
-        i32.const 513
-        local.set 9
-        local.get 16
-        local.set 10
-        local.get 18
-        local.set 11
-        i32.const 1
-        local.set 12
-        i32.const 12
-        local.set 18
-        local.get 5
-        local.get 18
-        i32.add
-        local.set 18
-        local.get 18
-        local.get 17
-        i32.store align=1
-        i32.const 40
-        local.set 18
-        local.get 5
-        local.get 18
-        i32.add
-        local.set 18
-        local.get 18
-        i32.load align=1
-        local.set 18
-        local.get 18
-        local.set 1
-        i32.const 0
-        local.set 17
-        i32.const 16
-        local.set 15
-        local.get 5
-        local.get 15
-        i32.add
-        local.set 15
-        local.get 15
-        local.get 17
-        i32.store align=1
-        i32.const 8
-        local.set 15
-        local.get 5
-        local.get 15
-        i32.add
-        local.set 15
-        local.get 15
-        local.get 16
-        i32.store align=1
-        i32.const 4
-        local.set 15
-        local.get 5
-        local.get 15
-        i32.add
-        local.set 15
-        local.get 15
-        local.get 7
-        i32.store align=1
-        local.get 5
-        local.get 6
-        i32.store align=1
-        i32.const 4199541
-        local.set 15
-        i32.const 4
-        local.set 16
-        local.get 5
-        local.get 16
-        i32.sub
-        local.set 16
-        local.get 16
-        local.get 15
-        i32.store align=1
-        local.get 16
-        local.set 5
-        local.get 0
-        local.get 1
-        i32.store
-        local.get 0
-        local.get 2
-        i32.store offset=4
-        local.get 0
-        local.get 3
-        i32.store offset=8
-        local.get 0
-        local.get 4
-        i32.store offset=12
-        local.get 0
-        local.get 5
-        i32.store offset=16
-        local.get 0
-        local.get 6
-        i32.store offset=20
-        local.get 0
-        local.get 7
-        i32.store offset=24
-        local.get 0
-        local.get 8
-        i32.store offset=28
-        local.get 0
-        local.get 9
-        i32.store offset=36
-        local.get 0
-        local.get 10
-        i32.store offset=40
-        local.get 0
-        local.get 11
-        i32.store offset=44
-        local.get 0
-        local.get 12
-        i32.store offset=48
-        local.get 18
-        local.set 21
-        local.get 0
-        local.get 21
-        i32.store offset=32
-        local.get 0
-        local.get 21
-        i32.const 12
-        i32.shr_u
-        i32.const 2
-        i32.shl
-        global.get 1
-        i32.add
-        i32.load
-        local.get 21
-        i32.const 4095
-        i32.and
-        i32.const 2
-        i32.shl
-        i32.add
-        i32.load
-        call_indirect (type 0)
-        local.tee 21
-        i32.const 4199541
-        i32.ne
-        if ;; label = @3
-          local.get 21
-          return
-        end
-        local.get 0
-        i32.load offset=16
-        local.set 5
-        i32.const 10
-        local.set 1
-        i32.const 20
-        local.set 18
-        local.get 5
-        local.get 18
-        i32.sub
-        local.set 18
-        i32.const 515
-        local.set 9
-        local.get 18
-        local.set 10
-        local.get 5
-        local.set 11
-        i32.const 20
-        local.set 12
-        i32.const 4199554
-        local.set 16
-        i32.const 4
-        local.set 15
-        local.get 18
-        local.get 15
-        i32.sub
-        local.set 15
-        local.get 15
-        local.get 16
-        i32.store align=1
-        local.get 15
-        local.set 5
-        local.get 0
-        local.get 1
-        i32.store
-        local.get 0
-        local.get 5
-        i32.store offset=16
-        local.get 0
-        local.get 9
-        i32.store offset=36
-        local.get 0
-        local.get 10
-        i32.store offset=40
-        local.get 0
-        local.get 11
-        i32.store offset=44
-        local.get 0
-        local.get 12
-        i32.store offset=48
-        local.get 0
-        call $_fib@401000
-        local.tee 21
-        i32.const 4199554
-        i32.ne
-        if ;; label = @3
-          local.get 21
-          return
-        end
-        local.get 0
-        i32.load
-        local.set 1
-        local.get 0
-        i32.load offset=16
-        local.set 5
-        i32.const 55
-        local.set 15
-        local.get 1
-        local.get 15
-        i32.sub
-        local.set 16
-        i32.const 515
-        local.set 9
-        local.get 16
-        local.set 10
-        local.get 1
-        local.set 11
-        i32.const 55
-        local.set 12
-        local.get 1
-        local.get 15
-        i32.ne
-        local.set 15
-        i32.const 255
-        local.set 16
-        local.get 15
-        local.get 16
-        i32.and
-        local.set 16
-        i32.const -256
-        local.set 15
-        local.get 1
-        local.get 15
-        i32.and
-        local.set 15
-        local.get 15
-        local.get 16
-        i32.or
-        local.set 1
-        i32.const 255
-        local.set 15
-        local.get 1
-        local.get 15
-        i32.and
-        local.set 15
-        local.get 15
-        local.set 1
-        local.get 5
-        local.get 15
-        i32.store align=1
-        i32.const 4210744
-        local.set 15
-        local.get 15
-        i32.load align=1
-        local.set 15
-        i32.const 4199572
-        local.set 16
-        i32.const 4
-        local.set 18
-        local.get 5
-        local.get 18
-        i32.sub
-        local.set 18
-        local.get 18
-        local.get 16
-        i32.store align=1
-        local.get 18
-        local.set 5
-        local.get 0
-        local.get 1
-        i32.store
-        local.get 0
-        local.get 5
-        i32.store offset=16
-        local.get 0
-        local.get 9
-        i32.store offset=36
-        local.get 0
-        local.get 10
-        i32.store offset=40
-        local.get 0
-        local.get 11
-        i32.store offset=44
-        local.get 0
-        local.get 12
-        i32.store offset=48
-        local.get 15
-        local.set 21
-        local.get 0
-        local.get 21
-        i32.store offset=32
-        local.get 0
-        local.get 21
-        i32.const 12
-        i32.shr_u
-        i32.const 2
-        i32.shl
-        global.get 1
-        i32.add
-        i32.load
-        local.get 21
-        i32.const 4095
-        i32.and
-        i32.const 2
-        i32.shl
-        i32.add
-        i32.load
-        call_indirect (type 0)
-        local.tee 21
-        i32.const 4199572
-        i32.ne
-        if ;; label = @3
-          local.get 21
-          return
-        end
-        i32.const 4199584
-        return
-      end
+      i32.store offset=8
+      local.get 0
+      local.get 6
+      i32.store offset=20
+      local.get 0
+      local.get 7
+      i32.store offset=24
+      local.get 0
+      local.get 8
+      i32.store offset=28
+      local.get 0
+      local.get 22
+      i32.store offset=32
+      local.get 0
+      i32.const -1073741819
+      local.get 22
+      local.get 24
+      call 0
+      unreachable
     end
+    local.get 0
+    local.get 1
+    i32.store
+    local.get 0
+    local.get 2
+    i32.store offset=4
+    local.get 0
+    local.get 3
+    i32.store offset=8
+    local.get 0
+    local.get 4
+    i32.store offset=12
+    local.get 0
+    local.get 6
+    i32.store offset=20
+    local.get 0
+    local.get 7
+    i32.store offset=24
+    local.get 0
+    local.get 8
+    i32.store offset=28
+    local.get 0
+    local.get 22
+    i32.store offset=32
+    local.get 0
+    i32.const -1073741819
+    local.get 22
+    local.get 24
+    call 0
     unreachable
   )
   (@custom "wwt.funcs" (after code) "\02\00\00\00\00\10@\00 \13@\00")
