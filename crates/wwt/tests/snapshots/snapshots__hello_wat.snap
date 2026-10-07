@@ -8,11 +8,14 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
   (type (;1;) (func (param i32 i32 i32 i32)))
   (type (;2;) (func (param i32 i32)))
   (type (;3;) (func (param i32 f64 f64) (result f64)))
-  (type (;4;) (func (param i32 i32 i32 i32 i32) (result i32)))
-  (type (;5;) (func (param i32 i32 i32 i32 i32 i32) (result i32)))
+  (type (;4;) (func (param f64) (result f64)))
+  (type (;5;) (func (param i32 i32 i32 i32 i32) (result i32)))
+  (type (;6;) (func (param i32 i32 i32 i32 i32 i32) (result i32)))
   (import "env" "fault" (func (;0;) (type 1) (param i32 i32 i32 i32)))
   (import "env" "code_write" (func (;1;) (type 2) (param i32 i32)))
   (import "env" "math" (func (;2;) (type 3) (param i32 f64 f64) (result f64)))
+  (import "env" "sin" (func (;3;) (type 4) (param f64) (result f64)))
+  (import "env" "cos" (func (;4;) (type 4) (param f64) (result f64)))
   (import "env" "memory" (memory (;0;) 1 65536 shared))
   (import "env" "table" (table (;0;) 1 funcref))
   (import "env" "table_base" (global (;0;) i32))
@@ -20,7 +23,7 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
   (import "env" "guest_limit" (global (;2;) i32))
   (import "env" "code_bitmap" (global (;3;) i32))
   (elem (;0;) (table 0) (global.get 0) func $fib $start)
-  (func (;3;) (type 4) (param i32 i32 i32 i32 i32) (result i32)
+  (func (;5;) (type 5) (param i32 i32 i32 i32 i32) (result i32)
     block ;; label = @1
       block ;; label = @2
         block ;; label = @3
@@ -1682,14 +1685,14 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
     i32.const 2261
     i32.and
   )
-  (func (;4;) (type 5) (param i32 i32 i32 i32 i32 i32) (result i32)
+  (func (;6;) (type 6) (param i32 i32 i32 i32 i32 i32) (result i32)
     (local i32)
     local.get 1
     local.get 2
     local.get 3
     local.get 4
     local.get 5
-    call 3
+    call 5
     local.set 6
     block ;; label = @1
       block ;; label = @2
@@ -1875,7 +1878,7 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
     end
     i32.const 0
   )
-  (func $fib (;5;) (type 0) (param i32) (result i32)
+  (func $fib (;7;) (type 0) (param i32) (result i32)
     (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i64 i32)
     local.get 0
     i32.load
@@ -3646,7 +3649,7 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
     return
     unreachable
   )
-  (func $start (;6;) (type 0) (param i32) (result i32)
+  (func $start (;8;) (type 0) (param i32) (result i32)
     (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i64 i64 i32 i32 i64 i32)
     local.get 0
     i32.load offset=12
@@ -4990,5 +4993,5 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
     unreachable
   )
   (@custom "wwt.funcs" (after code) "\02\00\00\00\00\10@\00 \13@\00")
-  (@custom "wwt.meta" (after code) "{\22abi_version\22:2,\22image\22:{\22image_base\22:4194304,\22size_of_image\22:24576,\22size_of_headers\22:1024,\22entry\22:4199200,\22is_dll\22:false,\22subsystem\22:3,\22stack_reserve\22:2097152,\22stack_commit\22:4096,\22heap_reserve\22:1048576,\22sections\22:[{\22name\22:\22.text\22,\22virtual_address\22:4096,\22virtual_size\22:1200,\22raw_offset\22:1024,\22raw_size\22:1536,\22characteristics\22:1610612768},{\22name\22:\22.rdata\22,\22virtual_address\22:8192,\22virtual_size\22:20,\22raw_offset\22:2560,\22raw_size\22:512,\22characteristics\22:1073741888},{\22name\22:\22.eh_fram\22,\22virtual_address\22:12288,\22virtual_size\22:184,\22raw_offset\22:3072,\22raw_size\22:512,\22characteristics\22:1073741888},{\22name\22:\22.idata\22,\22virtual_address\22:16384,\22virtual_size\22:144,\22raw_offset\22:3584,\22raw_size\22:512,\22characteristics\22:3221225536},{\22name\22:\22.reloc\22,\22virtual_address\22:20480,\22virtual_size\22:16,\22raw_offset\22:4096,\22raw_size\22:512,\22characteristics\22:1107296320}],\22imports\22:[{\22dll\22:\22KERNEL32.dll\22,\22name\22:{\22Name\22:{\22hint\22:353,\22name\22:\22ExitProcess\22}},\22iat_rva\22:16440},{\22dll\22:\22KERNEL32.dll\22,\22name\22:{\22Name\22:{\22hint\22:730,\22name\22:\22GetStdHandle\22}},\22iat_rva\22:16444},{\22dll\22:\22KERNEL32.dll\22,\22name\22:{\22Name\22:{\22hint\22:1538,\22name\22:\22WriteFile\22}},\22iat_rva\22:16448}],\22exports\22:[],\22tls\22:null,\22has_relocations\22:true},\22report\22:{\22functions\22:2,\22blocks\22:58,\22x86_instructions\22:363,\22wasm_bytes\22:0,\22seeds\22:{\22Call\22:1,\22Entry\22:1},\22unsupported\22:[],\22jump_tables\22:0}}")
+  (@custom "wwt.meta" (after code) "{\22abi_version\22:3,\22image\22:{\22image_base\22:4194304,\22size_of_image\22:24576,\22size_of_headers\22:1024,\22entry\22:4199200,\22is_dll\22:false,\22subsystem\22:3,\22stack_reserve\22:2097152,\22stack_commit\22:4096,\22heap_reserve\22:1048576,\22sections\22:[{\22name\22:\22.text\22,\22virtual_address\22:4096,\22virtual_size\22:1200,\22raw_offset\22:1024,\22raw_size\22:1536,\22characteristics\22:1610612768},{\22name\22:\22.rdata\22,\22virtual_address\22:8192,\22virtual_size\22:20,\22raw_offset\22:2560,\22raw_size\22:512,\22characteristics\22:1073741888},{\22name\22:\22.eh_fram\22,\22virtual_address\22:12288,\22virtual_size\22:184,\22raw_offset\22:3072,\22raw_size\22:512,\22characteristics\22:1073741888},{\22name\22:\22.idata\22,\22virtual_address\22:16384,\22virtual_size\22:144,\22raw_offset\22:3584,\22raw_size\22:512,\22characteristics\22:3221225536},{\22name\22:\22.reloc\22,\22virtual_address\22:20480,\22virtual_size\22:16,\22raw_offset\22:4096,\22raw_size\22:512,\22characteristics\22:1107296320}],\22imports\22:[{\22dll\22:\22KERNEL32.dll\22,\22name\22:{\22Name\22:{\22hint\22:353,\22name\22:\22ExitProcess\22}},\22iat_rva\22:16440},{\22dll\22:\22KERNEL32.dll\22,\22name\22:{\22Name\22:{\22hint\22:730,\22name\22:\22GetStdHandle\22}},\22iat_rva\22:16444},{\22dll\22:\22KERNEL32.dll\22,\22name\22:{\22Name\22:{\22hint\22:1538,\22name\22:\22WriteFile\22}},\22iat_rva\22:16448}],\22exports\22:[],\22tls\22:null,\22has_relocations\22:true},\22report\22:{\22functions\22:2,\22blocks\22:58,\22x86_instructions\22:363,\22wasm_bytes\22:0,\22seeds\22:{\22Call\22:1,\22Entry\22:1},\22unsupported\22:[],\22jump_tables\22:0}}")
 )

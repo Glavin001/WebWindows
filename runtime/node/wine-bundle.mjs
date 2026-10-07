@@ -35,6 +35,10 @@ const GUI_DLLS = [
 // Direct3D (wined3d with its WebGPU backend): loaded only by programs that
 // mention Direct3D, since wined3d is large.
 const D3D_DLLS = ['wined3d', 'd3d9'];
+// Translator flags per DLL. The Direct3D DLLs never write code, so their
+// stores skip the self-modifying-code check (the C runtime's memcpy, which
+// could copy code for a program, keeps it); the same list is in wine.mjs.
+const TRANSLATE_FLAGS = { wined3d: ['--no-smc-checks'], d3d9: ['--no-smc-checks'] };
 const DEFAULT_BASE = 0x10000000;
 const PRELINK_BASE = 0x60000000;
 const PROGRAMS = ['winemine', 'notepad'];
@@ -87,7 +91,7 @@ for (const d of [...DLLS, ...(withUnix ? GUI_DLLS : []), ...d3d]) {
     }
   }
   writeFileSync(join(out, `${d}.dll`), bytes);
-  execFileSync(wwt, ['translate', join(out, `${d}.dll`), '-o', join(out, `${d}.dll.wasm`)], { stdio: ['ignore', 'ignore', 'inherit'] });
+  execFileSync(wwt, ['translate', ...(TRANSLATE_FLAGS[d] ?? []), join(out, `${d}.dll`), '-o', join(out, `${d}.dll.wasm`)], { stdio: ['ignore', 'ignore', 'inherit'] });
   manifest.dlls[`${d}.dll`] = { pe: `${d}.dll`, wasm: `${d}.dll.wasm`, ...(d3d.includes(d) && { group: 'd3d' }) };
 }
 for (const n of NLS) {

@@ -445,6 +445,7 @@ GPU):
 | Readback and GDI, all state sent each draw | 27 ms | 20 µs | 25 fps |
 | GPU present, only changes sent | 0.1 ms | 8 µs | 55-60 fps |
 | ... bindings by dirty state, wined3d without command-stream thread costs | 0.1 ms | 6.5 µs | 75 fps |
+| ... x87 sin/cos as direct imports, Direct3D DLLs without store checks | 0.1 ms | 5.5 µs | 88 fps |
 
 On a desktop browser with a real GPU, 400 cubes and 2000 particles run at
 about 175 fps. The render worker is a third busy at 2000 draws
@@ -454,7 +455,13 @@ What it spends on a draw is mostly wined3d's own state handling
 then the backend, then the benchmark's own matrix math. wined3d is
 patched for a command stream without a thread: constant updates pass the
 caller's data through instead of copying it to the heap and back, and
-draws skip the resource access times only a command-stream thread reads.
+draws skip the resource access times only a command-stream thread reads. Two translator
+changes help all programs or these DLLs: x87 `fsin` and `fcos` call
+`Math.sin` and `Math.cos` as wasm imports, which engines call directly
+(the other math helpers go through one JavaScript function), and wined3d
+and d3d9 are translated without self-modifying-code checks on their
+stores (`TRANSLATE_FLAGS` in `runtime/node/wine-bundle.mjs`): they never
+write code, and the C runtime's `memcpy` keeps its checks.
 
 Profiling: unstripped DLLs (what `runtime/node/wine.mjs` loads) are
 translated with their COFF symbols as wasm function names, so `node

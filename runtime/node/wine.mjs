@@ -50,14 +50,16 @@ function translate(path, bytes) {
   // Keyed by the image and the translator build, so a rebuilt translator
   // never serves stale translations.
   const t = statSync(wwt());
-  const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}`).digest('hex').slice(0, 16);
+  // Per-DLL translator flags, as in wine-bundle.mjs (TRANSLATE_FLAGS).
+  const flags = { 'wined3d.dll': ['--no-smc-checks'], 'd3d9.dll': ['--no-smc-checks'] }[path.split('\\').pop().toLowerCase()] ?? [];
+  const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}:${flags}`).digest('hex').slice(0, 16);
   const out = join(cacheDir, `${path.split('\\').pop()}-${hash}.wasm`);
   if (!existsSync(out)) {
     // Several runners share the cache: write under a per-process name and
     // rename, so a reader never sees a partial file.
     const tmp = join(cacheDir, `${hash}.${process.pid}`);
     writeFileSync(`${tmp}.bin`, bytes);
-    execFileSync(wwt(), ['translate', `${tmp}.bin`, '-o', `${tmp}.wasm`], { stdio: ['ignore', 'ignore', 'inherit'] });
+    execFileSync(wwt(), ['translate', ...flags, `${tmp}.bin`, '-o', `${tmp}.wasm`], { stdio: ['ignore', 'ignore', 'inherit'] });
     renameSync(`${tmp}.wasm`, out);
     rmSync(`${tmp}.bin`);
   }

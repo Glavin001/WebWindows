@@ -41,13 +41,18 @@ const T_FN: u32 = 0;
 const T_FAULT: u32 = 1;
 const T_CODE_WRITE: u32 = 2;
 const T_MATH: u32 = 3;
-const T_FIRST_HELPER: u32 = 4;
+const T_F64_F64: u32 = 4;
+const T_FIRST_HELPER: u32 = 5;
 
 // Imported function indices.
 const F_FAULT: u32 = 0;
 const F_CODE_WRITE: u32 = 1;
 const F_MATH: u32 = 2;
-const NUM_FUNC_IMPORTS: u32 = 3;
+/// Math.sin and Math.cos themselves, which engines call without going
+/// through JavaScript (the other operations go through `math`).
+const F_SIN: u32 = 3;
+const F_COS: u32 = 4;
+const NUM_FUNC_IMPORTS: u32 = 5;
 
 // Imported global indices.
 const G_TABLE_BASE: u32 = 0;
@@ -155,6 +160,7 @@ impl<'a> ModuleGen<'a> {
         types
             .ty()
             .function([ValType::I32, ValType::F64, ValType::F64], [ValType::F64]);
+        types.ty().function([ValType::F64], [ValType::F64]);
         let mut helper_type_idx = vec![];
         for h in &self.helpers {
             let (params, ret) = h.signature();
@@ -186,6 +192,8 @@ impl<'a> ModuleGen<'a> {
             EntityType::Function(T_CODE_WRITE),
         );
         imp.import(imports::MODULE, imports::MATH, EntityType::Function(T_MATH));
+        imp.import(imports::MODULE, imports::SIN, EntityType::Function(T_F64_F64));
+        imp.import(imports::MODULE, imports::COS, EntityType::Function(T_F64_F64));
         imp.import(
             imports::MODULE,
             imports::MEMORY,
@@ -1219,6 +1227,14 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 }
                 let fi = self.m.helper_func_index(*h);
                 self.emit(W::Call(fi));
+            }
+            Op::Math { op: MathOp::Sin, a, .. } => {
+                self.get(*a);
+                self.emit(W::Call(F_SIN));
+            }
+            Op::Math { op: MathOp::Cos, a, .. } => {
+                self.get(*a);
+                self.emit(W::Call(F_COS));
             }
             Op::Math { op, a, b } => {
                 self.emit(W::I32Const(*op as i32));
