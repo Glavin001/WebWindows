@@ -167,6 +167,7 @@ impl Ring {
 #[derive(Default, Clone, Copy)]
 pub struct FxHasher(u64);
 
+#[allow(clippy::chunks_exact_to_as_chunks)] // the remainder is needed
 impl Hasher for FxHasher {
     fn write(&mut self, bytes: &[u8]) {
         let mut chunks = bytes.chunks_exact(8);
