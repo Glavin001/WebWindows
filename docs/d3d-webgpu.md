@@ -444,11 +444,17 @@ GPU):
 | --- | --- | --- | --- |
 | Readback and GDI, all state sent each draw | 27 ms | 20 µs | 25 fps |
 | GPU present, only changes sent | 0.1 ms | 8 µs | 55-60 fps |
+| ... bindings by dirty state, wined3d without command-stream thread costs | 0.1 ms | 6.5 µs | 75 fps |
 
 On a desktop browser with a real GPU, 400 cubes and 2000 particles run at
-about 175 fps. What a draw costs now is about half wined3d's own state
-handling (`wined3d_device_apply_stateblock`, constant uploads through the
-command stream) and a third the backend.
+about 175 fps. The render worker is a third busy at 2000 draws
+(`?d3dstats=1` logs how busy it is); the program's thread is the limit.
+What it spends on a draw is mostly wined3d's own state handling
+(`wined3d_device_apply_stateblock`, constant uploads, critical sections),
+then the backend, then the benchmark's own matrix math. wined3d is
+patched for a command stream without a thread: constant updates pass the
+caller's data through instead of copying it to the heap and back, and
+draws skip the resource access times only a command-stream thread reads.
 
 Profiling: unstripped DLLs (what `runtime/node/wine.mjs` loads) are
 translated with their COFF symbols as wasm function names, so `node

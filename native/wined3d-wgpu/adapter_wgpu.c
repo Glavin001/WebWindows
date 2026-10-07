@@ -121,6 +121,17 @@ struct wined3d_device_wgpu
     bool consts_valid;
 
     struct wgpu_vertex_decl *decls;
+    /* The declaration the last draw used and its core object. */
+    const struct wined3d_vertex_declaration *last_decl;
+    uint32_t last_decl_id;
+    /* Slots with something bound, as of the last time wined3d changed them:
+     * textures (pixel 0-15, vertex 16-19), vertex streams, and targets
+     * (render targets 0-3, depth/stencil 4). */
+    uint32_t bound_textures, bound_streams, bound_targets;
+    /* The dirty-state bits a draw applies (wined3d_context.dirty_graphics_states
+     * words and masks of their representatives). */
+    unsigned int applied_words[13];
+    uint32_t applied_bits[13];
     SIZE_T decl_count, decls_size;
 
     /* The rest of the core's state as last sent; setters send only changes.
@@ -148,9 +159,11 @@ struct wined3d_device_wgpu
         uint32_t sampler_known;
         struct wined3d_viewport viewport_from;
         bool viewport_from_known;
-        /* Render states from wined3d's state objects were sent; after that,
-         * only the parts wined3d marks dirty are sent again. */
-        bool states_known;
+        struct wined3d_color blend_factor_from;
+        /* Render states from wined3d's state objects, and the bindings, were
+         * sent; after that, only the parts wined3d marks dirty are sent
+         * again. */
+        bool states_known, bindings_known;
     } sent;
 
     /* The window as last told to the host (WGPU_HOST_PRESENT), and the
@@ -183,9 +196,14 @@ static void wgpu_flush(struct wined3d_device_wgpu *device)
 }
 
 /* Room for a command of `size` bytes (rounded up to 4); fills its header. */
-static void *wgpu_cmd(struct wined3d_device_wgpu *device, uint32_t op, size_t size)
+/* Appends a command of `size` bytes, its first `zero` bytes zeroed (the
+ * rest is the caller's to fill). */
+/* GCC would turn the zeroing loop back into a memset call. */
+__attribute__((optimize("no-tree-loop-distribute-patterns")))
+static void *wgpu_cmd_alloc(struct wined3d_device_wgpu *device, uint32_t op, size_t size, size_t zero)
 {
     struct d3dgpu_cmd_header *h;
+    uint32_t *w;
 
     size = (size + 3) & ~(size_t)3;
     if (device->cmd_size + size > wgpu_host.max_batch)
@@ -204,11 +222,18 @@ static void *wgpu_cmd(struct wined3d_device_wgpu *device, uint32_t op, size_t si
         device->cmd_capacity = capacity;
     }
     h = (struct d3dgpu_cmd_header *)(device->cmds + device->cmd_size);
-    memset(h, 0, size);
+    /* Commands are a few words: no memset call. */
+    for (w = (uint32_t *)h, zero = min((zero + 3) / 4, size / 4); zero; --zero)
+        *w++ = 0;
     h->op = op;
     h->size = size;
     device->cmd_size += size;
     return h;
+}
+
+static void *wgpu_cmd(struct wined3d_device_wgpu *device, uint32_t op, size_t size)
+{
+    return wgpu_cmd_alloc(device, op, size, size);
 }
 
 /* A command whose fixed part is `fixed` bytes, followed by inline data. */
@@ -217,7 +242,7 @@ static void *wgpu_cmd_data(struct wined3d_device_wgpu *device, uint32_t op, size
 {
     BYTE *cmd;
 
-    if (!(cmd = wgpu_cmd(device, op, fixed + 8 + len)))
+    if (!(cmd = wgpu_cmd_alloc(device, op, fixed + 8 + len, data ? fixed : fixed + 8 + len)))
         return NULL;
     *(uint32_t *)(cmd + fixed) = D3DGPU_DATA_INLINE;
     *(uint32_t *)(cmd + fixed + 4) = len;
@@ -273,6 +298,14 @@ static void wgpu_set_viewport(struct wined3d_device_wgpu *device, uint32_t x, ui
     cmd->max_z = max_z;
     memcpy(device->sent.viewport, v, sizeof(v));
     device->sent.viewport_known = true;
+}
+
+/* Clears bind their own targets and viewport: the next draw binds the
+ * draw's again. */
+static void wgpu_invalidate_targets(struct wined3d_device_wgpu *device)
+{
+    context_invalidate_state(&device->context, STATE_FRAMEBUFFER);
+    context_invalidate_state(&device->context, STATE_VIEWPORT);
 }
 
 /* Direct3D 9 clears only inside the viewport: cover the whole target. */
@@ -332,12 +365,12 @@ static void wgpu_set_target(struct wined3d_device_wgpu *device, unsigned int ind
     device->sent.target_known |= 1u << index;
 }
 
-static void wgpu_set_texture(struct wined3d_device_wgpu *device, unsigned int sampler, uint32_t texture)
+/* The setters below send a value when it differs from the one the core
+ * has; the check is inline, the sending not. */
+static void wgpu_send_texture(struct wined3d_device_wgpu *device, unsigned int sampler, uint32_t texture)
 {
     struct d3dgpu_cmd_set_texture *cmd;
 
-    if ((device->sent.tex_known & (1u << sampler)) && device->sent.tex[sampler] == texture)
-        return;
     if (!(cmd = wgpu_cmd(device, D3DGPU_OP_SET_TEXTURE, sizeof(*cmd))))
         return;
     cmd->sampler = sampler;
@@ -346,13 +379,17 @@ static void wgpu_set_texture(struct wined3d_device_wgpu *device, unsigned int sa
     device->sent.tex_known |= 1u << sampler;
 }
 
-static void wgpu_set_sampler_state(struct wined3d_device_wgpu *device, unsigned int sampler,
+static inline void wgpu_set_texture(struct wined3d_device_wgpu *device, unsigned int sampler, uint32_t texture)
+{
+    if (!(device->sent.tex_known & (1u << sampler)) || device->sent.tex[sampler] != texture)
+        wgpu_send_texture(device, sampler, texture);
+}
+
+static void wgpu_send_sampler_state(struct wined3d_device_wgpu *device, unsigned int sampler,
         uint32_t state, uint32_t value)
 {
     struct d3dgpu_cmd_set_sampler_state *cmd;
 
-    if ((device->sent.ss_known[sampler] & (1u << state)) && device->sent.ss[sampler][state] == value)
-        return;
     if (!(cmd = wgpu_cmd(device, D3DGPU_OP_SET_SAMPLER_STATE, sizeof(*cmd))))
         return;
     cmd->sampler = sampler;
@@ -360,6 +397,13 @@ static void wgpu_set_sampler_state(struct wined3d_device_wgpu *device, unsigned 
     cmd->value = value;
     device->sent.ss[sampler][state] = value;
     device->sent.ss_known[sampler] |= 1u << state;
+}
+
+static inline void wgpu_set_sampler_state(struct wined3d_device_wgpu *device, unsigned int sampler,
+        uint32_t state, uint32_t value)
+{
+    if (!(device->sent.ss_known[sampler] & (1u << state)) || device->sent.ss[sampler][state] != value)
+        wgpu_send_sampler_state(device, sampler, state, value);
 }
 
 static void wgpu_set_stream(struct wined3d_device_wgpu *device, unsigned int stream,
@@ -416,19 +460,22 @@ static void wgpu_destroy_object(struct wined3d_device_wgpu *device, uint32_t id)
         cmd->id = id;
 }
 
-static void wgpu_set_render_state(struct wined3d_device_wgpu *device, uint32_t state, uint32_t value)
+static void wgpu_send_render_state(struct wined3d_device_wgpu *device, uint32_t state, uint32_t value)
 {
     struct d3dgpu_cmd_set_render_state *cmd;
-    uint32_t bit = 1u << (state % 32);
 
-    if ((device->sent.rs_known[state / 32] & bit) && device->sent.rs[state] == value)
-        return;
     if (!(cmd = wgpu_cmd(device, D3DGPU_OP_SET_RENDER_STATE, sizeof(*cmd))))
         return;
     cmd->state = state;
     cmd->value = value;
     device->sent.rs[state] = value;
-    device->sent.rs_known[state / 32] |= bit;
+    device->sent.rs_known[state / 32] |= 1u << (state % 32);
+}
+
+static inline void wgpu_set_render_state(struct wined3d_device_wgpu *device, uint32_t state, uint32_t value)
+{
+    if (!(device->sent.rs_known[state / 32] & (1u << (state % 32))) || device->sent.rs[state] != value)
+        wgpu_send_render_state(device, state, value);
 }
 
 /* Signals a fence and waits for it, then copies `size` bytes of the
@@ -989,6 +1036,7 @@ static void wgpu_clear_sub_resource(struct wined3d_device_wgpu *device, struct w
     for (i = 1; i < 4; ++i)
         wgpu_set_target(device, i, 0, 0, 0);
     wgpu_set_target(device, 4, depth ? id : 0, depth ? face : 0, depth ? level : 0);
+    wgpu_invalidate_targets(device);
     wgpu_full_viewport(device, wined3d_texture_get_level_width(texture, sub_resource_idx % texture->level_count),
             wined3d_texture_get_level_height(texture, sub_resource_idx % texture->level_count));
     if ((clear = wgpu_cmd(device, D3DGPU_OP_CLEAR, sizeof(*clear))))
@@ -1459,6 +1507,8 @@ static void wgpu_forget_decl(struct wined3d_device_wgpu *device, const struct wi
         {
             wgpu_destroy_object(device, device->decls[i].id);
             device->decls[i] = device->decls[--device->decl_count];
+            if (device->last_decl == decl)
+                device->last_decl = NULL;
             return;
         }
     }
@@ -1528,7 +1578,7 @@ static void wgpu_upload_constants(struct wined3d_device_wgpu *device, struct win
 }
 
 /* Whether wined3d changed `state_id` since the last draw. */
-static bool wgpu_state_dirty(const struct wined3d_context *context, unsigned int state_id)
+static inline bool wgpu_state_dirty(const struct wined3d_context *context, unsigned int state_id)
 {
     return wined3d_bitmap_is_set(context->dirty_graphics_states, context->state_table[state_id].representative);
 }
@@ -1595,8 +1645,12 @@ static void wgpu_apply_render_states(struct wined3d_device_wgpu *device, struct 
         wgpu_set_render_state(device, WINED3D_RS_ALPHABLENDENABLE, FALSE);
         wgpu_set_render_state(device, WINED3D_RS_COLORWRITEENABLE, 0xf);
     }
-    if (all || wgpu_state_dirty(context, STATE_BLEND_FACTOR))
+    if ((all || wgpu_state_dirty(context, STATE_BLEND_FACTOR))
+            && (all || !wgpu_words_equal(&state->blend_factor, &device->sent.blend_factor_from, 4)))
+    {
         wgpu_set_render_state(device, WINED3D_RS_BLENDFACTOR, wgpu_d3dcolor(&state->blend_factor));
+        device->sent.blend_factor_from = state->blend_factor;
+    }
 
     /* Depth and stencil. */
     if (!all && !wgpu_state_dirty(context, STATE_DEPTH_STENCIL))
@@ -1809,7 +1863,8 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
     struct wined3d_context *context;
     struct d3dgpu_cmd_set_object *obj;
     unsigned int i, prim_count;
-    uint32_t vs, ps, decl;
+    uint32_t vs, ps, decl, map;
+    bool all;
 
     TRACE("device %p, state %p, parameters %p.\n", device, state, parameters);
 
@@ -1829,29 +1884,84 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
     wgpu_activate(device_wgpu);
     context = context_acquire(device, NULL, 0);
 
-    /* Targets, then textures and buffers (loading them may emit uploads). */
-    for (i = 0; i < 4; ++i)
-        wgpu_bind_target(device_wgpu, context, i, i < ARRAY_SIZE(state->fb.render_targets) ? state->fb.render_targets[i] : NULL);
-    wgpu_bind_target(device_wgpu, context, -1, state->fb.depth_stencil);
-    for (i = 0; i < 16; ++i)
+    all = !device_wgpu->sent.bindings_known;
+
+    /* Targets, then textures and buffers (loading them may emit uploads).
+     * Which slots have something bound changes only when wined3d marks the
+     * binding dirty; what is bound is loaded on every draw, as its contents
+     * may have changed. */
+    if (all || wgpu_state_dirty(context, STATE_FRAMEBUFFER))
     {
-        wgpu_bind_texture(device_wgpu, context, i, state->shader_resource_view[WINED3D_SHADER_TYPE_PIXEL][i]);
-        wgpu_apply_sampler(device_wgpu, i, state->sampler[WINED3D_SHADER_TYPE_PIXEL][i]);
+        device_wgpu->bound_targets = state->fb.depth_stencil ? 1u << 4 : 0;
+        for (i = 0; i < 4; ++i)
+        {
+            if (i < ARRAY_SIZE(state->fb.render_targets) && state->fb.render_targets[i])
+                device_wgpu->bound_targets |= 1u << i;
+            else
+                wgpu_set_target(device_wgpu, i, 0, 0, 0);
+        }
+        if (!state->fb.depth_stencil)
+            wgpu_set_target(device_wgpu, 4, 0, 0, 0);
     }
-    for (i = 0; i < 4; ++i)
+    for (map = device_wgpu->bound_targets; map;)
     {
-        wgpu_bind_texture(device_wgpu, context, D3DGPU_VERTEX_SAMPLER_BASE + i,
-                state->shader_resource_view[WINED3D_SHADER_TYPE_VERTEX][i]);
-        wgpu_apply_sampler(device_wgpu, D3DGPU_VERTEX_SAMPLER_BASE + i, state->sampler[WINED3D_SHADER_TYPE_VERTEX][i]);
+        i = wined3d_bit_scan(&map);
+        wgpu_bind_target(device_wgpu, context, i == 4 ? -1 : (int)i,
+                i == 4 ? state->fb.depth_stencil : state->fb.render_targets[i]);
     }
 
-    for (i = 0; i < WINED3D_MAX_STREAMS; ++i)
+    if (all || wgpu_state_dirty(context, STATE_GRAPHICS_SHADER_RESOURCE_BINDING))
     {
-        const struct wined3d_stream_state *stream = &state->streams[i];
+        struct wined3d_shader_resource_view *const *views = state->shader_resource_view[WINED3D_SHADER_TYPE_PIXEL];
+        struct wined3d_sampler *const *samplers = state->sampler[WINED3D_SHADER_TYPE_PIXEL];
+        uint32_t bound = 0;
 
-        if (stream->buffer)
-            wined3d_buffer_load(stream->buffer, context, state);
-        wgpu_set_stream(device_wgpu, i, stream->buffer && stream->buffer->buffer_object
+        for (i = 0; i < 20; ++i)
+        {
+            if (i == 16)
+            {
+                views = state->shader_resource_view[WINED3D_SHADER_TYPE_VERTEX] - 16;
+                samplers = state->sampler[WINED3D_SHADER_TYPE_VERTEX] - 16;
+            }
+            if (views[i])
+                bound |= 1u << i;
+            else
+                wgpu_set_texture(device_wgpu, i, 0);
+            if (device_wgpu->sent.sampler[i] != samplers[i] || !(device_wgpu->sent.sampler_known & (1u << i)))
+                wgpu_apply_sampler(device_wgpu, i, samplers[i]);
+        }
+        device_wgpu->bound_textures = bound;
+    }
+    for (map = device_wgpu->bound_textures; map;)
+    {
+        i = wined3d_bit_scan(&map);
+        wgpu_bind_texture(device_wgpu, context, i,
+                i < 16 ? state->shader_resource_view[WINED3D_SHADER_TYPE_PIXEL][i]
+                : state->shader_resource_view[WINED3D_SHADER_TYPE_VERTEX][i - 16]);
+    }
+
+    if (all || wgpu_state_dirty(context, STATE_STREAMSRC))
+    {
+        device_wgpu->bound_streams = 0;
+        for (i = 0; i < WINED3D_MAX_STREAMS; ++i)
+        {
+            const struct wined3d_stream_state *stream = &state->streams[i];
+
+            if (stream->buffer)
+                device_wgpu->bound_streams |= 1u << i;
+            else
+                wgpu_set_stream(device_wgpu, i, 0, stream->offset, stream->stride,
+                        stream->frequency ? stream->frequency : 1);
+        }
+    }
+    for (map = device_wgpu->bound_streams; map;)
+    {
+        const struct wined3d_stream_state *stream;
+
+        i = wined3d_bit_scan(&map);
+        stream = &state->streams[i];
+        wined3d_buffer_load(stream->buffer, context, state);
+        wgpu_set_stream(device_wgpu, i, stream->buffer->buffer_object
                 ? wined3d_bo_wgpu(stream->buffer->buffer_object)->id : 0, stream->offset, stream->stride,
                 (stream->flags & WINED3DSTREAMSOURCE_INDEXEDDATA ? 0x40000000 : 0)
                 | (stream->flags & WINED3DSTREAMSOURCE_INSTANCEDATA ? 0x80000000 : 0)
@@ -1867,7 +1977,13 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
 
     vs = wgpu_shader_id(device_wgpu, state->shader[WINED3D_SHADER_TYPE_VERTEX]);
     ps = wgpu_shader_id(device_wgpu, state->shader[WINED3D_SHADER_TYPE_PIXEL]);
-    decl = wgpu_vertex_decl_id(device_wgpu, state->vertex_declaration);
+    if (!all && !wgpu_state_dirty(context, STATE_VDECL) && state->vertex_declaration == device_wgpu->last_decl)
+        decl = device_wgpu->last_decl_id;
+    else if ((decl = wgpu_vertex_decl_id(device_wgpu, state->vertex_declaration)))
+    {
+        device_wgpu->last_decl = state->vertex_declaration;
+        device_wgpu->last_decl_id = decl;
+    }
     if (!vs || !ps || !decl)
     {
         WARN("Skipping a draw without shaders (vs %u, ps %u) or vertex declaration (%u).\n", vs, ps, decl);
@@ -1886,6 +2002,7 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
     device_wgpu->consts_valid = true;
 
     wgpu_apply_render_states(device_wgpu, context, state);
+    if (all || wgpu_state_dirty(context, STATE_VIEWPORT) || wgpu_state_dirty(context, STATE_SCISSORRECT))
     {
         const struct wined3d_viewport *vp = &state->viewports[0];
 
@@ -1928,11 +2045,13 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
     }
 
     /* The draw wrote the targets on the GPU. */
-    for (i = 0; i < ARRAY_SIZE(state->fb.render_targets); ++i)
+    for (map = device_wgpu->bound_targets & 0xf; map;)
     {
-        struct wined3d_rendertarget_view *rtv = state->fb.render_targets[i];
+        struct wined3d_rendertarget_view *rtv;
 
-        if (!rtv || rtv->format->id == WINED3DFMT_NULL || rtv->resource->type == WINED3D_RTYPE_BUFFER)
+        i = wined3d_bit_scan(&map);
+        rtv = state->fb.render_targets[i];
+        if (rtv->format->id == WINED3DFMT_NULL || rtv->resource->type == WINED3D_RTYPE_BUFFER)
             continue;
         if (!wined3d_blend_state_get_writemask(state->blend_state, i))
             continue;
@@ -1941,8 +2060,10 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
     if (state->fb.depth_stencil && (!state->depth_stencil_state || state->depth_stencil_state->writes_ds))
         wgpu_target_written(state->fb.depth_stencil);
 
-    /* Everything wined3d changed is applied. */
-    memset(context->dirty_graphics_states, 0, sizeof(context->dirty_graphics_states));
+    /* What wined3d changed is applied. */
+    for (i = 0; i < ARRAY_SIZE(device_wgpu->applied_words); ++i)
+        context->dirty_graphics_states[device_wgpu->applied_words[i]] &= ~device_wgpu->applied_bits[i];
+    device_wgpu->sent.bindings_known = true;
     context_release(context);
 }
 
@@ -1990,6 +2111,7 @@ static void wgpu_blitter_clear(struct wined3d_blitter *blitter, struct wined3d_d
 
         if (v)
             wgpu_full_viewport(device_wgpu, v->width, v->height);
+        wgpu_invalidate_targets(device_wgpu);
     }
 
     if (!(cmd = wgpu_cmd(device_wgpu, D3DGPU_OP_CLEAR, sizeof(*cmd) + (rect_count ? rect_count : 1) * 16)))
@@ -2391,6 +2513,25 @@ static HRESULT adapter_wgpu_init_3d(struct wined3d_device *device)
     TRACE("device %p.\n", device);
 
     wined3d_context_init(&device_wgpu->context, device->swapchains[0]);
+    {
+        static const unsigned int applied[] =
+        {
+            STATE_FRAMEBUFFER, STATE_GRAPHICS_SHADER_RESOURCE_BINDING, STATE_STREAMSRC, STATE_VDECL,
+            STATE_VIEWPORT, STATE_SCISSORRECT, STATE_BLEND, STATE_BLEND_FACTOR, STATE_DEPTH_STENCIL,
+            STATE_STENCIL_REF, STATE_RASTERIZER, STATE_SHADER(WINED3D_SHADER_TYPE_VERTEX),
+            STATE_SHADER(WINED3D_SHADER_TYPE_PIXEL),
+        };
+        unsigned int i;
+
+        C_ASSERT(ARRAY_SIZE(applied) == ARRAY_SIZE(device_wgpu->applied_words));
+        for (i = 0; i < ARRAY_SIZE(applied); ++i)
+        {
+            unsigned int r = device->state_table[applied[i]].representative;
+
+            device_wgpu->applied_words[i] = r / 32;
+            device_wgpu->applied_bits[i] = 1u << (r % 32);
+        }
+    }
     if (!device_context_add(device, &device_wgpu->context))
     {
         ERR("Failed to add the context.\n");

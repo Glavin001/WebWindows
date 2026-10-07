@@ -155,6 +155,8 @@ function newD3DCanvas() {
     else if (e.data.type === 'frame') snapshots.shift()?.(e.data);
   };
   const port = d3dPort;
+  // ?d3dstats=1: the render worker reports how busy it is, once a second.
+  if (params.get('d3dstats')) port.postMessage({ type: 'stats' });
   window.d3dSnapshot = () => new Promise((resolve) => (snapshots.push(resolve), port.postMessage({ type: 'snapshot' })));
   if (mode === 'offscreen') return { offscreen: true, port: channel.port2 };
   d3dCanvas = document.createElement('canvas');

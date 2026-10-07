@@ -35,7 +35,7 @@ const flag = (name) => {
 const headed = argv.includes('--headed') && argv.splice(argv.indexOf('--headed'), 1);
 const urlArg = flag('--url');
 const site = urlArg ? new URL(urlArg) : null;
-const [cubes = '400', particles = '2000', seconds = '10', materials = '1'] = argv;
+const [cubes = '400', particles = '2000', seconds = '10', materials = '1', width, height] = argv;
 
 const port = 19000 + Math.floor(Math.random() * 1000);
 const base = site ? site.origin + site.pathname.replace(/\/runtime\/web\/?$/, '').replace(/\/$/, '') : `http://localhost:${port}`;
@@ -49,14 +49,15 @@ try {
   const page = await browser.newPage({ viewport: { width: 1000, height: 1100 }, ignoreHTTPSErrors: !!proxy });
   if (site?.searchParams.has('_vercel_share')) await page.goto(site.href);
   page.on('pageerror', (e) => console.error('page error:', e.message));
-  const args = [cubes, particles, seconds, materials].join('+');
-  await page.goto(`${base}/runtime/web/?exe=/tests/programs/gui/d3d9bench.exe&wine=1&args=${args}`);
+  const args = [cubes, particles, seconds, materials, ...(width ? [width, height] : [])].join('+');
+  await page.goto(`${base}/runtime/web/?exe=/tests/programs/gui/d3d9bench.exe&wine=1&d3dstats=1&args=${args}`);
 
   const out = join(repo, 'target/gui');
   mkdirSync(out, { recursive: true });
   // Echo the program's lines as they arrive, until it exits; the screen is
   // saved with each frame rate line, while the window is still up.
   let shown = 0;
+  let shownLog = 0;
   const deadline = Date.now() + 300000 + Number(seconds) * 1000;
   for (;;) {
     const text = (await page.textContent('#out')) ?? '';
@@ -68,6 +69,9 @@ try {
       rate ||= / fps: /.test(lines[shown]);
     }
     if (rate) writeFileSync(join(out, 'd3d9bench.png'), await page.locator('#screen').screenshot());
+    // The render worker's own numbers (d3dstats), from the page log.
+    const log = ((await page.textContent('#log')) ?? '').split('\n').filter((l) => l.startsWith('d3d: render worker:'));
+    for (; shownLog < log.length; shownLog++) console.log(log[shownLog]);
     if (await page.evaluate(() => window.lastExit)) {
       for (; shown < lines.length; shown++) if (lines[shown]) console.log(lines[shown]);
       break;

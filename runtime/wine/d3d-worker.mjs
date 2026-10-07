@@ -25,7 +25,10 @@ let renderer, ctrl, bytes;
 let port = null;
 let capture = 'idle'; // 'requested', 'reading'
 const log = (text) => (port ?? self).postMessage({ type: 'log', text });
+// {type: 'stats'} from the page: once a second, how busy this worker was.
+let stats = null;
 function onPortMessage(e) {
+  if (e.data?.type === 'stats') stats = { since: performance.now(), execute: 0, gpuWait: 0, frames: 0, batches: 0 };
   if (e.data?.type !== 'snapshot' || !renderer || capture !== 'idle') return;
   capture = 'requested';
   renderer.capture_frames();
@@ -77,6 +80,7 @@ async function loop() {
     const batch = bytes.slice(P.SLOT, P.SLOT + len);
     Atomics.store(ctrl, P.CONSUMED, seen);
     Atomics.notify(ctrl, P.CONSUMED);
+    const t0 = performance.now();
     try {
       renderer.execute(batch);
     } catch (err) {
@@ -85,11 +89,25 @@ async function loop() {
     const messages = renderer.take_messages();
     if (messages.length) log(messages.join('\n'));
     const present = renderer.take_present();
+    const t1 = performance.now();
     if (present >= 0 && capture === 'requested') snapshot();
     if (present >= 0) {
       renderer.track_gpu();
       await (present & PRESENT_VSYNC ? nextFrame() : nextTask());
       while (renderer.gpu_in_flight() >= MAX_FRAME_LATENCY) await new Promise((r) => setTimeout(r, 1));
+    }
+    if (stats) {
+      const now = performance.now();
+      stats.execute += t1 - t0;
+      stats.batches++;
+      if (present >= 0) (stats.frames++, (stats.gpuWait += now - t1));
+      if (now - stats.since >= 1000 && stats.frames) {
+        const f = stats.frames;
+        log(`render worker: ${((100 * stats.execute) / (now - stats.since)).toFixed(0)}% busy executing, ` +
+          `${(stats.execute / f).toFixed(2)} ms/frame in ${(stats.batches / f).toFixed(1)} batches, ` +
+          `${(stats.gpuWait / f).toFixed(2)} ms/frame yielding and waiting for the GPU`);
+        stats = { since: now, execute: 0, gpuWait: 0, frames: 0, batches: 0 };
+      }
     }
   }
 }
