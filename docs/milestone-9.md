@@ -116,6 +116,12 @@ themselves.)
 | 32-bit programs | 64-bit | 35/35 pass |
 | Csmith, 100 programs × -O0/-O2 | 32-bit | 186 pass, 0 fail, 14 skipped (native run timed out) |
 
+**Browser:** `tests/web/browser.mjs` runs x86-64 programs in headless
+Chromium like 32-bit ones: `jumps-O2.exe` (MinGW CRT, `setjmp`/`longjmp`)
+is translated in the page, 16 addresses missed ahead of time are
+translated at run time and saved to the profile, the second launch
+re-translates with them and the third loads the cached module.
+
 **Layer 5 — snapshots:** unchanged for 32-bit code apart from the
 numbering of temporaries in the IR snapshots (they start at v56 now that
 there are 56 state vregs) and three new metadata fields.
