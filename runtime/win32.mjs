@@ -928,6 +928,24 @@ const msvcrt = {
       return p;
     },
   },
+  ___mb_cur_max_func: fn(0, () => 1),
+  ___lc_codepage_func: fn(0, () => 0),
+  // x86-64 MinGW imports these as data (the 32-bit CRT calls __p__fmode).
+  _fmode: {
+    data() {
+      return (this.fmode ??= this.heap.alloc(4));
+    },
+  },
+  _commode: {
+    data() {
+      return (this.commode ??= this.heap.alloc(4));
+    },
+  },
+  // The x86-64 language-specific handler; reached only through exception
+  // dispatch, which the shims do not implement.
+  __C_specific_handler: fn(4, function () {
+    throw new Error('__C_specific_handler: exceptions are not supported by the shims');
+  }),
   _acmdln: {
     data() {
       const p = this.heap.alloc(8);
@@ -1040,11 +1058,12 @@ const msvcrt = {
   }),
   localeconv: fn(0, function () {
     if (!this.lconv) {
-      this.lconv = this.heap.alloc(64);
-      this.m.u8.fill(0, this.lconv, this.lconv + 64);
+      this.lconv = this.heap.alloc(128);
+      this.m.u8.fill(0, this.lconv, this.lconv + 128);
       const dot = this.allocString('.');
       const empty = this.allocString('');
-      for (let i = 0; i < 10; i++) this.m.u32[(this.lconv >>> 2) + i] = i === 0 ? dot : empty;
+      // The ten string pointers that start struct lconv.
+      for (let i = 0; i < 10; i++) this.m.setPtr(this.lconv + i * this.ptrSize, i === 0 ? dot : empty);
     }
     return this.lconv;
   }),

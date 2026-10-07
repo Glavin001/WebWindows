@@ -11,6 +11,14 @@
 //   node tests/programs/check.mjs --opt O0,O2 tests/programs/c/switch.c
 //   node tests/programs/check.mjs --wine          # on translated Wine DLLs
 //   node tests/programs/check.mjs --torture DIR   # gcc.c-torture/execute
+//   node tests/programs/check.mjs --arch x64      # 64-bit programs
+//   node tests/programs/check.mjs --arch x64 --mem64   # on 64-bit memory
+//
+// With --arch x64 the .exe is built with x86_64-w64-mingw32-gcc and the
+// reference with the native x86-64 gcc. Linux is LP64 and Windows LLP64, so
+// a program whose output depends on sizeof(long) would differ; the
+// hand-written programs and Csmith's fixed-width types do not, and torture
+// tests check themselves.
 //
 // Torture tests check themselves (abort or exit 0). One that MinGW cannot
 // build, or that fails natively (target-specific or extended-precision
@@ -26,7 +34,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../..');
-const work = join(root, 'target/programs');
+const work = join(root, process.argv.includes('x64') ? 'target/programs-x64' : 'target/programs');
 const failDir = join(root, 'target/program-failures');
 mkdirSync(join(work, 'torture'), { recursive: true });
 
@@ -36,6 +44,8 @@ let csmith = 0;
 let seed = 1;
 let jobs = 4;
 let wine = false;
+let arch = 'x86';
+let mem64 = false;
 let torture = null;
 let filter = null;
 const files = [];
@@ -46,6 +56,8 @@ while (args.length) {
   else if (a === '--seed') seed = Number(args.shift());
   else if (a === '--jobs') jobs = Number(args.shift());
   else if (a === '--wine') wine = true;
+  else if (a === '--arch') arch = args.shift();
+  else if (a === '--mem64') mem64 = true;
   else if (a === '--torture') torture = resolve(args.shift());
   else if (a === '--filter') filter = new RegExp(args.shift());
   else files.push(resolve(a));
@@ -127,12 +139,14 @@ async function build(p, opt) {
   const base = join(torture ? join(work, 'torture') : work, `${p.name}-${opt}`);
   // The reference runs x87 code at double precision, which is what the
   // translator implements by default (registers are f64).
-  const nat = await sh('gcc', ['-m32', `-${opt}`, ...p.cflags, '-o', base + '.native', p.src, join(here, 'pc53.c'), '-lm']);
+  const m32 = arch === 'x64' ? [] : ['-m32'];
+  const nat = await sh('gcc', [...m32, `-${opt}`, ...p.cflags, '-o', base + '.native', p.src, join(here, 'pc53.c'), '-lm']);
   if (nat.status !== 0) return { error: 'native build: ' + nat.stderr.slice(0, 500) };
   // The Windows build gets the same precision setting: MinGW's start-up
   // leaves the x87 at 64-bit precision, so a native Windows run would not
   // compute what the reference computes (windows-check.mjs).
-  const win = await sh('i686-w64-mingw32-gcc', [`-${opt}`, ...p.cflags, '-o', base + '.exe', p.src, join(here, 'pc53.c')]);
+  const cc = arch === 'x64' ? 'x86_64-w64-mingw32-gcc' : 'i686-w64-mingw32-gcc';
+  const win = await sh(cc, [`-${opt}`, ...p.cflags, '-o', base + '.exe', p.src, join(here, 'pc53.c')]);
   if (win.status !== 0) return { error: 'mingw build: ' + win.stderr.slice(0, 500) };
   return { native: base + '.native', exe: base + '.exe' };
 }
@@ -148,15 +162,18 @@ async function runOne(p, opt) {
     return { status: 'skip', detail: 'needs a C99 runtime (msvcrt.dll is not one)' };
   }
   const wasm = b.exe + '.wasm';
-  const tr = await sh(wwt, ['translate', b.exe, '-o', wasm]);
+  const m64 = mem64 ? ['--mem64'] : [];
+  const tr = await sh(wwt, ['translate', b.exe, '-o', wasm, ...m64]);
   if (tr.status !== 0) return { status: 'fail', detail: 'translate: ' + tr.stderr.slice(-800) };
   const t0 = performance.now();
   // With --wine the program runs on translated Wine DLLs (Milestone 2)
   // instead of the JavaScript Win32 shims.
   const runner = wine
     ? [join(root, 'runtime/node/wine.mjs'), b.exe]
-    : [join(root, 'runtime/node/run.mjs'), '--wasm', wasm, b.exe];
-  const run = await sh('node', runner, { timeout: 120000 });
+    : [join(root, 'runtime/node/run.mjs'), '--wasm', wasm, ...m64, b.exe];
+  // Node 22 has 64-bit memory behind a flag.
+  const nodeFlags = mem64 ? ['--experimental-wasm-memory64'] : [];
+  const run = await sh('node', [...nodeFlags, ...runner], { timeout: 120000 });
   run.ms = performance.now() - t0;
   if (run.error) return { status: 'fail', detail: `translated run: ${run.error.message}` };
   const want = { out: nat.stdout, code: nat.status & 0xff };
@@ -212,5 +229,5 @@ await pool();
 const count = (s) => results.filter((r) => r.status === s).length;
 const summary = `${results.length} runs: ${count('pass')} pass, ${count('fail')} fail, ${count('skip')} skipped, ${count('xfail')} expected failures, ${count('build-error')} build errors`;
 console.log(summary);
-writeFileSync(join(work, `results${csmith ? '-csmith' : ''}${torture ? '-torture' : ''}${wine ? '-wine' : ''}.json`), JSON.stringify(results, null, 2));
+writeFileSync(join(work, `results${csmith ? '-csmith' : ''}${torture ? '-torture' : ''}${wine ? '-wine' : ''}${mem64 ? '-mem64' : ''}.json`), JSON.stringify(results, null, 2));
 process.exit(count('fail') + count('build-error') ? 1 : 0);
