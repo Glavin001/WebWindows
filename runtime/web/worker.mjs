@@ -56,9 +56,13 @@ async function cacheWrite(dir, name, bytes) {
 /**
  * Runs the program on translated Wine (Milestone 2): Wine's DLLs come
  * pre-translated in the bundle; the .exe is translated here and cached.
+ * 64-bit programs use the x86_64 bundle (Wine's x86_64 DLLs and the wasm64
+ * Unix side) on a 64-bit memory.
  */
-async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, key, bundleUrl, display: shared }) {
-  const base = new URL(bundleUrl, self.location.href);
+async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, key, bundleUrl, bundle64Url, display: shared }) {
+  const x64 = peArch(exe) === 'x64';
+  if (x64 && !hasMemory64()) throw new Error('64-bit programs on Wine need a browser with 64-bit WebAssembly memory (Chrome 133, Firefox 134 or later)');
+  const base = new URL(x64 ? bundle64Url : bundleUrl, self.location.href);
   const manifest = await (await fetch(new URL('manifest.json', base))).json();
   const t0 = performance.now();
   const bytesOf = async (rel) => new Uint8Array(await (await fetch(new URL(rel, base))).arrayBuffer());
@@ -68,6 +72,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
         fetch(new URL(manifest.unix.layout, base)).then((r) => r.json()),
         fetch(new URL(manifest.unix.syscalls, base)).then((r) => r.json()),
         Promise.all(Object.entries(manifest.unix.data).map(async ([path, rel]) => [path, await bytesOf(rel)])),
+        fetch(new URL(manifest.unix.ntCalls, base)).then((r) => r.json()),
       ])
     : null;
   const files = new Map();
@@ -98,7 +103,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
   files.set(exeDos, exe);
   const translateTimed = (path, bytes) => {
     const t = performance.now();
-    const w = ft.translatePe(bytes);
+    const w = ft.translatePe(bytes, { mem64: x64 });
     log(`translated ${path} in ${(performance.now() - t).toFixed(0)} ms`);
     return w;
   };
@@ -120,11 +125,12 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
     if (!rebased && path === exeDos) return exeWasm;
     return translateTimed(path, bytes);
   };
-  const [layout, win32uNames, dataFiles] = unixFiles ?? [];
+  const [layout, win32uNames, dataFiles, ntCalls] = unixFiles ?? [];
   const machine = new Machine({
     abi,
-    kernel: ft.kernel(),
-    guestLimit: 0x8000_0000,
+    kernel: ft.kernel({ mem64: x64, code64: x64 }),
+    // x86_64 Wine's DLLs load at 0x1_7000_0000 and up.
+    ...(x64 ? { arch: 'x64', mem64: true, guestLimit: 0x2_0000_0000 } : { guestLimit: 0x8000_0000 }),
     ...(layout && { nativeSize: layout.nativeSize, extraSize: layout.extraSize }),
     log,
   });
@@ -156,6 +162,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
       },
       stderr: (s) => postMessage({ type: 'stderr', bytes: new TextEncoder().encode(s) }),
       win32uNames,
+      ntCalls,
     });
     log(`loaded Wine's Unix side (wineserver, win32u) in ${(performance.now() - t0).toFixed(0)} ms`);
   }
@@ -176,7 +183,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
 }
 
 onmessage = async (e) => {
-  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, display } = e.data;
+  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, bundle64Url, display } = e.data;
   const enc = new TextEncoder();
   try {
     const t0 = performance.now();
@@ -186,7 +193,7 @@ onmessage = async (e) => {
     const key = `${await sha256(exe)}-abi${abi.version}`;
     const dir = noCache ? null : await cacheDir();
     if (wine) {
-      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, display });
+      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, bundle64Url, display });
       if (r.error) postMessage({ type: 'stderr', bytes: enc.encode(`\n*** ${r.error.message}\n`) });
       postMessage({ type: 'exit', code: r.error ? null : r.exitCode, translated: false, runMs: r.runMs, wine: true });
       return;

@@ -663,7 +663,7 @@ export class WineHost {
       // arguments from the guest stack.
       status = this.unix.win32uSyscall(id, argBase);
     } else if (unixImpl && this.routeToUnix(name, a)) {
-      status = unixImpl(a(0), a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8), a(9), a(10), a(11)) >>> 0;
+      status = unixImpl(Array.from({ length: 12 }, (_, i) => a(i)));
     } else if (!impl) {
       if (!this.unimplemented.has(name)) this.log(`UNIMPLEMENTED ${name}`);
       this.unimplemented.set(name, (this.unimplemented.get(name) ?? 0) + 1);
@@ -691,13 +691,26 @@ export class WineHost {
     const id = m.reg(cpu, EAX);
     const rsp = m.sp(cpu);
     const ret = m.ptr(rsp);
-    const name = this.syscallNames.get(id) ?? `syscall_${id.toString(16)}`;
+    const name = this.syscallNames.get(id) ?? this.unix?.win32uNames.get(id) ?? `syscall_${id.toString(16)}`;
     const R = [10, EDX, 8, 9];
-    const a = (i) => this.arg64(i < 4 ? m.reg64(cpu, R[i]) : this.u64(rsp + 0x30 + (i - 4) * 8));
+    const raw = (i) => (i < 4 ? m.reg64(cpu, R[i]) : this.u64(rsp + 0x30 + (i - 4) * 8));
+    const a = (i) => this.arg64(raw(i));
     this.counts.set(name, (this.counts.get(name) ?? 0) + 1);
     const impl = SYSCALLS[name];
+    const unixImpl = this.unix?.syscalls.get(name);
+    // The module's thunks take the raw slots: C's casts drop a 32-bit
+    // argument's garbage upper half.
+    const slots = () => Array.from({ length: 16 }, (_, i) => raw(i));
     let status;
-    if (!impl) {
+    if (id >= 0x1000 && this.unix) {
+      // win32u: a 64-bit result (handles, LRESULTs).
+      const r = this.unix.win32uSyscall64(id, slots());
+      m.setReg64(cpu, EAX, r);
+      m.setSp(cpu, rsp + 8);
+      return ret;
+    } else if (unixImpl && this.routeToUnix(name, a)) {
+      status = unixImpl(slots());
+    } else if (!impl) {
       if (!this.unimplemented.has(name)) this.log(`UNIMPLEMENTED ${name}`);
       this.unimplemented.set(name, (this.unimplemented.get(name) ?? 0) + 1);
       status = STATUS.NOT_IMPLEMENTED;
@@ -721,7 +734,10 @@ export class WineHost {
       this.unimplemented.set(`${name} (from Unix side)`, (this.unimplemented.get(name) ?? 0) + 1);
       return STATUS.NOT_IMPLEMENTED;
     }
-    const status = impl.call(this, (i) => args[i] >>> 0, this.cpu, 0);
+    // wasm64 passes 64-bit slots (BigInts); pseudo-handles read as their
+    // 32-bit forms, as on i386.
+    const a = this.x64 ? (i) => exactArg64(BigInt(args[i] ?? 0)) : (i) => args[i] >>> 0;
+    const status = impl.call(this, a, this.cpu, 0);
     if (this.trace) this.log(`unix -> ${name}(${args.slice(0, 4).map(hex).join(', ')}) = ${hex(status >>> 0)}`);
     return status >>> 0;
   }
@@ -733,6 +749,7 @@ export class WineHost {
    * then restores the thread's registers.
    */
   userCallback(id, args, len, retPtr, retLen) {
+    if (this.x64) return this.userCallback64(id, args, len, retPtr, retLen);
     const m = this.m;
     const saved = m.u8.slice(this.cpu, this.cpu + m.abi.cpu.SIZE);
     let sp = ((m.reg(this.cpu, ESP) - 256 - len) & ~15) >>> 0;
@@ -757,6 +774,38 @@ export class WineHost {
     return r.status;
   }
 
+  /**
+   * x86-64: KiUserCallbackDispatcher reads Wine's callback_stack_layout at
+   * rsp: home space, then args (+0x20), len (+0x28), id (+0x2c), a machine
+   * frame (+0x30) and the copied arguments (+0x58).
+   */
+  userCallback64(id, args, len, retPtr, retLen) {
+    const m = this.m;
+    const saved = m.u8.slice(this.cpu, this.cpu + m.cpuSize);
+    const rsp = m.sp(this.cpu);
+    let sp = rsp - 256 - 0x58 - len;
+    sp -= sp % 16;
+    m.u8.fill(0, sp, sp + 0x58);
+    m.u8.copyWithin(sp + 0x58, args, args + len);
+    this.w64(sp + 0x20, sp + 0x58);
+    this.w32(sp + 0x28, len);
+    this.w32(sp + 0x2c, id);
+    this.w64(sp + 0x30 + 0x18, rsp); // machine frame: rsp
+    m.setSp(this.cpu, sp);
+    const depth = this.callbackResults.length;
+    this.callbackResults.push(null);
+    try {
+      m.run(this.cpu, this.kiUserCallbackDispatcher);
+    } finally {
+      m.u8.set(saved, this.cpu);
+    }
+    const r = this.callbackResults.pop();
+    if (this.callbackResults.length !== depth || !r) throw new Error(`user callback ${id} returned without NtCallbackReturn`);
+    this.w64(retPtr, r.ptr);
+    this.w32(retLen, r.len);
+    return r.status;
+  }
+
   /** Whether a host handle (or pseudo-handle the host implements) is involved. */
   isHostHandle(h) {
     h >>>= 0;
@@ -766,7 +815,7 @@ export class WineHost {
   /** Handle-based calls go to Wine's Unix side only for server handles. */
   routeToUnix(name, a) {
     if (name === 'NtWaitForMultipleObjects') {
-      for (let i = 0; i < a(0); i++) if (this.isHostHandle(this.u32(a(1) + i * 4))) return false;
+      for (let i = 0; i < a(0); i++) if (this.isHostHandle(this.u32(a(1) + i * this.ps))) return false;
       return true;
     }
     if (!HANDLE_ROUTED.has(name)) return true;
@@ -821,6 +870,7 @@ export class WineHost {
     const args = Number(m.reg64(cpu, 8));
     let status = STATUS.NOT_IMPLEMENTED;
     if (handle === 0x1000) status = this.ntdllUnixCall(code, args);
+    else if (handle === WIN32U_UNIXLIB && this.unix) status = this.unix.win32uUnixCall(code, args);
     else this.log(`unix call to unknown library ${hex(handle)} code ${code}`);
     m.setReg(cpu, EAX, status >>> 0);
     m.setSp(cpu, rsp + 8);
@@ -848,6 +898,13 @@ export class WineHost {
         return STATUS.NOT_IMPLEMENTED;
     }
   }
+}
+
+/** A 64-bit value from the wasm64 module as a number; sign-extended 32-bit values (pseudo-handles) read as their 32-bit forms. */
+function exactArg64(v) {
+  v = BigInt.asUintN(64, v);
+  const lo = Number(v & 0xffff_ffffn);
+  return v >> 32n === 0xffff_ffffn && lo >= 0x8000_0000 ? lo : Number(v);
 }
 
 export { EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI, MEM_PRIVATE };

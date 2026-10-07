@@ -77,9 +77,9 @@ let screenshot = null;
 let runFor = Infinity;
 let script = [];
 // Wine's Unix side compiled with Emscripten (native/wine-unix): on when built,
-// unless --no-unix.
-const unixDir = join(root, 'target/wine-unix');
-let useUnix = existsSync(join(unixDir, 'wine_unix.mjs'));
+// unless --no-unix. 64-bit programs use its wasm64 build (ARCH=x86_64).
+let unixDir = join(root, 'target/wine-unix');
+let useUnix = null;
 while (args[0]?.startsWith('--')) {
   const a = args.shift();
   if (a === '--trace') trace = true;
@@ -146,12 +146,9 @@ if (!exe) {
 x64 = peArch(readFileSync(exe)) === 'x64';
 if (x64) {
   wineBuild = process.env.WINE_BUILD64 ?? '/opt/wine-build64';
-  if (useUnix) {
-    // Wine's Unix side is a wasm32 build for now; 64-bit programs use the
-    // host's own system calls.
-    useUnix = false;
-  }
+  unixDir = join(root, 'target/wine-unix64');
 }
+useUnix ??= existsSync(join(unixDir, 'wine_unix.mjs'));
 const peDir = x64 ? 'x86_64-windows' : 'i386-windows';
 
 // The virtual C: drive.
@@ -235,6 +232,7 @@ if (useUnix) {
     wait,
     stderr: (s) => stderr(s),
     win32uNames: JSON.parse(readFileSync(join(unixDir, 'win32u_syscalls.json'), 'utf8')),
+    ntCalls: JSON.parse(readFileSync(join(unixDir, 'nt_calls.json'), 'utf8')),
   });
   if (unixTrace) unix.setTrace(unixTrace);
 }

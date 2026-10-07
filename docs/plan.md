@@ -376,8 +376,8 @@ After v1: x86-64 on 64-bit WebAssembly memory (below, started early), then Direc
 | # | Milestone | Done when |
 | --- | --- | --- |
 | M9 | x86-64 translator and runtime on the M1 shims | x86-64 instruction suite and program tests pass on both memory models (done; [milestone-9.md](milestone-9.md)) |
-| M10 | 64-bit Wine, console | `hello64.exe` prints through translated x86_64 Wine with its Unix side on wasm64 |
-| M11 | 64-bit Wine, windows | x86-64 `winemine` and `notepad` run; a 64-bit program can start a 32-bit one (each in its own stack, one wineserver: its protocol already uses 64-bit pointer fields) |
+| M10 | 64-bit Wine, console | `hello64.exe` prints through translated x86_64 Wine with its Unix side on wasm64 (done; [milestone-9.md](milestone-9.md#64-bit-wine)) |
+| M11 | 64-bit Wine, windows | x86-64 `winemine` and `notepad` run (done, in Node and the browser); a 64-bit program can start a 32-bit one (each in its own stack, one wineserver: its protocol already uses 64-bit pointer fields) (not yet) |
 | M12 | Exceptions and threads for x86-64 | C++ and SEH exceptions through `.pdata` unwinding; `cmpxchg16b` atomic; `RtlAddFunctionTable` honored by fast mode |
 | M13 | 64-bit graphics, with the Direct3D workstream | A 64-bit game renders through the Direct3D layer built for wasm64 |
 | M14 | Conditional: the 32-bit-memory model as the default for 64-bit programs that fit | Only if `mem64.sh` shows memory64 costs too much |

@@ -23,7 +23,9 @@ for d in web wine; do cp -r "$root/runtime/$d" "$out/runtime/$d"; done
 cp "$root"/runtime/*.mjs "$out/runtime/"
 cp "$translator" "$out/target/wasm32-unknown-unknown/release-wasm/"
 cp -r "$bundle" "$out/target/wine-bundle"
-cp "$root/tests/programs/hello.exe" "$out/tests/programs/"
+# The x86_64 bundle (64-bit programs on Wine), when built.
+[ -f "$root/target/wine-bundle64/manifest.json" ] && cp -r "$root/target/wine-bundle64" "$out/target/wine-bundle64"
+cp "$root/tests/programs/hello.exe" "$root/tests/programs/hello64.exe" "$out/tests/programs/"
 cat > "$out/index.html" <<'HTML'
 <!doctype html>
 <meta charset="utf-8">

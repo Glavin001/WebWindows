@@ -5,6 +5,9 @@
 // checks the programs respond. Screens are saved in target/gui.
 //
 //   node runtime/node/wine-bundle.mjs && node tests/web/gui.mjs [--root DIR]
+//   node runtime/node/wine-bundle.mjs --arch x64 && node tests/web/gui.mjs --arch x64
+//
+// --arch x64 runs the 64-bit builds of the programs, from the x86_64 bundle.
 //
 // --root serves another directory with the repository's layout, such as the
 // static site tools/site/build.sh assembles; --url tests a deployed site
@@ -30,6 +33,9 @@ const rootArg = process.argv.indexOf('--root');
 const root = rootArg > 0 ? resolve(process.argv[rootArg + 1]) : repo;
 const outDir = join(repo, 'target/gui');
 mkdirSync(outDir, { recursive: true });
+const x64 = process.argv.includes('--arch') && process.argv[process.argv.indexOf('--arch') + 1] === 'x64';
+const bundleDir = x64 ? 'wine-bundle64' : 'wine-bundle';
+const tag = x64 ? '64' : '';
 const urlArg = process.argv.indexOf('--url');
 const site = urlArg > 0 ? new URL(process.argv[urlArg + 1]) : null;
 const port = 19000 + Math.floor(Math.random() * 1000);
@@ -71,13 +77,14 @@ async function click(page, x, y) {
 }
 
 async function open(page, program) {
-  await page.goto(`${base}/runtime/web/?exe=/target/wine-bundle/programs/${program}&wine=1`);
+  await page.goto(`${base}/runtime/web/?exe=/target/${bundleDir}/programs/${program}&wine=1`);
   await page.waitForFunction(() => window.screenShown || window.lastExit, null, { timeout: 240000 });
   const exit = await page.evaluate(() => window.lastExit);
   if (exit) throw new Error(`${program} exited: ${await page.textContent('#out')}`);
 }
 
-const save = async (page, name) => {
+const save = async (page, file) => {
+  const name = file.replace('.png', `${tag}.png`);
   writeFileSync(join(outDir, name), await page.locator('#screen').screenshot());
   await page.screenshot({ path: join(outDir, `page-${name}`), fullPage: true });
 };

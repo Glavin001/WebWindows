@@ -6,10 +6,12 @@ copied from the caller's stack, whatever the function's signature.
 WebAssembly checks the signature of every indirect call, so this generates
 one thunk per system call that reads the 32-bit stack slots and calls the
 function with its declared parameter types (two slots for a 64-bit value).
-The prototypes come from Wine's headers; each one is checked against the
-argument byte count in Wine's own table (win32syscalls.h).
+For the 64-bit build (ARCH x86_64) the slots are 8 bytes, one per argument,
+from Wine's Win64 table. The prototypes come from Wine's headers; each one
+is checked against the argument byte count in Wine's own table
+(win32syscalls.h).
 
-    gen-syscalls.py WINE_SRC OUT.c
+    gen-syscalls.py WINE_SRC OUT.c [i386|x86_64]
 """
 
 import glob
@@ -18,10 +20,15 @@ import re
 import sys
 
 wine_src, out_path = sys.argv[1:3]
+wide = len(sys.argv) > 3 and sys.argv[3] == 'x86_64'
 table = open(os.path.join(wine_src, 'dlls/win32u/win32syscalls.h')).read()
 
-body32 = table[table.index('#define ALL_SYSCALLS32'):table.index('#ifdef _WIN64')]
-entries = [(int(i, 16), n, int(a)) for i, n, a in re.findall(r'SYSCALL_ENTRY\(\s*(0x[0-9a-f]+),\s*(\w+),\s*(\d+)\s*\)', body32)]
+if wide:
+    body = table[table.index('#ifdef _WIN64'):table.index('#define ALL_SYSCALLS ALL_SYSCALLS32')]
+else:
+    body = table[table.index('#define ALL_SYSCALLS32'):table.index('#ifdef _WIN64')]
+SLOT = 8 if wide else 4
+entries = [(int(i, 16), n, int(a)) for i, n, a in re.findall(r'SYSCALL_ENTRY\(\s*(0x[0-9a-f]+),\s*(\w+),\s*(\d+)\s*\)', body)]
 stubs = set(re.findall(r'SYSCALL_STUB\(\s*(\w+)\s*\)', table))
 
 headers = (glob.glob(os.path.join(wine_src, 'include/*.h')) + glob.glob(os.path.join(wine_src, 'include/ddk/*.h'))
@@ -78,7 +85,7 @@ for sid, name, argbytes in entries:
     if name in stubs or name not in protos:
         if name not in stubs:
             problems.append(f'{name}: no prototype found')
-        lines.append(f'static ULONG_PTR {fn}( const ULONG *a ) {{ return STATUS_NOT_IMPLEMENTED; }}')
+        lines.append(f'static ULONG_PTR {fn}( const ULONG_PTR *a ) {{ return STATUS_NOT_IMPLEMENTED; }}')
         thunks.append(fn)
         continue
     ret, params = protos[name]
@@ -86,7 +93,15 @@ for sid, name, argbytes in entries:
     for p in split_params(params):
         t = param_type(p)
         base = t.replace('const', '').replace('*', '').strip()
-        if '*' not in t and base in SIXTY_FOUR:
+        if '*' not in t and base in ('double', 'DOUBLE', 'float', 'FLOAT') and wide:
+            # Win64 passes the first four in xmm registers, not read here.
+            problems.append(f'{name}: floating-point parameter')
+            args.append(f'*({t} *)&a[{slot}]')
+            slot += 1
+        elif '*' not in t and base in SIXTY_FOUR and wide:
+            args.append(f'({t})a[{slot}]' if base not in ('LARGE_INTEGER', 'ULARGE_INTEGER') else f'*({t} *)&a[{slot}]')
+            slot += 1
+        elif '*' not in t and base in SIXTY_FOUR:
             if base in ('double', 'DOUBLE'):
                 problems.append(f'{name}: floating-point parameter')
             args.append(f'*({t} *)&a[{slot}]')
@@ -97,21 +112,23 @@ for sid, name, argbytes in entries:
         else:
             args.append(f'({t})a[{slot}]')
             slot += 1
-    if slot * 4 != argbytes:
-        problems.append(f'{name}: prototype has {slot * 4} bytes of arguments, the table says {argbytes}')
+    if slot * SLOT != argbytes:
+        problems.append(f'{name}: prototype has {slot * SLOT} bytes of arguments, the table says {argbytes}')
     call = f'{name}( {", ".join(args)} )' if args else f'{name}()'
     if ret.replace(' ', '') in ('void', 'VOID'):
-        lines.append(f'static ULONG_PTR {fn}( const ULONG *a ) {{ {call}; return 0; }}')
-    elif ret.endswith('*'):
-        lines.append(f'static ULONG_PTR {fn}( const ULONG *a ) {{ return (ULONG_PTR){call}; }}')
+        lines.append(f'static ULONG_PTR {fn}( const ULONG_PTR *a ) {{ {call}; return 0; }}')
+    elif ret.endswith('*') or wide:
+        # Win64 results are 64-bit (rax): pointer-sized types (HWND,
+        # LRESULT, ULONG_PTR) keep their upper half.
+        lines.append(f'static ULONG_PTR {fn}( const ULONG_PTR *a ) {{ return (ULONG_PTR){call}; }}')
     else:
-        lines.append(f'static ULONG_PTR {fn}( const ULONG *a ) {{ return (ULONG_PTR)(ULONG){call}; }}')
+        lines.append(f'static ULONG_PTR {fn}( const ULONG_PTR *a ) {{ return (ULONG_PTR)(ULONG){call}; }}')
     thunks.append(fn)
 
 first = entries[0][0]
 lines += ['', f'const unsigned int win32u_syscall_first = {first:#x};',
           f'const unsigned int win32u_syscall_count = {len(entries)};',
-          'ULONG_PTR (*const win32u_syscall_thunks[])( const ULONG * ) =', '{']
+          'ULONG_PTR (*const win32u_syscall_thunks[])( const ULONG_PTR * ) =', '{']
 lines += [f'    {t},' for t in thunks]
 lines += ['};', '']
 open(out_path, 'w').write('\n'.join(lines))

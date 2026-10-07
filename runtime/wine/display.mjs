@@ -183,17 +183,20 @@ export class Display {
     const ev = this.input.shift();
     if (!ev) return 0;
     const dv = this.m.dv;
-    this.m.u8.fill(0, ptr, ptr + 28);
+    // INPUT: the type, then the union, 8-byte aligned on x86-64 (its
+    // dwExtraInfo is pointer-sized).
+    const u = ptr + (this.m.x64 ? 8 : 4);
+    this.m.u8.fill(0, ptr, ptr + (this.m.x64 ? 40 : 28));
     dv.setUint32(ptr, ev.type, true);
     if (ev.type === INPUT_MOUSE) {
-      dv.setInt32(ptr + 4, ev.dx, true);
-      dv.setInt32(ptr + 8, ev.dy, true);
-      dv.setUint32(ptr + 12, ev.data >>> 0, true);
-      dv.setUint32(ptr + 16, ev.flags, true);
+      dv.setInt32(u, ev.dx, true);
+      dv.setInt32(u + 4, ev.dy, true);
+      dv.setUint32(u + 8, ev.data >>> 0, true);
+      dv.setUint32(u + 12, ev.flags, true);
     } else {
-      dv.setUint16(ptr + 4, ev.vk, true);
-      dv.setUint16(ptr + 6, ev.scan, true);
-      dv.setUint32(ptr + 8, ev.flags, true);
+      dv.setUint16(u, ev.vk, true);
+      dv.setUint16(u + 2, ev.scan, true);
+      dv.setUint32(u + 4, ev.flags, true);
     }
     return 1;
   }

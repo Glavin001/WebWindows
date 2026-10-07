@@ -3,11 +3,13 @@
 
 Copies the parts of the pinned Wine source tree the build compiles into
 OUT, then applies the edits below: wasm32 is added as a CPU that uses the
-i386 data layout (CONTEXT and friends), without the i386 inline assembly.
-Each edit names the exact text it replaces and fails if that text is
-missing, so a Wine upgrade cannot apply an edit silently in the wrong place.
+i386 data layout (CONTEXT and friends), without the i386 inline assembly,
+and for the 64-bit build (ARCH x86_64) wasm64 as one that uses the x86_64
+layout. Each edit names the exact text it replaces and fails if that text
+is missing, so a Wine upgrade cannot apply an edit silently in the wrong
+place.
 
-    prepare.py WINE_SRC WINE_BUILD OUT
+    prepare.py WINE_SRC WINE_BUILD OUT [i386|x86_64]
 """
 
 import os
@@ -15,12 +17,14 @@ import shutil
 import sys
 
 wine_src, wine_build, out = sys.argv[1:4]
+arch = sys.argv[4] if len(sys.argv) > 4 else 'i386'
 
 COPY = ['include', 'server', 'dlls/win32u', 'dlls/ntdll']
 
 # (file, old, new, count): replace `old` with `new`, which must occur
-# `count` times.
-EDITS = [
+# `count` times. EDITS_I386 apply to the wasm32 build, EDITS_X86_64 to the
+# wasm64 one, EDITS to both.
+EDITS_I386 = [
     # The i386 CONTEXT, register and exception layouts apply to wasm32: the
     # Unix side must see the guest's structures as the i386 guest lays them out.
     ('include/winnt.h',
@@ -36,6 +40,42 @@ EDITS = [
     ('server/registry.c',
      '#ifdef __i386__\n    if (prefix_type == PREFIX_32BIT) supported_machines[count++] = IMAGE_FILE_MACHINE_I386;',
      '#if defined(__i386__) || defined(__wasm32__)\n    if (prefix_type == PREFIX_32BIT) supported_machines[count++] = IMAGE_FILE_MACHINE_I386;', 1),
+    # ntdll's Unix side on wasm32 runs i386 code.
+    ('dlls/ntdll/unix/unix_private.h',
+     '#ifdef __i386__\nstatic const WORD current_machine = IMAGE_FILE_MACHINE_I386;',
+     '#if defined(__i386__) || defined(__wasm32__)\nstatic const WORD current_machine = IMAGE_FILE_MACHINE_I386;', 1),
+]
+
+EDITS_X86_64 = [
+    # wasm64 is a Win64 target with the x86_64 CONTEXT, register and
+    # exception layouts: the Unix side sees the guest's structures as the
+    # x86_64 guest lays them out. (wasm64 is LP64, like x86_64 Unix.)
+    ('include/basetsd.h',
+     '#if (defined(__x86_64__) || defined(__powerpc64__) || defined(__aarch64__)) && !defined(_WIN64)',
+     '#if (defined(__x86_64__) || defined(__wasm64__) || defined(__powerpc64__) || defined(__aarch64__)) && !defined(_WIN64)', 1),
+    ('include/minwindef.h',
+     '#if (defined(__x86_64__) || defined(__powerpc64__) || defined(__aarch64__)) && !defined(_WIN64)',
+     '#if (defined(__x86_64__) || defined(__wasm64__) || defined(__powerpc64__) || defined(__aarch64__)) && !defined(_WIN64)', 1),
+    ('include/winnt.h',
+     '#ifdef __x86_64__\n\n#define CONTEXT_CONTROL CONTEXT_AMD64_CONTROL',
+     '#if defined(__x86_64__) || defined(__wasm64__)\n\n#define CONTEXT_CONTROL CONTEXT_AMD64_CONTROL', 1),
+    ('include/winnt.h',
+     '#ifdef __x86_64__\n\ntypedef struct _DISPATCHER_CONTEXT',
+     '#if defined(__x86_64__) || defined(__wasm64__)\n\ntypedef struct _DISPATCHER_CONTEXT', 1),
+    ('include/winnt.h',
+     '#elif !defined(RC_INVOKED)\n# error You must define NtCurrentTeb() for your architecture',
+     '#elif defined(__wasm64__)\nNTSYSAPI struct _TEB * WINAPI NtCurrentTeb(void);\n'
+     '#elif !defined(RC_INVOKED)\n# error You must define NtCurrentTeb() for your architecture', 1),
+    # wineserver: a wasm64 host runs x86_64 programs.
+    ('server/registry.c',
+     '#elif defined(__x86_64__)\n    if (prefix_type == PREFIX_64BIT) supported_machines[count++] = IMAGE_FILE_MACHINE_AMD64;',
+     '#elif defined(__x86_64__) || defined(__wasm64__)\n    if (prefix_type == PREFIX_64BIT) supported_machines[count++] = IMAGE_FILE_MACHINE_AMD64;', 1),
+    ('dlls/ntdll/unix/unix_private.h',
+     '#elif defined(__x86_64__)\nstatic const WORD current_machine = IMAGE_FILE_MACHINE_AMD64;',
+     '#elif defined(__x86_64__) || defined(__wasm64__)\nstatic const WORD current_machine = IMAGE_FILE_MACHINE_AMD64;', 1),
+]
+
+EDITS = [
     # Linux socket filters need linux/filter.h, which Emscripten lacks.
     ('server/sock.c',
      '#elif defined(IP_UNICAST_IF) && defined(SO_ATTACH_FILTER) && defined(SO_BINDTODEVICE)',
@@ -81,10 +121,6 @@ EDITS = [
      'NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeout )\n{',
      'extern int wasm_sleep( const struct timeval *tv );\n\n'
      'NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeout )\n{', 1),
-    # ntdll's Unix side on wasm32 runs i386 code.
-    ('dlls/ntdll/unix/unix_private.h',
-     '#ifdef __i386__\nstatic const WORD current_machine = IMAGE_FILE_MACHINE_I386;',
-     '#if defined(__i386__) || defined(__wasm32__)\nstatic const WORD current_machine = IMAGE_FILE_MACHINE_I386;', 1),
 ]
 
 # Text appended to files (file, text).
@@ -193,7 +229,8 @@ def main():
         copy_tree(rel)
     # Generated headers from the configured build tree (server_protocol.h is
     # in the source tree; config.h comes from gen-config.sh).
-    for rel, (old, new, count) in [(e[0], e[1:]) for e in EDITS]:
+    edits = EDITS + (EDITS_X86_64 if arch == 'x86_64' else EDITS_I386)
+    for rel, (old, new, count) in [(e[0], e[1:]) for e in edits]:
         path = os.path.join(out, rel)
         text = open(path).read()
         n = text.count(old)

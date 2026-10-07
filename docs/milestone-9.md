@@ -3,9 +3,9 @@
 Status as of October 7, 2026. This is the first step of the plan's "after
 v1" item, "x86-64 on 64-bit WebAssembly memory" ([plan](plan.md#64-bit-programs)):
 the translator, the runtime and the test layers for 64-bit programs, on the
-M1 shims and on Wine's own x86_64 DLLs, translated. Console programs run
-on 64-bit Wine; windowed ones need Wine's Unix side built for wasm64 (see
-the end).
+M1 shims and on Wine's own x86_64 DLLs, translated, with Wine's Unix side
+(wineserver, win32u) built for wasm64. 64-bit Notepad and Minesweeper run
+in Node and in the browser page.
 
 ## The design: two stacks, one translator
 
@@ -256,26 +256,63 @@ which never run (below), and a handful of misdecoded data bytes in
 * **Runner.** `runtime/node/wine.mjs` picks the x86_64 build, a 64-bit
   machine and `--mem64` translation from the program's PE header.
 
+### Wine's Unix side for wasm64
+
+Windowed programs need Wine's Unix side: wineserver, win32u's Unix half and
+the parts of ntdll's that talk to the server, compiled with Emscripten into
+one module that shares the guest's memory (Milestone 4).
+`ARCH=x86_64 native/wine-unix/build.sh` builds it for wasm64
+(`-sMEMORY64=1`) into `target/wine-unix64`, linked above an 8 GB guest
+region:
+
+* `prepare.py` makes wasm64 a Win64 target with the x86_64 layouts
+  (`_WIN64`, the AMD64 `CONTEXT` and `DISPATCHER_CONTEXT`, the AMD64
+  machine for wineserver and ntdll), as it makes wasm32 an i386 one.
+* `gen-syscalls.py` reads Wine's Win64 table: one 8-byte slot per argument,
+  64-bit results (window handles and `LRESULT`s keep their upper half).
+* `gen-ntcalls.py` (new, for both builds) generates typed thunks for the NT
+  calls the host routes to the module, behind one export,
+  `wasm_nt_call(index, slots)`. On wasm64, JavaScript would otherwise have
+  to pass each argument as a Number or a BigInt to match its WebAssembly
+  type; with the thunks it writes argument slots and C's casts do the rest
+  (including dropping a 32-bit argument's garbage upper half).
+* The glue's EM_JS bridges take pointers through `ptr()` (pre.js), which
+  accepts the negative i32s of wasm32 and the BigInts of wasm64; the NT calls
+  it forwards to the host pass pointer-sized slots.
+* The host gathers an x64 win32u call's arguments (four registers, then
+  the stack) into slots for the module, and runs user callbacks through
+  `KiUserCallbackDispatcher` with Wine's x86-64 `callback_stack_layout`
+  (arguments at rsp+0x20, length +0x28, id +0x2c, machine frame +0x30, the
+  copied data +0x58). The display driver's `INPUT` records take the x64
+  layout (the union at offset 8).
+
+Emscripten's memory64 output also uses a 64-bit function table, which V8
+supports from Node 24 (and Chrome 133); Node 22's memory64 does not include
+it, so 64-bit Wine with the Unix side needs Node 24.
+
+In the browser, `runtime/node/wine-bundle.mjs --arch x64` builds a second
+bundle (`target/wine-bundle64`: the x86_64 DLLs, prelinked off MinGW's
+shared default base `0x1_8000_0000` and translated, the wasm64 Unix side,
+Notepad and Minesweeper). The worker picks the bundle by the program's
+architecture, and the page's samples offer `hello.exe` and `hello64.exe` as
+console programs and Wine's Notepad and Minesweeper in both builds.
+
 | Test | Result |
 | --- | --- |
 | `hello64.exe` (kernel32 only) on x86_64 Wine | prints both lines, exit 0 |
 | The 7 hand-written programs × 5 levels (MinGW CRT on Wine's msvcrt: printf, `setjmp`/`longjmp`, `qsort` callbacks, x87 and SSE) | 35/35 pass |
 | The same on i386 Wine (regression) | 35/35 pass |
+| `tests/wine/gui.mjs --arch x64` (a 64-bit `winbasic`, Minesweeper with a click, Notepad with typing), Node 24 | 13/13 checks pass |
+| `tests/web/gui.mjs --arch x64` (the same in headless Chromium through the page) | 5/5 checks pass |
+| Both GUI tests on the i386 build (regression, with the shared glue changes) | 13/13 and 5/5 pass |
 
 Fixing the layouts also corrected the i386 `SystemBasicInformation`, which
 had been written one field off (a 256 KB page size).
 
 ## Not done yet
 
-* **Windowed 64-bit programs** (Notepad and Minesweeper as 64-bit
-  programs): win32u's Unix side and wineserver are the Emscripten build in
-  `native/wine-unix`, a wasm32 module. 64-bit Wine needs it built for wasm64
-  (`-sMEMORY64`, with `prepare.py` mapping wasm64 to the x86_64 layout as it
-  maps wasm32 to i386 today, and `gen-syscalls.py` reading the x86_64
-  syscall table), and the host's `userCallback` needs
-  `KiUserCallbackDispatcher`'s x86-64 frame (args at rsp+0x20, length at
-  +0x28, id at +0x2c). Until then `wine.mjs` runs 64-bit programs on the
-  host's own system calls.
+* **64-bit Wine's tests:** kernel32, user32 and gdi32 conformance tests
+  for x86_64 are not run yet (the i386 ones are, against baselines).
 * **Exceptions:** x86-64 exceptions are table-based (`.pdata` unwind
   information). Translated code keeps the guest stack real, so Wine's
   `RtlVirtualUnwind` works on it as long as prologue saves and stack

@@ -3,7 +3,10 @@
 // headless: each program runs in Node until it goes idle (or for a while),
 // the screen is saved as a PNG, and pixels are checked.
 //
-//   node tests/wine/gui.mjs [--keep DIR]
+//   node tests/wine/gui.mjs [--arch x64] [--keep DIR]
+//
+// --arch x64 runs the 64-bit builds on x86_64 Wine (WINE_BUILD64) with the
+// wasm64 Unix side; its table64 needs Node 24.
 
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync } from 'node:fs';
@@ -12,8 +15,11 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const wineBuild = process.env.WINE_BUILD ?? '/opt/wine-build';
 const args = process.argv.slice(2);
+const x64 = args[0] === '--arch' && args[1] === 'x64';
+if (args[0] === '--arch') args.splice(0, 2);
+const wineBuild = x64 ? (process.env.WINE_BUILD64 ?? '/opt/wine-build64') : (process.env.WINE_BUILD ?? '/opt/wine-build');
+const peDir = x64 ? 'x86_64-windows' : 'i386-windows';
 const keep = args[0] === '--keep' ? resolve(args[1]) : join(root, 'target/gui');
 mkdirSync(keep, { recursive: true });
 
@@ -49,8 +55,8 @@ const count = (img, x0, y0, x1, y1, pred) => {
 };
 
 function run(name, exe, extra) {
-  const png = join(keep, `${name}.png`);
-  const r = spawnSync('node', [join(root, 'runtime/node/wine.mjs'), '--screenshot', png, ...extra, exe], {
+  const png = join(keep, `${name}${x64 ? '64' : ''}.png`);
+  const r = spawnSync(process.execPath, [join(root, 'runtime/node/wine.mjs'), '--screenshot', png, ...extra, exe], {
     encoding: 'latin1',
     timeout: 300000,
   });
@@ -66,7 +72,7 @@ function check(name, ok, detail) {
 
 // winbasic: a window with a caption, text, solid brushes and a 4-bit DIB.
 {
-  const { img, stdout } = run('winbasic', join(root, 'tests/programs/gui/winbasic.exe'), []);
+  const { img, stdout } = run('winbasic', join(root, `tests/programs/gui/winbasic${x64 ? '64' : ''}.exe`), []);
   check('winbasic: painted once', /WM_PAINT 1/.test(stdout));
   check('winbasic: text metrics', /TextOut 1, extent 105x16/.test(stdout), stdout.match(/TextOut[^\n]*/)?.[0]);
   // Window at (40,30); client area from (44,53).
@@ -85,7 +91,7 @@ const green = (c) => c[1] > 100 && c[0] < 60 && c[2] < 60;
 const board = [8, 72, 152, 218];
 let unclicked = 0;
 {
-  const exe = join(wineBuild, 'programs/winemine/i386-windows/winemine.exe');
+  const exe = join(wineBuild, `programs/winemine/${peDir}/winemine.exe`);
   const { img } = run('winemine', exe, ['--run-for', '3000']);
   unclicked = count(img, ...board, green);
   check('winemine: board', unclicked > 15000, `${unclicked} green pixels`);
@@ -98,7 +104,7 @@ let unclicked = 0;
 }
 
 {
-  const exe = join(wineBuild, 'programs/winemine/i386-windows/winemine.exe');
+  const exe = join(wineBuild, `programs/winemine/${peDir}/winemine.exe`);
   const { img } = run('winemine-click', exe, ['--run-for', '6000', '--input', '500:click 60,120']);
   const squares = count(img, ...board, green);
   // At least one square (16x16, mostly green) is no longer covered.
@@ -108,7 +114,7 @@ let unclicked = 0;
 // Notepad: its edit control comes from comctl32 v6 (a side-by-side
 // assembly); typed text appears in it.
 {
-  const exe = join(wineBuild, 'programs/notepad/i386-windows/notepad.exe');
+  const exe = join(wineBuild, `programs/notepad/${peDir}/notepad.exe`);
   const { img } = run('notepad', exe, ['--run-for', '12000', '--input', '500:text Hello Wine; 900:key Enter; 1000:text Typed in Notepad']);
   const dark = (c) => c[0] < 96 && c[1] < 96 && c[2] < 96;
   const title = count(img, 20, 6, 140, 22, (c) => c[0] > 200 && c[1] > 200 && c[2] > 200);

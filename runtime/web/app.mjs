@@ -15,6 +15,8 @@ const params = new URLSearchParams(location.search);
 const translatorUrl = params.get('translator') ?? new URL('../../target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm', import.meta.url).href;
 
 const bundleUrl = params.get('bundle') ?? new URL('../../target/wine-bundle/', import.meta.url).href;
+// 64-bit programs run on Wine's x86_64 DLLs from their own bundle.
+const bundle64Url = params.get('bundle64') ?? new URL('../../target/wine-bundle64/', import.meta.url).href;
 if (params.get('wine')) $('wine').checked = true;
 
 if (!crossOriginIsolated) {
@@ -173,6 +175,7 @@ function run(exeName, exeBytes, files, exePath) {
         noCache: $('nocache').checked,
         wine,
         bundleUrl,
+        bundle64Url,
         display: screen && { width: screen.width, height: screen.height, screen: screen.screen, frame: screen.frame, input: screen.input },
       },
       [exeBytes],
@@ -188,20 +191,30 @@ $('run').onclick = async () => {
   run(name.split('/').pop(), exe, files, name);
 };
 
-// Wine's own programs from the bundle (when it carries Wine's Unix side).
-fetch(new URL('manifest.json', bundleUrl))
-  .then((r) => (r.ok ? r.json() : null))
-  .then((manifest) => {
-    if (!manifest?.programs?.length) return;
-    for (const p of manifest.programs) $('sample').add(new Option(p.split('/').pop(), p));
-    $('samples').hidden = false;
-  })
-  .catch(() => {});
+// Samples: a console program built as 32-bit and as 64-bit (no Wine
+// needed), and Wine's own programs from each bundle that carries Wine's
+// Unix side, in their 32-bit and 64-bit builds.
+const samples = [];
+function addSample(label, url, wine) {
+  samples.push({ url, wine });
+  $('sample').add(new Option(label, String(samples.length - 1)));
+  $('samples').hidden = false;
+}
+addSample('hello.exe — 32-bit console', new URL('../../tests/programs/hello.exe', import.meta.url).href, false);
+addSample('hello64.exe — 64-bit console', new URL('../../tests/programs/hello64.exe', import.meta.url).href, false);
+for (const [url, bits] of [[bundleUrl, '32-bit'], [bundle64Url, '64-bit']]) {
+  fetch(new URL('manifest.json', url))
+    .then((r) => (r.ok ? r.json() : null))
+    .then((manifest) => {
+      for (const p of manifest?.programs ?? []) addSample(`${p.split('/').pop()} — ${bits} on Wine`, new URL(p, url).href, true);
+    })
+    .catch(() => {});
+}
 $('runsample').onclick = async () => {
-  const rel = $('sample').value;
-  const bytes = await (await fetch(new URL(rel, bundleUrl))).arrayBuffer();
-  $('wine').checked = true;
-  run(rel.split('/').pop(), bytes, {});
+  const s = samples[Number($('sample').value)];
+  const bytes = await (await fetch(s.url)).arrayBuffer();
+  $('wine').checked = s.wine;
+  run(s.url.split('/').pop(), bytes, {});
 };
 
 // ?exe=<url> runs a program directly (used by tests and demos).

@@ -19,10 +19,11 @@ known limitations.
 64-bit (x86-64) programs have started on a second stack alongside the
 32-bit one ([the plan](docs/plan.md#64-bit-programs)): the translator, the
 runtime and the instruction and program tests handle x86-64 code, on a 32-bit
-or a 64-bit (memory64) WebAssembly memory, and 64-bit console programs run
+or a 64-bit (memory64) WebAssembly memory, and 64-bit programs run
 at their own 64-bit addresses (`0x1_4000_0000` for an .exe), on the
-Milestone 1 shims and on Wine's own x86_64 DLLs, translated (console
-programs so far; windowed ones need Wine's Unix side built for wasm64). See
+Milestone 1 shims and on Wine's own x86_64 DLLs, translated, with Wine's
+Unix side built for wasm64: 64-bit Notepad and Minesweeper run in the
+browser page next to their 32-bit builds. See
 [docs/milestone-9.md](docs/milestone-9.md).
 
 ## Quick start
@@ -63,10 +64,21 @@ sh native/wine-unix/build.sh
 node runtime/node/wine.mjs --screenshot mine.png --run-for 5000 \
   --input "500:click 60,120" /opt/wine-build/programs/winemine/i386-windows/winemine.exe
 
+# 64-bit windowed programs: the same DLLs and programs for x86_64, and
+# Wine's Unix side for wasm64 (its 64-bit table needs Node 24):
+ARCH=x86_64 tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost user32 \
+  gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 rpcrt4 uxtheme \
+  comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts
+ARCH=x86_64 sh native/wine-unix/build.sh
+node runtime/node/wine.mjs --screenshot notepad64.png --run-for 6000 --input "1500:text Hello" \
+  /opt/wine-build64/programs/notepad/x86_64-windows/notepad.exe
+
 # Or in the browser (Chromium): serve with the required headers, open the
-# page and pick a folder that contains an .exe, or try Wine's Minesweeper
-# and Notepad. For "on Wine", build the bundle first.
+# page and pick a folder that contains an .exe, or try a sample: hello as
+# a 32-bit and a 64-bit console program, and Wine's Minesweeper and Notepad
+# as 32-bit and 64-bit programs. For "on Wine", build the bundles first.
 node runtime/node/wine-bundle.mjs
+node runtime/node/wine-bundle.mjs --arch x64
 node runtime/web/serve.mjs 8080
 # http://localhost:8080/runtime/web/
 ```

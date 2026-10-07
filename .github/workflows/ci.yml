@@ -88,10 +88,6 @@ jobs:
   # Milestone 2: programs on Wine's own DLLs, translated (not ported).
   wine:
     runs-on: ubuntu-latest
-    # Comments the Vercel preview's link on pull requests.
-    permissions:
-      contents: read
-      pull-requests: write
     env:
       WINE_SRC: ${{ github.workspace }}/../wine-src/wine-11.0
       WINE_BUILD: ${{ github.workspace }}/../wine-build
@@ -126,38 +122,12 @@ jobs:
           cargo build --release -p wwt-cli
           cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
           sh native/wine-unix/build.sh
-      # The static site (page, runtime, translator, Wine bundle), deployed
-      # to Vercel as a prebuilt output (Vercel builds nothing): a preview
-      # for pull requests, production for main. Not for forks, which get no
-      # secrets.
-      - name: Deploy the site to Vercel
-        id: vercel
-        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: team_9BEP6m6pAw2dpH7RJPuYYHK8
-          VERCEL_PROJECT_ID: prj_4EvacVdNNW0IJFbS2MH3tuqOglvq
-        run: |
-          node runtime/node/wine-bundle.mjs
-          sh tools/site/deploy.sh "$([ "$GITHUB_EVENT_NAME" = push ] && echo production || echo preview)" | tee vercel.log
-          url=$(tail -n 1 vercel.log)
-          echo "url=$url" >> "$GITHUB_OUTPUT"
-          echo "Site: $url" >> "$GITHUB_STEP_SUMMARY"
-      - name: Link the preview on the pull request
-        if: steps.vercel.outputs.url && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        env:
-          URL: ${{ steps.vercel.outputs.url }}
+      - name: Wine bundle (for the site)
+        run: node runtime/node/wine-bundle.mjs
+      - uses: actions/upload-artifact@v4
         with:
-          script: |
-            const marker = '<!-- vercel-preview -->';
-            const body = `${marker}\nPreview of ${context.payload.pull_request.head.sha.slice(0, 7)}: ${process.env.URL}/runtime/web/`;
-            const { owner, repo } = context.repo;
-            const issue_number = context.issue.number;
-            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
-            const old = comments.find((c) => c.body.startsWith(marker));
-            if (old) await github.rest.issues.updateComment({ owner, repo, comment_id: old.id, body });
-            else await github.rest.issues.createComment({ owner, repo, issue_number, body });
+          name: wine-bundle
+          path: target/wine-bundle
       - name: Programs on translated Wine
         run: node tests/programs/check.mjs --wine --jobs 4
       - name: Wine's kernel32 tests (layer 3), against the recorded baseline
@@ -191,7 +161,9 @@ jobs:
           path: target/gui/*.png
 
   # 64-bit programs on Wine's x86_64 DLLs, translated, on a 64-bit
-  # (memory64) WebAssembly memory at their own addresses.
+  # (memory64) WebAssembly memory at their own addresses, with Wine's Unix
+  # side built for wasm64. Its module uses a 64-bit table, which needs
+  # Node 24.
   wine64:
     runs-on: ubuntu-latest
     env:
@@ -204,31 +176,114 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - uses: Swatinem/rust-cache@v2
       - name: Install toolchains
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 flex bison
+          sudo apt-get install -y gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 flex bison libfreetype-dev
       - uses: actions/cache@v4
         with:
           path: |
             ${{ github.workspace }}/../wine-src
             ${{ github.workspace }}/../wine-build64
           key: wine64-${{ hashFiles('tools/wine/build.sh') }}
-      - name: Build Wine's x86_64 PE DLLs
-        run: ARCH=x86_64 WINE_BUILD=$WINE_BUILD64 sh tools/wine/build.sh
+      - name: Build Wine's x86_64 PE DLLs and programs
+        run: |
+          ARCH=x86_64 WINE_BUILD=$WINE_BUILD64 sh tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase \
+            advapi32 sechost user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 \
+            oleaut32 rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi hid programs/winemine programs/notepad fonts
+      - uses: mymindstorm/setup-emsdk@v14
       - name: Build
         run: |
           cargo build --release -p wwt-cli
           cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
+          ARCH=x86_64 WINE_BUILD=$WINE_BUILD64 sh native/wine-unix/build.sh
+      - name: x86_64 Wine bundle (for the site)
+        run: node runtime/node/wine-bundle.mjs --arch x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wine-bundle64
+          path: target/wine-bundle64
       - name: hello64 on translated x86_64 Wine
         run: |
-          x86_64-w64-mingw32-gcc -O2 -nostdlib -o target/hello64.exe tests/programs/hello.c -lkernel32 -Wl,-e,start
-          node runtime/node/wine.mjs target/hello64.exe | tee target/hello64.out
+          node runtime/node/wine.mjs tests/programs/hello64.exe | tee target/hello64.out
           grep -q "Hello from translated x86!" target/hello64.out
       - name: 64-bit programs on translated x86_64 Wine
         run: node tests/programs/check.mjs --arch x64 --wine --jobs 4
+      - name: 64-bit GUI programs on translated x86_64 Wine (headless)
+        run: node tests/wine/gui.mjs --arch x64
+      - name: 64-bit GUI programs in headless Chromium
+        run: |
+          npx --yes playwright@1 install --with-deps chromium
+          npm install --no-save playwright@1
+          node tests/web/gui.mjs --arch x64
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gui-screens-64
+          path: target/gui/*.png
+
+  # The static site (page, runtime, translator, both Wine bundles),
+  # deployed to Vercel as a prebuilt output (Vercel builds nothing): a
+  # preview for pull requests, production for main. Not for forks, which
+  # get no secrets. The Wine jobs upload their bundles before testing, so
+  # the site deploys whatever the tests say (without the 64-bit bundle if
+  # its job broke before making it).
+  site:
+    needs: [wine, wine64]
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+    # Comments the Vercel preview's link on pull requests.
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the translator for the browser
+        run: cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
+      - uses: actions/download-artifact@v4
+        with:
+          name: wine-bundle
+          path: target/wine-bundle
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: wine-bundle64
+          path: target/wine-bundle64
+      - name: Deploy the site to Vercel
+        id: vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: team_9BEP6m6pAw2dpH7RJPuYYHK8
+          VERCEL_PROJECT_ID: prj_4EvacVdNNW0IJFbS2MH3tuqOglvq
+        run: |
+          sh tools/site/deploy.sh "$([ "$GITHUB_EVENT_NAME" = push ] && echo production || echo preview)" | tee vercel.log
+          url=$(tail -n 1 vercel.log)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Site: $url" >> "$GITHUB_STEP_SUMMARY"
+      - name: Link the preview on the pull request
+        if: steps.vercel.outputs.url && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          URL: ${{ steps.vercel.outputs.url }}
+        with:
+          script: |
+            const marker = '<!-- vercel-preview -->';
+            const body = `${marker}\nPreview of ${context.payload.pull_request.head.sha.slice(0, 7)}: ${process.env.URL}/runtime/web/`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const old = comments.find((c) => c.body.startsWith(marker));
+            if (old) await github.rest.issues.updateComment({ owner, repo, comment_id: old.id, body });
+            else await github.rest.issues.createComment({ owner, repo, issue_number, body });
 
   # Runs the same MinGW executables on real Windows and checks they print
   # what the translated runs printed (validating the Linux reference).

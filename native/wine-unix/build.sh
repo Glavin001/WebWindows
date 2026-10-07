@@ -3,14 +3,22 @@
 # wineserver, linked into the same module and called in-process.
 #
 #   native/wine-unix/build.sh
+#   ARCH=x86_64 native/wine-unix/build.sh   # for 64-bit Wine: a wasm64
+#                                           # module in target/wine-unix64
 #
-# Environment: WINE_SRC, WINE_BUILD (as tools/wine/build.sh), EMSDK.
+# Environment: ARCH, WINE_SRC, WINE_BUILD (as tools/wine/build.sh), EMSDK.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
+ARCH=${ARCH:-i386}
 WINE_SRC=${WINE_SRC:-/opt/wine-src/wine-11.0}
-WINE_BUILD=${WINE_BUILD:-/opt/wine-build}
-out=$root/target/wine-unix
+case $ARCH in
+  i386) WINE_BUILD=${WINE_BUILD:-/opt/wine-build}; out=$root/target/wine-unix; wasm64= ;;
+  # wasm64 (memory64) with the x86_64 data layout (prepare.py), sharing the
+  # 64-bit guest's memory.
+  x86_64) WINE_BUILD=${WINE_BUILD:-/opt/wine-build64}; out=$root/target/wine-unix64; wasm64=-sMEMORY64=1 ;;
+  *) echo "ARCH must be i386 or x86_64" >&2; exit 2 ;;
+esac
 if ! command -v emcc > /dev/null; then export PATH="${EMSDK:-/opt/emsdk}/upstream/emscripten:$PATH"; fi
 mkdir -p "$out/include" "$out/obj"
 # Headers Wine generates from IDL (d3d11.h for win32u's d3dkmt.c, ...): a
@@ -19,12 +27,21 @@ idl_headers=$(for f in "$WINE_SRC"/include/*.idl; do n=$(basename "$f" .idl); \
   grep -q "^include/$n.h:" "$WINE_BUILD/Makefile" && echo "include/$n.h"; done)
 make -s -C "$WINE_BUILD" -j"$(nproc)" $idl_headers
 sh "$here/gen-config.sh" "$WINE_BUILD/include/config.h" "$out/include/config.h"
-python3 "$here/prepare.py" "$WINE_SRC" "$WINE_BUILD" "$out/src"
+python3 "$here/prepare.py" "$WINE_SRC" "$WINE_BUILD" "$out/src" "$ARCH"
+
+# Memory layout, shared with runtime/runtime.mjs: the guest region (2 GB for
+# i386 Wine, 8 GB for x86_64), the runtime's native area, then this module's
+# data, stack and heap.
+if [ "$ARCH" = x86_64 ]; then GUEST_LIMIT=$((0x200000000)); else GUEST_LIMIT=$((0x80000000)); fi
+NATIVE_SIZE=$((0x10000000))
+EXTRA_SIZE=$((0x10000000))
+GLOBAL_BASE=$((GUEST_LIMIT + NATIVE_SIZE))
+MEMORY_SIZE=$((GLOBAL_BASE + EXTRA_SIZE))
 
 # The browser's file system: Wine's data files live under /wine (MEMFS).
 # Atomics and bulk memory: the module shares the guest's memory, which is a
 # shared WebAssembly memory.
-CFLAGS="-O2 -g0 -w -matomics -mbulk-memory -D__WINESRC__ -D_GNU_SOURCE -include stdarg.h -I$out/include -I$WINE_BUILD/include -I$out/src/include"
+CFLAGS="-O2 -g0 -w $wasm64 -DGUEST_LIMIT=$GUEST_LIMIT -matomics -mbulk-memory -D__WINESRC__ -D_GNU_SOURCE -include stdarg.h -I$out/include -I$WINE_BUILD/include -I$out/src/include"
 # Names wineserver and win32u share with the rest of the module: in Wine
 # they are separate programs and libraries, here one module. The loop at the
 # end of compile_all finds clashes with nm and renames them in the server
@@ -73,9 +90,16 @@ compile_all() {
     compile $dir "$f" "$extra -DWINE_UNIX_LIB -D_WIN32U_ -D__wine_unix_call_funcs=win32u_unix_call_funcs -include $out/include/win32u_names.h -I$out/src/dlls/win32u -I$out/src/dlls/ntdll"
   done
   # Typed thunks for win32u's system calls, and the entry points around them.
-  python3 "$here/gen-syscalls.py" "$out/src" "$out/src/win32u_syscalls.c"
+  python3 "$here/gen-syscalls.py" "$out/src" "$out/src/win32u_syscalls.c" "$ARCH"
   W32U="-DWINE_UNIX_LIB -D_WIN32U_ -I$out/src/dlls/win32u -I$out/src/dlls/ntdll -I$here/inproc"
   compile inproc "$out/src/win32u_syscalls.c" "$W32U"
+  # Typed thunks for the NT calls the host routes to this module.
+  NTFILES="$out/src/dlls/ntdll/unix/sync.c $out/src/dlls/ntdll/unix/registry.c $out/src/dlls/ntdll/unix/security.c"
+  { grep -ohE '^NTSTATUS WINAPI Nt[A-Za-z]+' $NTFILES | awk '{print $3}'; echo NtClose; echo NtDuplicateObject; } \
+    | sort -u > "$out/src/nt_calls.txt"
+  # shellcheck disable=SC2086
+  python3 "$here/gen-ntcalls.py" "$out/src/nt_calls.c" "$ARCH" "$out/src/nt_calls.txt" $NTFILES "$here/inproc/client.c"
+  compile inproc "$out/src/nt_calls.c" "-DWINE_UNIX_LIB -I$out/src/dlls/ntdll -I$out/src/dlls/ntdll/unix"
   compile inproc "$here/inproc/win32u.c" "$W32U"
   compile driver "$here/driver/browser.c" "$W32U"
   compile inproc "$here/inproc/freetype.c" "-sUSE_FREETYPE=1"
@@ -105,29 +129,23 @@ for round in 1 2 3; do
 done
 [ $fail = 0 ] || exit 1
 
-# Memory layout, shared with runtime/runtime.mjs: the guest region (2 GB for
-# Wine), the runtime's native area, then this module's data, stack and heap.
-GUEST_LIMIT=$((0x80000000))
-NATIVE_SIZE=$((0x10000000))
-EXTRA_SIZE=$((0x10000000))
-GLOBAL_BASE=$((GUEST_LIMIT + NATIVE_SIZE))
-MEMORY_SIZE=$((GLOBAL_BASE + EXTRA_SIZE))
-
-# Exports: the NT calls Wine's Unix code implements here, plus the glue's
-# own entry points (marked EMSCRIPTEN_KEEPALIVE).
-exports=$(grep -ohE '^NTSTATUS WINAPI Nt[A-Za-z]+' "$out/src/dlls/ntdll/unix/sync.c" "$out/src/dlls/ntdll/unix/registry.c" "$out/src/dlls/ntdll/unix/security.c" \
-  | awk '{print "_"$3}' | sort -u | tr '\n' ',')_NtClose,_NtDuplicateObject,_malloc,_free,_wasm_win32u_syscall,_wasm_win32u_unix_call
-emcc $(find "$out/obj" -name '*.o') -o "$out/wine_unix.mjs" -O2 --no-entry --pre-js "$here/inproc/pre.js" \
+# Exports: the NT calls Wine's Unix code implements here (through
+# wasm_nt_call, see gen-ntcalls.py), plus the glue's own entry points
+# (marked EMSCRIPTEN_KEEPALIVE).
+exports=_wasm_nt_call,_malloc,_free,_wasm_win32u_syscall,_wasm_win32u_unix_call
+# shellcheck disable=SC2086
+emcc $(find "$out/obj" -name '*.o') -o "$out/wine_unix.mjs" -O2 $wasm64 --no-entry --pre-js "$here/inproc/pre.js" \
   -sUSE_FREETYPE=1 -sMODULARIZE -sEXPORT_ES6 -sEXPORT_NAME=createWineUnix -sENVIRONMENT=web,worker,node \
   -sIMPORTED_MEMORY -sSHARED_MEMORY -sALLOW_MEMORY_GROWTH=0 \
-  -sGLOBAL_BASE=$GLOBAL_BASE -sINITIAL_MEMORY=$MEMORY_SIZE -sSTACK_SIZE=4MB \
+  -sGLOBAL_BASE=$GLOBAL_BASE -sINITIAL_MEMORY=$MEMORY_SIZE -sMAXIMUM_MEMORY=$MEMORY_SIZE -sSTACK_SIZE=4MB \
   -sEXPORTED_FUNCTIONS="$exports" -sEXPORTED_RUNTIME_METHODS=FS,HEAPU8,UTF8ToString \
   -sERROR_ON_UNDEFINED_SYMBOLS=1 -Wl,--error-limit=0 2> "$out/link.log" || { cat "$out/link.log"; exit 1; }
 # Two definitions of a name with different signatures only warn, and one of
 # them silently wins: never accept that.
 if grep -q "signature mismatch" "$out/link.log"; then grep -A2 "signature mismatch" "$out/link.log"; exit 1; fi
 cat > "$out/wine_unix.json" <<JSON
-{ "guestLimit": $GUEST_LIMIT, "nativeSize": $NATIVE_SIZE, "extraSize": $EXTRA_SIZE, "globalBase": $GLOBAL_BASE }
+{ "arch": "$ARCH", "guestLimit": $GUEST_LIMIT, "nativeSize": $NATIVE_SIZE, "extraSize": $EXTRA_SIZE, "globalBase": $GLOBAL_BASE }
 JSON
 cp "$out/src/win32u_syscalls.json" "$out/win32u_syscalls.json"
+cp "$out/src/nt_calls.json" "$out/nt_calls.json"
 ls -la "$out/wine_unix.wasm"

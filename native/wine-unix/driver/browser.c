@@ -37,8 +37,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(browser);
 
 EM_JS( void, host_screen_size, (int *width, int *height), {
     const s = Module.display?.size ?? { width: 800, height: 600 };
-    HEAP32[(width >>> 0) >> 2] = s.width;
-    HEAP32[(height >>> 0) >> 2] = s.height;
+    HEAP32[ptr(width) / 4] = s.width;
+    HEAP32[ptr(height) / 4] = s.height;
 });
 
 /* A top-level window's surface changed: `dirty` (surface coordinates) of
@@ -46,7 +46,7 @@ EM_JS( void, host_screen_size, (int *width, int *height), {
  * (`left`, `top`) on the screen. */
 EM_JS( void, host_surface_flush, (UINT hwnd, int left, int top, int width, int height,
                                   int dl, int dt, int dr, int db, const void *bits, int stride), {
-    Module.display?.flush(hwnd >>> 0, left, top, width, height, dl, dt, dr, db, bits >>> 0, stride);
+    Module.display?.flush(hwnd >>> 0, left, top, width, height, dl, dt, dr, db, ptr(bits), stride);
 });
 
 /* Placement and stacking: `visible` is the window's area on the screen;
@@ -62,7 +62,7 @@ EM_JS( void, host_window_destroyed, (UINT hwnd), {
 /* Next queued input event: returns 0 when there is none, otherwise fills
  * the INPUT structure (type, then the mouse or keyboard fields). */
 EM_JS( int, host_next_input, (INPUT *input), {
-    return Module.display?.nextInput(input >>> 0) ?? 0;
+    return Module.display?.nextInput(ptr(input)) ?? 0;
 });
 
 /* ---- Displays ----------------------------------------------------------- */
