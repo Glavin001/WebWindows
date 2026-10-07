@@ -40,6 +40,10 @@ jobs:
         run: node tests/programs/check.mjs --jobs 4
       - name: Csmith (layer 2)
         run: node tests/programs/check.mjs --csmith 40 --seed ${{ github.run_number }}000 --opt O0,O2 --jobs 4
+      - name: GCC torture (layer 2)
+        run: |
+          sh tools/torture/fetch.sh
+          node tests/programs/check.mjs --torture target/gcc-src/gcc/testsuite/gcc.c-torture/execute --opt O0,O2 --jobs 4
       - name: Instruction coverage of MinGW output
         run: cargo run -p wwt-testkit --bin coverage -- target/programs/*.exe
       - name: Memory spike
@@ -57,6 +61,50 @@ jobs:
           path: |
             target/programs/*.exe
             target/programs/results*.json
+
+  # Milestone 2: programs on Wine's own DLLs, translated (not ported).
+  wine:
+    runs-on: ubuntu-latest
+    env:
+      WINE_SRC: ${{ github.workspace }}/../wine-src/wine-11.0
+      WINE_BUILD: ${{ github.workspace }}/../wine-build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+      - name: Install toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 flex bison
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/../wine-src
+            ${{ github.workspace }}/../wine-build
+          key: wine-${{ hashFiles('tools/wine/build.sh') }}
+      - name: Build Wine's i386 PE DLLs
+        run: sh tools/wine/build.sh
+      - name: Build
+        run: |
+          cargo build --release -p wwt-cli
+          cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
+      - name: Programs on translated Wine
+        run: node tests/programs/check.mjs --wine --jobs 4
+      - name: GCC torture on translated Wine
+        run: |
+          sh tools/torture/fetch.sh
+          node tests/programs/check.mjs --wine --torture target/gcc-src/gcc/testsuite/gcc.c-torture/execute --opt O2 --jobs 4
+      - name: Browser on translated Wine (headless Chromium)
+        run: |
+          npx --yes playwright@1 install --with-deps chromium
+          npm install --no-save playwright@1
+          node runtime/node/wine-bundle.mjs
+          node tests/web/browser.mjs tests/programs/hello.exe "Hello from translated x86!" --wine
 
   # Runs the same MinGW executables on real Windows and checks they print
   # what the translated runs printed (validating the Linux reference).

@@ -113,10 +113,8 @@ cost about 30% here, mostly code-write checks on stores through pointers.
 
 ## Known limitations and next steps
 
-* **SSE/SSE2 and MMX are not lifted yet.** MinGW does not emit them by
-  default, but MSVC has defaulted to SSE2 since Visual Studio 2012, so this
-  is needed early in M2. The test generator already has an SSE group; it
-  needs operand generation for XMM registers.
+* ~~SSE/SSE2 and MMX are not lifted yet.~~ Done early in M2: 286 forms
+  on WebAssembly SIMD, all passing (see [milestone-2.md](milestone-2.md)).
 * Not supported: BCD instructions (`aaa` family), segment-register loads
   other than recording the selector, far calls and jumps, 16-bit addressing,
   `enter` with a nesting level. They raise an "unsupported" fault.
