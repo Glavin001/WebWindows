@@ -392,6 +392,23 @@ program.exe` records the command stream, and `cargo run -p d3dgpu-core
 readback (the presented frames) as PNG; `DUMP=1` prints the commands and
 `SKIP=a-b` drops some, to bisect.
 
+Benchmark: `tests/programs/gui/d3d9bench.c` draws a grid of spinning
+textured cubes (one `DrawIndexedPrimitive` each, with its matrix in
+shader constants) and particles written to a dynamic vertex buffer every
+frame and drawn with the fixed-function pipeline, as fast as it can, and
+prints the frame rate with each frame split into "scene" (the program's
+calls from `Clear` to `EndScene`) and "present". On the page, pick it in
+the second row and give "cubes particles seconds" as arguments (defaults
+400, 2000, until closed), or open
+`runtime/web/?exe=/tests/programs/gui/d3d9bench.exe&wine=1&args=400+2000+10`;
+`node tests/web/d3d9bench.mjs [cubes particles seconds]` runs it in
+headless Chromium. In this repository's CI container (Chromium with a
+software GPU), 400 cubes and 2000 particles at 640x480 run at about 27
+fps: the scene takes 8 ms (20 µs per draw through translated d3d9 and
+wined3d) and Present 27 ms, of which about 14 ms is the readback and GDI
+copy alone (an empty scene runs at 60 fps). Presenting straight to a
+canvas is the next step.
+
 ## Not done yet
 
 * **Direct3D 10/11:** geometry and tessellation shaders and stream output

@@ -115,7 +115,7 @@ The plan's verification pipeline, as implemented:
 | 1. Instructions | Every legacy instruction form valid in 32-bit user mode (integer, flag-fusion pairs, x87, SSE/SSE2/MMX), random inputs, recorded on a real x86 CPU by `tools/oracle` | `cargo test -p wwt-testkit` |
 | 2. Programs | Hand-written C programs, Csmith programs and GCC's torture tests built with MinGW vs. a native `gcc -m32` build, on the shims or (`--wine`) on translated Wine | `node tests/programs/check.mjs [--csmith N] [--torture DIR] [--wine]` |
 | 3. Wine's own tests | Every unit of Wine's `kernel32`, `user32` and `gdi32` conformance tests on translated Wine, against recorded baselines | `node tests/wine/winetest.mjs --baseline tests/wine/baseline/user32_test.json .../user32_test.exe` |
-| 4. Real software (start) | The browser front end in headless Chromium: the cache and profile loop, the folder picker, and Wine's Minesweeper and Notepad driven with mouse and keyboard; the same windowed programs headless in Node with screenshots | `node tests/web/browser.mjs`, `tests/web/picker.mjs`, `tests/web/gui.mjs`, `tests/wine/gui.mjs` |
+| 4. Real software (start) | The browser front end in headless Chromium: the cache and profile loop, the folder picker, Wine's Minesweeper and Notepad driven with mouse and keyboard, and Direct3D 9 test programs on WebGPU; the same windowed programs headless in Node with screenshots; a Direct3D 9 benchmark | `node tests/web/browser.mjs`, `tests/web/picker.mjs`, `tests/web/gui.mjs`, `tests/wine/gui.mjs`, `tests/web/d3d9bench.mjs` |
 | 5. Own output | Snapshots of IR and WAT for committed binaries | `cargo test -p wwt --test snapshots` |
 
 Instruction fixtures (`tests/fixtures/instructions/*.jsonl.gz`) are recorded

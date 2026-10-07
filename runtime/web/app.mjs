@@ -16,6 +16,8 @@ const translatorUrl = params.get('translator') ?? new URL('../../target/wasm32-u
 
 const bundleUrl = params.get('bundle') ?? new URL('../../target/wine-bundle/', import.meta.url).href;
 if (params.get('wine')) $('wine').checked = true;
+// ?args=a+b: the program's command line (with ?exe=).
+if (params.get('args')) $('args').value = params.get('args');
 
 if (!crossOriginIsolated) {
   $('status').textContent = 'This page needs cross-origin isolation (COOP/COEP headers) for shared memory; serve it with runtime/web/serve.mjs.';
@@ -196,6 +198,10 @@ fetch(new URL('manifest.json', bundleUrl))
   .then((manifest) => {
     if (!manifest?.programs?.length) return;
     for (const p of manifest.programs) $('sample').add(new Option(p.split('/').pop(), p));
+    // Direct3D 9 test programs (tests/programs/gui); the benchmark takes
+    // "cubes particles seconds" in the arguments box.
+    for (const [name, label] of [['d3d9bench.exe', 'd3d9bench.exe (Direct3D 9 benchmark)'], ['d3d9tri.exe', 'd3d9tri.exe (Direct3D 9)']])
+      $('sample').add(new Option(label, new URL(`../../tests/programs/gui/${name}`, import.meta.url).href));
     $('samples').hidden = false;
   })
   .catch(() => {});

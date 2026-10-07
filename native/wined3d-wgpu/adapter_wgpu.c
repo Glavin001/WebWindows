@@ -28,6 +28,8 @@
  * version 2.1 of the License, or (at your option) any later version.
  */
 
+#include <malloc.h>
+
 #include "wined3d_private.h"
 #include "wine/unixlib.h"
 #include "d3dgpu_proto.h"
@@ -565,11 +567,14 @@ BOOL wined3d_buffer_wgpu_prepare_location(struct wined3d_buffer *buffer,
             if (!(bo = calloc(1, sizeof(*bo))))
                 return FALSE;
             bo->size = buffer->resource.size;
-            if (!(bo->shadow = calloc(1, (bo->size + 3) & ~(size_t)3)))
+            /* wined3d drops the buffer object of a dynamic buffer whose
+             * mapping isn't RESOURCE_ALIGNMENT aligned. */
+            if (!(bo->shadow = _aligned_malloc((bo->size + 3) & ~(size_t)3, RESOURCE_ALIGNMENT)))
             {
                 free(bo);
                 return FALSE;
             }
+            memset(bo->shadow, 0, (bo->size + 3) & ~(size_t)3);
             list_init(&bo->b.users);
             bo->b.refcount = 1;
             bo->b.coherent = true;
@@ -614,7 +619,7 @@ void wined3d_buffer_wgpu_unload_location(struct wined3d_buffer *buffer,
     if (!--bo->b.refcount)
     {
         wgpu_destroy_object(device, bo->id);
-        free(bo->shadow);
+        _aligned_free(bo->shadow);
         free(bo);
     }
     buffer->buffer_object = NULL;
@@ -682,7 +687,7 @@ static void adapter_wgpu_destroy_bo(struct wined3d_context *context, struct wine
     struct wined3d_bo_wgpu *bo_wgpu = wined3d_bo_wgpu(bo);
 
     wgpu_destroy_object(wined3d_device_wgpu(context->device), bo_wgpu->id);
-    free(bo_wgpu->shadow);
+    _aligned_free(bo_wgpu->shadow);
     free(bo_wgpu);
 }
 

@@ -70,8 +70,8 @@ async function click(page, x, y) {
   await page.mouse.click(box.x + (x * box.width) / 800, box.y + (y * box.height) / 600);
 }
 
-async function open(page, program, path = `/target/wine-bundle/programs/${program}`) {
-  await page.goto(`${base}/runtime/web/?exe=${path}&wine=1`);
+async function open(page, program, path = `/target/wine-bundle/programs/${program}`, query = '') {
+  await page.goto(`${base}/runtime/web/?exe=${path}&wine=1${query}`);
   await page.waitForFunction(() => window.screenShown || window.lastExit, null, { timeout: 240000 });
   const exit = await page.evaluate(() => window.lastExit);
   if (exit) throw new Error(`${program} exited: ${await page.textContent('#out')}`);
@@ -140,6 +140,20 @@ try {
       (await count(page, [240, 90, 252, 100], ([r, g, b]) => g > 60 && g < 160 && r < 60)) > 10);
     check('d3d9: every call succeeded', /Present: 0/.test(await page.textContent('#out')), (await page.textContent('#out')).match(/[A-Za-z ()]+: 0x?[0-9a-f]+/g)?.slice(-3).join(', '));
     await save(page, 'browser-d3d9tri.png');
+
+    // The benchmark (tests/web/d3d9bench.mjs runs it at full size): textured
+    // cubes from static buffers, particles through a dynamic vertex buffer,
+    // frames as fast as they come, for 3 seconds.
+    await open(page, 'd3d9bench.exe', '/tests/programs/gui/d3d9bench.exe', '&args=60+500+3');
+    const out = async () => (await page.textContent('#out')) ?? '';
+    await until(async () => / fps: /.test(await out()), 180000);
+    // Window at (10,10), client area 640x480 from (14,33); cubes and
+    // particles over a dark blue background.
+    const lit = await count(page, [14, 33, 654, 513], ([r, g, b]) => r + g + b > 300);
+    check('d3d9bench: frames drawn', lit > 5000, `${lit} lit pixels`);
+    await until(() => page.evaluate(() => !!window.lastExit), 60000);
+    const summary = (await out()).match(/summary: .*/)?.[0];
+    check('d3d9bench: ran and exited', !!summary && (await page.evaluate(() => window.lastExit?.code)) === 0, summary);
   } else {
     console.log('skipping d3d9: no WebGPU in this browser');
   }
