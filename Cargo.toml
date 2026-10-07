@@ -8,6 +8,8 @@ members = [
     "crates/d3dgpu-proto",
     "crates/d3dgpu-emu",
     "crates/d3dgpu-shader",
+    "crates/d3dgpu-core",
+    "crates/d3dgpu-scenes",
 ]
 
 [workspace.package]

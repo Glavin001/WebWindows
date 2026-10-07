@@ -1,0 +1,22 @@
+[package]
+name = "d3dgpu-core"
+description = "Render core: executes the d3dgpu command stream (Direct3D 9 semantics) on WebGPU through wgpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+d3dgpu-proto = { path = "../d3dgpu-proto" }
+d3dgpu-shader = { path = "../d3dgpu-shader" }
+d3dgpu-emu = { path = "../d3dgpu-emu" }
+# The core only uses the wgpu API; whoever creates the instance picks the
+# backends (native tests below, `webgpu` in the browser build).
+wgpu = { version = "30", default-features = false, features = ["wgsl", "std", "parking_lot"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["wgsl", "std", "webgpu"] }
+
+[dev-dependencies]
+pollster = "1"
+d3dgpu-scenes = { path = "../d3dgpu-scenes" }
+wgpu = { version = "30", default-features = false, features = ["wgsl", "std", "parking_lot", "vulkan", "metal", "dx12"] }
