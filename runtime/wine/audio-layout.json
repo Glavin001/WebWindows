@@ -1,0 +1,174 @@
+{
+  "get_endpoint_ids_params": {
+    "__size": 24,
+    "flow": 0,
+    "endpoints": 4,
+    "size": 8,
+    "result": 12,
+    "num": 16,
+    "default_idx": 20,
+    "__end": 0
+  },
+  "create_stream_params": {
+    "__size": 56,
+    "name": 0,
+    "device": 4,
+    "flow": 8,
+    "share": 12,
+    "flags": 16,
+    "duration": 24,
+    "period": 32,
+    "fmt": 40,
+    "result": 44,
+    "channel_count": 48,
+    "stream": 52,
+    "__end": 0
+  },
+  "release_stream_params": {
+    "__size": 16,
+    "stream": 0,
+    "timer_thread": 8,
+    "result": 12,
+    "__end": 0
+  },
+  "start_params": {
+    "__size": 16,
+    "stream": 0,
+    "result": 8,
+    "__end": 0
+  },
+  "timer_loop_params": {
+    "__size": 8,
+    "stream": 0,
+    "__end": 0
+  },
+  "get_render_buffer_params": {
+    "__size": 24,
+    "stream": 0,
+    "frames": 8,
+    "result": 12,
+    "data": 16,
+    "__end": 0
+  },
+  "release_render_buffer_params": {
+    "__size": 24,
+    "stream": 0,
+    "written_frames": 8,
+    "flags": 12,
+    "result": 16,
+    "__end": 0
+  },
+  "is_format_supported_params": {
+    "__size": 20,
+    "device": 0,
+    "flow": 4,
+    "share": 8,
+    "fmt_in": 12,
+    "result": 16,
+    "__end": 0
+  },
+  "get_mix_format_params": {
+    "__size": 16,
+    "device": 0,
+    "flow": 4,
+    "fmt": 8,
+    "result": 12,
+    "__end": 0
+  },
+  "get_device_period_params": {
+    "__size": 20,
+    "device": 0,
+    "flow": 4,
+    "result": 8,
+    "def_period": 12,
+    "min_period": 16,
+    "__end": 0
+  },
+  "get_buffer_size_params": {
+    "__size": 16,
+    "stream": 0,
+    "result": 8,
+    "frames": 12,
+    "__end": 0
+  },
+  "get_latency_params": {
+    "__size": 16,
+    "stream": 0,
+    "result": 8,
+    "latency": 12,
+    "__end": 0
+  },
+  "get_current_padding_params": {
+    "__size": 16,
+    "stream": 0,
+    "result": 8,
+    "padding": 12,
+    "__end": 0
+  },
+  "get_frequency_params": {
+    "__size": 16,
+    "stream": 0,
+    "result": 8,
+    "freq": 12,
+    "__end": 0
+  },
+  "get_position_params": {
+    "__size": 24,
+    "stream": 0,
+    "device": 8,
+    "result": 12,
+    "pos": 16,
+    "qpctime": 20,
+    "__end": 0
+  },
+  "set_volumes_params": {
+    "__size": 24,
+    "stream": 0,
+    "master_volume": 8,
+    "volumes": 12,
+    "session_volumes": 16,
+    "__end": 0
+  },
+  "set_event_handle_params": {
+    "__size": 16,
+    "stream": 0,
+    "event": 8,
+    "result": 12,
+    "__end": 0
+  },
+  "test_connect_params": {
+    "__size": 8,
+    "name": 0,
+    "priority": 4,
+    "__end": 0
+  },
+  "get_prop_value_params": {
+    "__size": 32,
+    "device": 0,
+    "flow": 4,
+    "guid": 8,
+    "prop": 12,
+    "result": 16,
+    "value": 20,
+    "buffer": 24,
+    "buffer_size": 28,
+    "__end": 0
+  },
+  "midi_init_params": {
+    "__size": 4,
+    "err": 0,
+    "__end": 0
+  },
+  "midi_out_message_params": {
+    "__size": 28,
+    "err": 20,
+    "notify": 24,
+    "__end": 0
+  },
+  "aux_message_params": {
+    "__size": 24,
+    "err": 20,
+    "__end": 0
+  },
+  "__end": 0
+}

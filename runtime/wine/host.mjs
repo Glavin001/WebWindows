@@ -23,6 +23,7 @@ import { installExceptions } from './exceptions.mjs';
 import { Scheduler, Thread } from './threads.mjs';
 import { startTicker, writeClock } from './ticker.mjs';
 import { THREAD_SYSCALLS } from './thread-syscalls.mjs';
+import { AUDIO_UNIXLIB, BrowserAudio } from './audio.mjs';
 
 export const L = layout;
 
@@ -156,6 +157,8 @@ export class WineHost {
     this.nextHandle = 0x40000;
     /** Wine's Unix side compiled with Emscripten (./unix.mjs), or null */
     this.unix = opts.unix ?? null;
+    /** The audio driver (./audio.mjs); opts.audioSink receives what plays. */
+    this.audio = new BrowserAudio(this, opts.audioSink ?? null);
     this.unix?.attach(this);
     /** Results of NtCallbackReturn, one per user callback in progress. */
     this.callbackResults = [];
@@ -646,6 +649,9 @@ export class WineHost {
       t.nest++;
       try {
         status = unixImpl(a(0), a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8), a(9), a(10), a(11)) >>> 0;
+      } catch (e) {
+        if (e instanceof WebAssembly.RuntimeError) e.message += ` (in ${name} on Wine's Unix side)`;
+        throw e;
       } finally {
         t.nest--;
       }
@@ -761,6 +767,14 @@ export class WineHost {
         status = this.unix.win32uUnixCall(code, args);
       } finally {
         t.nest--;
+      }
+    } else if (handle === AUDIO_UNIXLIB && this.audio) {
+      // The audio driver's timer and main loops block in the scheduler.
+      this.sys = { name: 'audio', ret, esp, espAfter: esp + 20 };
+      status = this.audio.call(code, args);
+      if (status && typeof status === 'object') {
+        if (status.yield) return this.threads.yieldAddr;
+        status = status.status;
       }
     } else {
       this.log(`unix call to unknown library ${hex(handle)} code ${code}`);

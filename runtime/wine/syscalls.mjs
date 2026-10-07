@@ -6,6 +6,7 @@
 import { ProcessExit, hex } from '../runtime.mjs';
 import { parsePe } from './host.mjs';
 import { WIN32U_UNIXLIB } from './unix.mjs';
+import { AUDIO_UNIXLIB } from './audio.mjs';
 import { ntRaiseException, restoreContext } from './exceptions.mjs';
 
 import L from './layout.json' with { type: 'json' };
@@ -188,6 +189,12 @@ export const SYSCALLS = {
       const img = this.images.get(addr);
       if (this.unix && img && /\\win32u\.dll$/i.test(img.path)) {
         this.w32(buf, WIN32U_UNIXLIB);
+        this.w32(buf + 4, 0);
+        return STATUS.SUCCESS;
+      }
+      // The audio driver mmdevapi loads (./audio.mjs).
+      if (this.audio && img && /\\winepulse\.drv$/i.test(img.path)) {
+        this.w32(buf, AUDIO_UNIXLIB);
         this.w32(buf + 4, 0);
         return STATUS.SUCCESS;
       }

@@ -22,7 +22,7 @@
 // one processor; code that spins without system calls waiting for another
 // thread is not preempted.
 
-import { hex } from '../runtime.mjs';
+import { ProcessExit, hex } from '../runtime.mjs';
 
 /** Thrown to end the current thread (NtTerminateThread on itself). */
 export class ThreadExit extends Error {
@@ -130,6 +130,7 @@ export class Scheduler {
   ended(t, status) {
     t.state = 'dead';
     t.exitStatus = status;
+    this.lastExit = status;
     if (this.h.trace) this.h.log(`thread ${hex(t.tid)} ended with ${hex(status)}`);
   }
 
@@ -138,7 +139,7 @@ export class Scheduler {
     const p = t.pending;
     t.pending = null;
     this.m.setReg(t.cpu, 0, status >>> 0);
-    this.m.setReg(t.cpu, 4, p.esp + 4);
+    this.m.setReg(t.cpu, 4, p.espAfter);
     t.resume = p.ret;
     t.state = 'ready';
   }
@@ -181,13 +182,17 @@ export class Scheduler {
   /** Milliseconds until the earliest deadline of a blocked thread (-1: none). */
   untilDeadline() {
     let d = Infinity;
-    for (const t of this.threads) if (t.state === 'blocked') d = Math.min(d, t.pending.deadline);
+    for (const t of this.threads) if (t.state === 'blocked') d = Math.min(d, t.pending.deadline, t.pending.wakeAt?.() ?? Infinity);
     if (d === Infinity) return -1;
     return Math.max(0, Math.ceil(d - performance.now()));
   }
 
   /** Blocks for real until input arrives or `ms` pass; returns realWait's result. */
   idle(ms) {
+    if (ms < 0 && globalThis.process?.env?.WWT_THREAD_DUMP) {
+      this.dumpAt = 0;
+      this.maybeDump();
+    }
     const r = this.realWait(ms);
     if (r > 0) this.h.unix?.M._wasm_process_input();
     return r;
@@ -195,18 +200,30 @@ export class Scheduler {
 
   /** The process: runs threads until it exits (ProcessExit propagates). */
   run() {
+    // WWT_THREAD_DUMP=ms: prints the threads' states once, after that long.
+    this.dumpAt = globalThis.process?.env?.WWT_THREAD_DUMP ? performance.now() + Number(process.env.WWT_THREAD_DUMP) : Infinity;
     for (;;) {
+      this.maybeDump();
       const t = this.pick(null);
       if (t) {
         this.runThread(t);
         continue;
       }
       if (this.poll()) continue;
-      if (!this.live().length) throw new Error('every thread ended without ending the process');
+      // The last thread ended: so does the process, with its exit code.
+      if (!this.live().length) throw new ProcessExit(this.lastExit ?? 0);
       const ms = this.untilDeadline();
       const r = this.idle(ms);
       if (r < 0 && ms < 0) throw new Error(`deadlock: ${this.describe()}`);
     }
+  }
+
+  maybeDump() {
+    if (!(performance.now() > this.dumpAt)) return;
+    this.dumpAt = Infinity;
+    const lines = [`threads: ${this.describe()}`];
+    for (const t of this.live()) lines.push(`  ${hex(t.tid)} ${t.state} nest ${t.nest} eip ${hex(t.pending ? t.pending.ret : t.resume)} esp ${hex(this.m.reg(t.cpu, 4))}`);
+    this.h.stderr(new TextEncoder().encode(lines.join('\n') + '\n'));
   }
 
   describe() {
@@ -226,19 +243,23 @@ export class Scheduler {
    * status or the deadline passes (then `timeoutStatus`). Returns the status
    * now, or the YIELD address when the thread yielded.
    */
-  block(name, ret, esp, check, deadline, timeoutStatus = STATUS_TIMEOUT) {
+  block(name, ret, esp, check, deadline, timeoutStatus = STATUS_TIMEOUT, wakeAt = undefined) {
     let status = check();
     if (status !== undefined) return { status };
     if (performance.now() >= deadline) return { status: timeoutStatus };
     const t = this.current;
     if (this.canYield()) {
-      t.pending = { name, ret, esp, check, deadline, timeoutStatus };
+      // A system call pops its return address; a Unix library call
+      // (__wine_unix_call) its arguments too.
+      const espAfter = this.h.sys?.espAfter ?? esp + 4;
+      t.pending = { name, ret, esp, espAfter, check, deadline, timeoutStatus, wakeAt };
       t.state = 'blocked';
       return { yield: true };
     }
     // Nested: run other threads until the condition holds.
     for (;;) {
-      const left = deadline === Infinity ? -1 : Math.max(0, Math.ceil(deadline - performance.now()));
+      const until = Math.min(deadline, wakeAt?.() ?? Infinity);
+      const left = until === Infinity ? -1 : Math.max(0, Math.ceil(until - performance.now()));
       this.waitNested(left);
       status = check();
       if (status !== undefined) return { status };
@@ -253,6 +274,7 @@ export class Scheduler {
    * can ever happen.
    */
   waitNested(ms) {
+    this.maybeDump();
     const self = this.current;
     if (self) self.state = 'waiting';
     try {
@@ -292,7 +314,9 @@ export class Scheduler {
     const now = performance.now();
     let due = now - t.sliceStart >= SLICE_MS;
     if (!due) {
-      for (const o of this.threads) if (o.state === 'blocked' && o.pending.deadline <= now) due = true;
+      for (const o of this.threads) {
+        if (o.state === 'blocked' && Math.min(o.pending.deadline, o.pending.wakeAt?.() ?? Infinity) <= now) due = true;
+      }
     }
     if (!due) return false;
     if (this.threads.some((o) => o !== t && this.runnable(o))) return true;

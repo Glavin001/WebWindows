@@ -90,6 +90,20 @@ export const THREAD_SYSCALLS = {
   NtAlertThreadByThreadId(a) {
     return this.threads.alert(a(0));
   },
+  NtAlertMultipleThreadByThreadId(a) {
+    // RtlWakeAddressAll: thread ids at a(0), a(1) of them.
+    for (let i = 0; i < a(1); i++) this.threads.alert(this.u32(a(0) + i * 4));
+    return STATUS_SUCCESS;
+  },
+  // Completion ports: thread pool workers wait here.
+  NtRemoveIoCompletion(a) {
+    const check = poll(this, 'NtRemoveIoCompletion', [a(0), a(1), a(2), a(3), zeroTimeout(this)]);
+    return this.threads.block('NtRemoveIoCompletion', this.sys.ret, this.sys.esp, check, timeoutDeadline(this, a(4)));
+  },
+  NtRemoveIoCompletionEx(a) {
+    const check = poll(this, 'NtRemoveIoCompletionEx', [a(0), a(1), a(2), a(3), zeroTimeout(this), a(5)]);
+    return this.threads.block('NtRemoveIoCompletionEx', this.sys.ret, this.sys.esp, check, timeoutDeadline(this, a(4)));
+  },
   NtWaitForKeyedEvent(a) {
     return this.threads.waitKeyed('NtWaitForKeyedEvent', this.sys.ret, this.sys.esp, a(1), a(3));
   },
