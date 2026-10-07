@@ -123,7 +123,8 @@ fn f80_to_f64(out: &mut Vec<W<'static>>, locals: &mut Vec<ValType>) {
         W::I64Shl,
         W::I64Const(0x7ff0_0000_0000_0000),
         W::I64Or,
-        // NaN: quiet, keeping the top fraction bits.
+        // NaN: quiet, keeping the top fraction bits; infinity: no fraction.
+        W::I64Const(0),
         W::LocalGet(0),
         W::I64Const(1),
         W::I64Shl,
@@ -131,7 +132,6 @@ fn f80_to_f64(out: &mut Vec<W<'static>>, locals: &mut Vec<ValType>) {
         W::I64ShrU,
         W::I64Const(0x0008_0000_0000_0000),
         W::I64Or,
-        W::I64Const(0),
         W::LocalGet(0),
         W::I64Const(1),
         W::I64Shl,
