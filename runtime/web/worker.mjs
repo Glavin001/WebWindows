@@ -5,6 +5,7 @@
 import { Machine, ProcessExit, GuestFault } from '../runtime.mjs';
 import { Process } from '../win32.mjs';
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
+import { WineHost } from '../wine/host.mjs';
 
 const log = (text) => postMessage({ type: 'log', text });
 
@@ -28,7 +29,8 @@ async function cacheRead(dir, name) {
   if (!dir) return null;
   try {
     const f = await (await dir.getFileHandle(name)).getFile();
-    return new Uint8Array(await f.arrayBuffer());
+    // An interrupted write leaves an empty file: treat it as missing.
+    return f.size ? new Uint8Array(await f.arrayBuffer()) : null;
   } catch {
     return null;
   }
@@ -42,8 +44,75 @@ async function cacheWrite(dir, name, bytes) {
   await w.close();
 }
 
+/**
+ * Runs the program on translated Wine (Milestone 2): Wine's DLLs come
+ * pre-translated in the bundle; the .exe is translated here and cached.
+ */
+async function runOnWine({ exeName, exe, argv, ft, abi, dir, key, bundleUrl }) {
+  const base = new URL(bundleUrl, self.location.href);
+  const manifest = await (await fetch(new URL('manifest.json', base))).json();
+  const t0 = performance.now();
+  const files = new Map();
+  const compiled = new Map();
+  const sys32 = 'c:\\windows\\system32';
+  await Promise.all([
+    ...Object.entries(manifest.dlls).map(async ([name, f]) => {
+      const [pe, mod] = await Promise.all([
+        fetch(new URL(f.pe, base)).then((r) => r.arrayBuffer()),
+        // Streaming compilation: browsers cache the compiled code by URL.
+        WebAssembly.compileStreaming(fetch(new URL(f.wasm, base))),
+      ]);
+      files.set(`${sys32}\\${name}`, new Uint8Array(pe));
+      compiled.set(`${sys32}\\${name}`, mod);
+    }),
+    ...manifest.nls.map(async (n) => {
+      files.set(`${sys32}\\${n}`, new Uint8Array(await (await fetch(new URL(n, base))).arrayBuffer()));
+    }),
+  ]);
+  files.set('c:\\windows\\globalization\\sorting\\sortdefault.nls', files.get(`${sys32}\\sortdefault.nls`));
+  log(`loaded Wine ${manifest.wine} (${compiled.size} DLLs) in ${(performance.now() - t0).toFixed(0)} ms`);
+  const exeDos = `c:\\${exeName.toLowerCase()}`;
+  files.set(exeDos, exe);
+  const translateTimed = (path, bytes) => {
+    const t = performance.now();
+    const w = ft.translatePe(bytes);
+    log(`translated ${path} in ${(performance.now() - t).toFixed(0)} ms`);
+    return w;
+  };
+  // The .exe is translated before boot so its cache write completes before
+  // the program runs (the worker may be terminated as soon as it exits).
+  let exeWasm = await cacheRead(dir, `${key}.wine.wasm`);
+  if (exeWasm) {
+    log(`loaded cached translation of ${exeDos}`);
+  } else {
+    exeWasm = translateTimed(exeDos, exe);
+    await cacheWrite(dir, `${key}.wine.wasm`, exeWasm);
+  }
+  const translate = (path, bytes) => {
+    if (compiled.has(path)) return compiled.get(path);
+    if (path === exeDos) return exeWasm;
+    return translateTimed(path, bytes);
+  };
+  const machine = new Machine({ abi, kernel: ft.kernel(), guestLimit: 0x8000_0000, log });
+  await machine.init();
+  enableFastMode(machine, ft, { log });
+  const host = new WineHost(machine, {
+    translate,
+    files,
+    argv: [`C:\\${exeName}`, ...argv],
+    exePath: `C:\\${exeName}`,
+    stdout: (b) => postMessage({ type: 'stdout', bytes: b }),
+    stderr: (b) => postMessage({ type: 'stderr', bytes: b }),
+  });
+  host.boot(`${sys32}\\ntdll.dll`, exeDos);
+  log(`Wine process ready in ${(performance.now() - t0).toFixed(0)} ms; running`);
+  const tr = performance.now();
+  const r = host.run();
+  return { ...r, runMs: performance.now() - tr };
+}
+
 onmessage = async (e) => {
-  const { exeName, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache } = e.data;
+  const { exeName, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl } = e.data;
   const enc = new TextEncoder();
   try {
     const t0 = performance.now();
@@ -52,6 +121,12 @@ onmessage = async (e) => {
     const exe = new Uint8Array(exeBytes);
     const key = `${await sha256(exe)}-abi${abi.version}`;
     const dir = noCache ? null : await cacheDir();
+    if (wine) {
+      const r = await runOnWine({ exeName, exe, argv, ft, abi, dir, key, bundleUrl });
+      if (r.error) postMessage({ type: 'stderr', bytes: enc.encode(`\n*** ${r.error.message}\n`) });
+      postMessage({ type: 'exit', code: r.error ? null : r.exitCode, translated: false, runMs: r.runMs, wine: true });
+      return;
+    }
     // The profile lists code found at run time on earlier launches.
     const profileBytes = await cacheRead(dir, `${key}.profile`);
     const profile = profileBytes ? [...new Uint32Array(profileBytes.buffer)] : [];

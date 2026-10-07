@@ -22,6 +22,7 @@ try {
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const exe = resolve(process.argv[2] ?? join(root, 'tests/programs/hello.exe'));
 const expect = process.argv[3] ?? 'Hello from translated x86!';
+const wine = process.argv.includes('--wine');
 const port = 18000 + Math.floor(Math.random() * 1000);
 const server = spawn('node', [join(root, 'runtime/web/serve.mjs'), String(port), root], { stdio: 'ignore' });
 await new Promise((r) => setTimeout(r, 500));
@@ -31,7 +32,7 @@ let failed = false;
 try {
   const page = await browser.newPage();
   page.on('pageerror', (e) => console.error('page error:', e.message));
-  const url = `http://localhost:${port}/runtime/web/?exe=/${relative(root, exe)}`;
+  const url = `http://localhost:${port}/runtime/web/?exe=/${relative(root, exe)}${wine ? '&wine=1' : ''}`;
   for (const launch of ['first', 'second', 'third']) {
     await page.goto(url);
     await page.waitForFunction(() => window.lastExit !== undefined, null, { timeout: 120000 });
@@ -42,7 +43,7 @@ try {
     console.log(log.trim());
     console.log(out.trim());
     if (!out.includes(expect)) failed = true;
-    if (launch === 'third' && exit.translated) {
+    if (launch === 'third' && exit.translated && !wine) {
       console.error('FAIL: third launch translated again instead of using the cache');
       failed = true;
     }

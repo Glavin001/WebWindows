@@ -7,7 +7,7 @@
 // files from WINE_SRC; translations are cached in target/wine-cache.
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,9 +34,13 @@ function translate(path, bytes) {
   const hash = createHash('sha256').update(bytes).digest('hex').slice(0, 16);
   const out = join(cacheDir, `${path.split('\\').pop()}-${hash}.wasm`);
   if (!existsSync(out)) {
-    const tmp = join(cacheDir, `${hash}.bin`);
-    execFileSync('sh', ['-c', `cat > ${tmp}`], { input: bytes });
-    execFileSync(wwt(), ['translate', tmp, '-o', out], { stdio: ['ignore', 'ignore', 'inherit'] });
+    // Several runners share the cache: write under a per-process name and
+    // rename, so a reader never sees a partial file.
+    const tmp = join(cacheDir, `${hash}.${process.pid}`);
+    writeFileSync(`${tmp}.bin`, bytes);
+    execFileSync(wwt(), ['translate', `${tmp}.bin`, '-o', `${tmp}.wasm`], { stdio: ['ignore', 'ignore', 'inherit'] });
+    renameSync(`${tmp}.wasm`, out);
+    rmSync(`${tmp}.bin`);
   }
   return readFileSync(out);
 }
@@ -70,10 +74,13 @@ files.set(exeDos, readFileSync(exe));
 
 mkdirSync(cacheDir, { recursive: true });
 const abi = JSON.parse(execFileSync(wwt(), ['abi']).toString());
-execFileSync(wwt(), ['kernel', '-o', join(cacheDir, 'kernel.wasm')]);
+const kernelPath = join(cacheDir, `kernel.${process.pid}.wasm`);
+execFileSync(wwt(), ['kernel', '-o', kernelPath]);
+const kernel = readFileSync(kernelPath);
+rmSync(kernelPath);
 const machine = new Machine({
   abi,
-  kernel: readFileSync(join(cacheDir, 'kernel.wasm')),
+  kernel,
   guestLimit: 0x8000_0000,
   log: trace ? (s) => process.stderr.write(`[machine] ${s}\n`) : undefined,
 });

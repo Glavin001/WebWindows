@@ -11,14 +11,13 @@
 // image sections together with their translated modules, and implements
 // the system calls in ./syscalls.mjs.
 
-import { readFileSync } from 'node:fs';
-
 import { ProcessExit, hex } from '../runtime.mjs';
 import { mapImage } from '../pe.mjs';
 import { VirtualMemory, MEM_IMAGE, MEM_PRIVATE, PAGE_READWRITE, PAGE_EXECUTE_READ, PAGE_READONLY } from './vm.mjs';
 import { SYSCALLS, STATUS } from './syscalls.mjs';
 
-const layout = JSON.parse(readFileSync(new URL('./layout.json', import.meta.url), 'utf8'));
+import layout from './layout.json' with { type: 'json' };
+
 export const L = layout;
 
 const EAX = 0, ECX = 1, EDX = 2, EBX = 3, ESP = 4, EBP = 5, ESI = 6, EDI = 7;
@@ -217,8 +216,11 @@ export class WineHost {
       return { status: STATUS.CONFLICTING_ADDRESSES };
     }
     this.vm.commit(base, info.sizeOfImage, PAGE_EXECUTE_READ);
+    // The translation: module bytes, or an already compiled module (Wine's
+    // DLLs are translated ahead of time and compiled by the host).
     const wasm = this.translate(dosPath, bytes, base);
-    const rec = this.m.loadModuleSync(wasm, dosPath.split('\\').pop());
+    const name = dosPath.split('\\').pop();
+    const rec = wasm instanceof WebAssembly.Module ? this.m.loadCompiledSync(wasm, name) : this.m.loadModuleSync(wasm, name);
     mapImage(this.m, bytes, rec.meta.image);
     this.images.set(base, { path: dosPath, info, size: info.sizeOfImage });
     this.log(`mapped ${dosPath} at ${hex(base)} (${rec.count} functions)`);
