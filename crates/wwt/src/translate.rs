@@ -456,7 +456,11 @@ const FLAGS: [u32; 5] = crate::ir::FLAG_STATE;
 /// after a call to a function assumed not to write them back.
 pub fn prove_flags_abi(funcs: &mut [Function], reading_slots: HashSet<u32>) -> usize {
     let n = funcs.len();
-    let index: HashMap<u32, usize> = funcs.iter().enumerate().map(|(i, f)| (f.entry, i)).collect();
+    let index: HashMap<u32, usize> = funcs
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.entry, i))
+        .collect();
     // Who calls or jumps to whom, within the module; who leaves through an
     // indirect jump that is not an import stub.
     let mut callers: Vec<Vec<usize>> = vec![vec![]; n];
