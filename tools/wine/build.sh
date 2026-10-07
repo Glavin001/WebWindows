@@ -6,12 +6,14 @@
 #   tools/wine/build.sh [dll ...]      # default: the DLLs a console app needs
 #   tools/wine/build.sh programs/cmd   # one of Wine's programs (cmd.exe)
 #   tools/wine/build.sh kernel32/tests # a DLL's conformance tests
+#   tools/wine/build.sh winepulse.drv  # the audio driver stub (native/audio)
 #   tools/wine/build.sh fonts          # the bitmap fonts (.fon) Wine generates;
 #                                      # needs FreeType's headers (libfreetype-dev)
 #
 # Environment: WINE_SRC (default /opt/wine-src/wine-$VERSION), WINE_BUILD
 # (default /opt/wine-build). Needs gcc, flex, bison and gcc-mingw-w64-i686.
 set -e
+repo=$(cd "$(dirname "$0")/../.." && pwd)
 VERSION=11.0
 WINE_SRC=${WINE_SRC:-/opt/wine-src/wine-$VERSION}
 WINE_BUILD=${WINE_BUILD:-/opt/wine-build}
@@ -41,6 +43,14 @@ target() {
 targets=""
 keep=""
 for d in $DLLS; do
+  if [ "$d" = winepulse.drv ]; then
+    # The audio driver stub whose Unix side is the browser host
+    # (native/audio/winepulse.c).
+    mkdir -p dlls/winepulse.drv/i386-windows
+    i686-w64-mingw32-gcc -O2 -shared -nostdlib -Wl,-e,_DllMain@12 -o dlls/winepulse.drv/i386-windows/winepulse.drv "$repo/native/audio/winepulse.c" -lkernel32
+    ls -la dlls/winepulse.drv/i386-windows/winepulse.drv
+    continue
+  fi
   if [ "$d" = fonts ]; then
     # sfnt2fon converts the TrueType sources; Wine was configured without
     # FreeType (the browser build brings its own), so build it here.
@@ -55,5 +65,5 @@ for d in $DLLS; do
   fi
   targets="$targets $(target "$d")"
 done
-make -j"$(nproc)" $keep $targets
+[ -z "$targets" ] || make -j"$(nproc)" $keep $targets
 for t in $targets; do ls -la "$t"; done

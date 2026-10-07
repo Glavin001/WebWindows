@@ -13,9 +13,11 @@ build up to it.
 | --- | --- |
 | Exceptions | Done (below) |
 | Threads | Done (below) |
-| Timers | To do |
-| Audio (`winmm`, DirectSound on an `AudioWorklet`) | To do |
-| DirectDraw (Wine's `ddraw` on `wined3d` with 3D off) | To do |
+| Timers | Done (below) |
+| Audio (`winmm`, DirectSound on an `AudioWorklet`) | Done (below) |
+| DirectDraw (Wine's `ddraw` on `wined3d` with 3D off) | Done (below) |
+| DirectInput | Done (below) |
+| Cave Story | Intro, title and a new game in Node, with music (below); the browser: to check |
 
 ## Exceptions
 
@@ -134,7 +136,148 @@ timeouts, a mutex between two threads, and waiting for the first of three
 sleeping threads).
 
 Not done: asynchronous procedure calls (alertable waits return without
-running them), the contexts of threads blocked in a system call, and
-threads that block inside nested waits while another thread waits for them
-(for example, a worker thread sending a message to a window whose thread is
-itself waiting inside a window procedure).
+running them) and the contexts of threads blocked in a system call.
+
+**Message waits yield.** win32u waits for messages inside Wine's Unix side,
+which cannot unwind, so a thread waiting in `GetMessage` used to wait
+nested, with other threads running on top of it; a thread sending it a
+message then waited on top of the very thread that had to answer. The host
+now handles win32u's waiting calls itself (`WIN32U_WAITS` in
+`runtime/wine/thread-syscalls.mjs`): `GetMessage`,
+`MsgWaitForMultipleObjectsEx` and `WaitMessage` poll the queue with a zero
+timeout (`MWMO_INPUTAVAILABLE`) and block in the scheduler like any other
+wait. Two fixes came with it: wineserver's clock is set from the host's on
+every request (it trailed it, so a zero-timeout poll could wait a moment),
+and a poll never runs other threads.
+
+**Ending the process.** `ExitProcess` first terminates the other threads
+(`NtTerminateProcess(0)`); a thread waiting nested under the exiting one is
+marked and ends when its wait returns. Its end no longer replaces the exit
+on its way out: `audio.exe` used to hang at exit, with the main thread left
+running above a thread that had ended.
+
+## Timers
+
+Games pace their frames with `timeGetTime`, `QueryPerformanceCounter`,
+`Sleep` and winmm's multimedia timers. Those all work on what the thread
+work above provides: the clock in `KUSER_SHARED_DATA`, waits with timeouts
+in the scheduler, and wineserver's timers (waitable timers and `WM_TIMER`),
+which the scheduler runs whenever it polls or idles
+(`wasm_server_run`). winmm's `timeSetEvent` runs its own thread that
+sleeps until the next timer is due, and calls back on it.
+
+A thread whose wait has a deadline that has come is preempted for at the
+next system call of the running thread, so a timer thread fires on time
+even while a game's main loop never blocks.
+
+Test: `tests/wine/win32/timers.c` (`Sleep` measured by `timeGetTime` and
+the performance counter, a periodic 10 ms multimedia timer on its own
+thread, one-shot timers setting an event, `WM_TIMER` and a waitable timer;
+counts are checked in ranges so the output is the same on Windows).
+
+## Audio
+
+Wine's sound stack runs unchanged down to its audio driver: `winmm` and
+`dsound` play through `mmdevapi`, which loads a driver and calls its Unix
+side. The host provides that Unix side (`runtime/wine/audio.mjs`):
+
+* **The driver.** `winepulse.drv` is a stub DLL (`native/audio/winepulse.c`,
+  built by `tools/wine/build.sh winepulse.drv`); when it asks for its Unix
+  functions (`NtQueryVirtualMemory(MemoryWineUnixFuncs)`), the host answers
+  with its own handle, and every `__wine_unix_call` on it goes to
+  `BrowserAudio`. It implements the whole of Wine's audio driver interface
+  (`unix_funcs` in `dlls/mmdevapi/unixlib.h`): endpoints (one, "Speakers",
+  48 kHz float stereo), streams with their ring buffers in guest memory,
+  render and capture buffers, volumes, clocks and positions.
+* **Time.** A stream's position advances with `performance.now()` while it
+  plays; each period the driver takes the frames due from the stream's
+  buffer, converts them (8, 16, 24 and 32-bit integer, float; mono to
+  stereo; any rate) to float stereo at the sink's rate and writes them out.
+  The driver's timer thread (`timer_loop`) blocks in the scheduler until the
+  next period and signals the stream's event, which is how `mmdevapi`'s
+  clients (winmm's and DirectSound's mixing threads) know to refill.
+* **The page.** The sink is a ring of float frames in a
+  `SharedArrayBuffer` (`runtime/wine/audio-sink.mjs`) that an
+  `AudioWorklet` (`audio-worklet.js`) reads at the `AudioContext`'s rate,
+  playing silence when it runs dry. The page creates the context when a
+  program starts (a user gesture). In Node, `wine.mjs --audio-out F.wav`
+  writes what was played to a WAV file.
+* **COM registration.** DirectSound and winmm create `mmdevapi`'s device
+  enumerator with `CoCreateInstance`, which needs its class in the registry.
+  On Windows (and in Wine's prefix creation) DLL registration writes it; the
+  host now reads the registrar scripts Wine's DLLs carry (`WINE_REGISTRY`
+  resources) at start-up and writes their keys (`runtime/wine/registry-setup.mjs`).
+
+Test: `tests/wine/win32/audio.c` (a `waveOut` buffer completes after about
+its length and the position reaches its end; a DirectSound secondary
+buffer plays, its play cursor moves within the first second, and stops).
+CI's Windows machines have no sound device, so this one is not compared
+with a native run (`native: skip`).
+
+## DirectDraw
+
+Wine's `ddraw` runs on `wined3d`, which has a renderer without 3D
+(`renderer=no3d`): surfaces live in system memory, blits and color fills
+are done on the CPU, and the primary surface reaches the screen with GDI
+(`BitBlt` into the window, which the browser display driver shows). The
+host selects it (`WINE_D3D_CONFIG=renderer=no3d,csmt=0`); 3D is another
+milestone's work.
+
+* `wined3d` imports `opengl32`, whose Unix side the host stubs: it loads,
+  and every OpenGL call fails.
+* `csmt=0` keeps `wined3d`'s command stream on the program's thread. With
+  its own thread, presents ran late, and that thread spins waiting for work,
+  which a cooperative scheduler only stops at the end of a slice.
+* Display mode changes work without the display driver knowing: win32u
+  emulates modes on a display that has one (the screen stays 800x600; a
+  640x480 game is scaled to it). 16 and 32-bit modes both work.
+* Memory status (`GlobalMemoryStatusEx`, which `wined3d` asks for) now has
+  answers: `SystemPerformanceInformation` and `ProcessVmCounters`.
+
+Tests: `tests/wine/win32/ddraw.c` (windowed: a primary surface with a
+clipper, offscreen surfaces, color fills, a color-keyed blit, `GetDC` on a
+surface, a blit to the window, read back with GDI) and `ddraw-fullscreen.c`
+(exclusive mode, 640x480 in 16 and 32 bits, a flipping primary surface with
+a back buffer, pixels written through `Lock`, and the desktop's mode back).
+
+Known gap: in a 16-bit mode, a back buffer written through `Lock` and then
+flipped still shows its previous contents on screen (color fills and blits
+show; the primary surface reads back right, so it is lost in `wined3d`'s
+converting blit to the 32-bit front buffer). The fullscreen test checks
+`Lock` in 32 bits only.
+
+## DirectInput
+
+Wine's `dinput` works as it is (it needs `hid` and `setupapi`, both built
+now): the keyboard and mouse devices read the window's input, and there are
+no joysticks. Test: `tests/wine/win32/dinput.c`.
+
+## The web bundle
+
+Sound, DirectDraw and DirectInput add DLLs the page does not need for other
+programs (`wined3d` alone translates to 25 MB of WebAssembly), so they form
+a group the worker fetches only when the program, or a DLL in its folder,
+imports one of them. Their debug information is stripped in the bundle.
+
+## Cave Story
+
+The freeware Cave Story (the Aeon Genesis English translation; not in the
+repository) runs in Node with `wine.mjs --folder` (its directory as
+`C:\app`, as the page's folder picker gives it). Checked so far: the intro
+and the title screen, windowed at both sizes (320x240 and 640x480) and
+fullscreen in 16 and 32 bits; a new game starts from the keyboard
+(`--input "30000: keydown KeyZ; 30300: keyup KeyZ"`); its music plays
+through DirectSound (`--audio-out` captures it). It keeps up in real time:
+50 seconds of play took 25 seconds of CPU. Still to check: playing further
+in, and the browser.
+
+Two fixes it needed:
+
+* **Section slack.** The English patch put the window title in the bytes
+  between the end of `.rdata`'s virtual size and the next page, which
+  Windows maps from the file. The loader copied only the virtual size, so
+  the window class had an empty name and `RegisterClassEx` failed.
+* **Busy frame loops.** In fullscreen the game never waits for real (some
+  thread is always ready), so `--run-for` is now checked between scheduler
+  slices too, not only in idle waits.
+

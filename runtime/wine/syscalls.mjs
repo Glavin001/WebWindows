@@ -4,7 +4,7 @@
 // 32-bit argument, and returns an NTSTATUS (or {jump} to resume elsewhere).
 
 import { ProcessExit, hex } from '../runtime.mjs';
-import { parsePe } from './host.mjs';
+import { parsePe, GL_UNIXLIB } from './host.mjs';
 import { WIN32U_UNIXLIB } from './unix.mjs';
 import { AUDIO_UNIXLIB } from './audio.mjs';
 import { ntRaiseException, restoreContext } from './exceptions.mjs';
@@ -198,6 +198,11 @@ export const SYSCALLS = {
         this.w32(buf + 4, 0);
         return STATUS.SUCCESS;
       }
+      if (img && /\\opengl32\.dll$/i.test(img.path)) {
+        this.w32(buf, GL_UNIXLIB);
+        this.w32(buf + 4, 0);
+        return STATUS.SUCCESS;
+      }
       return STATUS.DLL_NOT_FOUND;
     }
     return STATUS.INVALID_INFO_CLASS;
@@ -316,6 +321,14 @@ export const SYSCALLS = {
         this.m.u8[buf + 1] = 2;
         return ret(2);
       default:
+        if (cls === 3) {
+          // ProcessVmCounters: VM_COUNTERS(_EX), all zero but the private bytes.
+          if (len < 44) return STATUS.INFO_LENGTH_MISMATCH;
+          const n = Math.min(len, 48);
+          this.m.u8.fill(0, buf, buf + n);
+          if (n >= 48) this.w32(buf + 44, 0x2000000);
+          return ret(n);
+        }
         this.log(`NtQueryInformationProcess class ${cls} not implemented`);
         return STATUS.INVALID_INFO_CLASS;
     }
@@ -352,6 +365,15 @@ export const SYSCALLS = {
         this.w64(buf, BigInt(Date.now()) * 10000n + 116444736000000000n);
         this.w64(buf + 8, BigInt(Date.now()) * 10000n + 116444736000000000n);
         return ret(Math.min(len, 48));
+      case 2: { // SystemPerformanceInformation: free memory (GlobalMemoryStatusEx)
+        if (len < 0x138) return STATUS.INFO_LENGTH_MISMATCH;
+        this.m.u8.fill(0, buf, buf + 0x138);
+        this.w32(buf + 0x2c, 0x30000); // AvailablePages
+        this.w32(buf + 0x30, 0x8000); // TotalCommittedPages
+        this.w32(buf + 0x34, 0x40000); // TotalCommitLimit
+        this.w32(buf + 0x38, 0x8000); // PeakCommitment
+        return ret(0x138);
+      }
       case 0x86: // SystemFirmwareTableInformation etc.
       default:
         this.log(`NtQuerySystemInformation class ${hex(cls)} not implemented`);

@@ -57,6 +57,67 @@ function poll(h, name, args) {
   };
 }
 
+// win32u's message waits (user32's GetMessage, MsgWaitForMultipleObjects),
+// which Wine waits for inside its Unix side: here they poll the queue with
+// a zero timeout and block in the scheduler, so a thread waiting for
+// messages can switch out like any other waiting thread (otherwise a
+// thread sending a message to another one's window could wait on top of
+// the very thread that has to answer).
+const WAIT_TIMEOUT = 0x102;
+const QS_KEY = 0x1, QS_MOUSE = 0x6, QS_POSTMESSAGE = 0x8, QS_TIMER = 0x10, QS_PAINT = 0x20, QS_SENDMESSAGE = 0x40;
+const QS_ALLINPUT = 0x4ff;
+const MWMO_INPUTAVAILABLE = 4;
+
+/** Calls a win32u system call by name with arguments laid out in scratch guest memory. */
+function win32u(h, name, ...args) {
+  h.win32uIds ??= new Map([...h.unix.win32uNames].map(([id, n]) => [n, id]));
+  h.win32uArgs ??= h.alloc(0x1000, 4, 'win32u arguments');
+  const at = h.win32uArgs + (h.win32uDepth = (h.win32uDepth ?? 0) + 1) * 64;
+  args.forEach((v, i) => h.w32(at + i * 4, v));
+  const t = h.threads.current;
+  t.nest++;
+  try {
+    return h.unix.win32uSyscall(h.win32uIds.get(name), at) >>> 0;
+  } finally {
+    t.nest--;
+    h.win32uDepth--;
+  }
+}
+
+/** Whether the queue holds input for `mask`, without waiting. */
+const queueReady = (h, mask) => win32u(h, 'NtUserMsgWaitForMultipleObjectsEx', 0, 0, 0, mask, MWMO_INPUTAVAILABLE) !== WAIT_TIMEOUT;
+
+export const WIN32U_WAITS = {
+  NtUserGetMessage(a) {
+    const [msg, hwnd, first, last] = [a(0), a(1), a(2), a(3)];
+    let mask = QS_POSTMESSAGE | QS_SENDMESSAGE;
+    if (first || last) {
+      if (first <= 0x109 && last >= 0x100) mask |= QS_KEY;
+      if ((first <= 0x20e && last >= 0x200) || (first <= 0xad && last >= 0xa0)) mask |= QS_MOUSE;
+      if ((first <= 0x113 && last >= 0x113) || (first <= 0x118 && last >= 0x118)) mask |= QS_TIMER;
+      if (first <= 0xf && last >= 0xf) mask |= QS_PAINT;
+    } else mask = QS_ALLINPUT;
+    // Once something is there, Wine's GetMessage takes it (or handles sent
+    // messages and comes back to wait, rarely, inside the Unix side).
+    const get = () => win32u(this, 'NtUserGetMessage', msg, hwnd, first, last);
+    if (queueReady(this, mask) || !this.threads.canYield()) return get();
+    return this.threads.block('NtUserGetMessage', this.sys.ret, this.sys.esp, () => (queueReady(this, mask) ? get() : undefined), Infinity);
+  },
+  NtUserMsgWaitForMultipleObjectsEx(a) {
+    const [count, handles, timeout, mask, flags] = [a(0), a(1), a(2), a(3), a(4)];
+    const check = () => {
+      const s = win32u(this, 'NtUserMsgWaitForMultipleObjectsEx', count, handles, 0, mask, flags);
+      return s === WAIT_TIMEOUT ? undefined : s;
+    };
+    const deadline = timeout === 0xffffffff ? Infinity : performance.now() + timeout;
+    return this.threads.block('NtUserMsgWaitForMultipleObjectsEx', this.sys.ret, this.sys.esp, check, deadline, WAIT_TIMEOUT);
+  },
+  NtUserWaitMessage() {
+    const check = () => (win32u(this, 'NtUserMsgWaitForMultipleObjectsEx', 0, 0, 0, QS_ALLINPUT, 0) === WAIT_TIMEOUT ? undefined : 1);
+    return this.threads.block('NtUserWaitMessage', this.sys.ret, this.sys.esp, check, Infinity);
+  },
+};
+
 export const THREAD_SYSCALLS = {
   // -- waits --------------------------------------------------------------------
   NtWaitForSingleObject(a) {

@@ -177,6 +177,9 @@ EMSCRIPTEN_KEEPALIVE unsigned int wasm_server_call( void *req_ptr )
     }
 
     current = thread;
+    /* The server's clock moves only when its loop runs; a request with a
+     * timeout of "now" (a poll) must see it expired, not wait for it. */
+    set_current_time();
     thread->reply_size = 0;
     clear_error();
     memset( &reply, 0, sizeof(reply) );

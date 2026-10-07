@@ -17,13 +17,17 @@ import { VirtualMemory, MEM_IMAGE, MEM_PRIVATE, PAGE_READWRITE, PAGE_EXECUTE_REA
 import { SYSCALLS, STATUS } from './syscalls.mjs';
 import { HANDLE_ROUTED, WIN32U_UNIXLIB } from './unix.mjs';
 
+/** opengl32's Unix side: a stub without OpenGL (see unixCall). */
+export const GL_UNIXLIB = 0x4000;
+
 import layout from './layout.json' with { type: 'json' };
 import { installAssemblies } from './sxs.mjs';
 import { installExceptions } from './exceptions.mjs';
 import { Scheduler, Thread } from './threads.mjs';
 import { startTicker, writeClock } from './ticker.mjs';
-import { THREAD_SYSCALLS } from './thread-syscalls.mjs';
+import { THREAD_SYSCALLS, WIN32U_WAITS } from './thread-syscalls.mjs';
 import { AUDIO_UNIXLIB, BrowserAudio } from './audio.mjs';
+import { installRegistrations } from './registry-setup.mjs';
 
 export const L = layout;
 
@@ -31,6 +35,26 @@ const EAX = 0, ECX = 1, EDX = 2, EBX = 3, ESP = 4, EBP = 5, ESI = 6, EDI = 7;
 export const USER_SHARED_DATA = 0x7ffe0000;
 
 /** Reads the parts of a PE header the host needs (image info, exports). */
+/** Names (lowercase) of the DLLs a PE image imports. */
+export function peImports(bytes) {
+  const info = parsePe(bytes);
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const off = (rva) => {
+    const sec = info.sections.find((x) => rva >= x.virtual_address && rva < x.virtual_address + Math.max(x.virtual_size, x.raw_size));
+    return sec ? rva - sec.virtual_address + sec.raw_offset : -1;
+  };
+  const opt = dv.getUint32(0x3c, true) + 24;
+  const names = [];
+  // Data directory 1: import descriptors of 20 bytes, ended by a zero one.
+  for (let d = off(dv.getUint32(opt + 96 + 8, true)); d >= 0 && dv.getUint32(d + 12, true); d += 20) {
+    let p = off(dv.getUint32(d + 12, true));
+    let name = '';
+    while (bytes[p]) name += String.fromCharCode(bytes[p++]);
+    names.push(name.toLowerCase());
+  }
+  return names;
+}
+
 export function parsePe(bytes) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const pe = dv.getUint32(0x3c, true);
@@ -381,6 +405,9 @@ export class WineHost {
     this.cpu = main.cpu;
     if (this.unix) {
       this.unix.initProcess(main.teb, this.peb);
+      // COM classes and the like, as wineboot's DLL registration leaves them.
+      const keys = installRegistrations(this, this.files);
+      this.log(`registry: ${keys} keys from Wine's DLL registrations`);
       // Waits in Wine's Unix side run the other threads (./threads.mjs).
       this.threads.realWait = this.unix.M.hostWait;
       this.unix.M.hostWait = (ms) => this.threads.waitNested(ms);
@@ -543,6 +570,10 @@ export class WineHost {
       TMP: 'C:\\windows\\temp',
       USERPROFILE: 'C:\\users\\wine',
       WINEDLLPATH: 'C:\\windows\\system32',
+      // DirectDraw without OpenGL underneath: wined3d presents through GDI,
+      // on the program's thread (its command stream thread would spin
+      // between the cooperative scheduler's switches).
+      WINE_D3D_CONFIG: 'renderer=no3d,csmt=0',
       ...this.env,
     })
       .map(([k, v]) => `${k}=${v}`)
@@ -633,8 +664,13 @@ export class WineHost {
     const impl = SYSCALLS[name];
     const t = this.threads.current;
     this.sys = { name, ret, esp };
+    const outer = t.inCall;
+    t.inCall = name;
     let status;
-    if (id >= 0x1000 && this.unix) {
+    const win32uWait = id >= 0x1000 && this.unix ? WIN32U_WAITS[this.unix.win32uNames.get(id)] : undefined;
+    if (win32uWait) {
+      status = win32uWait.call(this, a, cpu, argBase);
+    } else if (id >= 0x1000 && this.unix) {
       // win32u (user32 and gdi32 underneath): its Unix side reads the
       // arguments from the guest stack.
       t.nest++;
@@ -673,6 +709,7 @@ export class WineHost {
       }
       status = status.status;
     }
+    t.inCall = outer;
     if (this.trace) this.log(`${name}(${[0, 1, 2, 3].map((i) => hex(a(i))).join(', ')}) = ${hex(status >>> 0)}`);
     m.setReg(cpu, EAX, status >>> 0);
     m.setReg(cpu, ESP, esp + 4);
@@ -775,6 +812,14 @@ export class WineHost {
       if (status && typeof status === 'object') {
         if (status.yield) return this.threads.yieldAddr;
         status = status.status;
+      }
+    } else if (handle === GL_UNIXLIB) {
+      // opengl32 without OpenGL: it attaches (wined3d imports it), and
+      // every GL call fails.
+      if (code <= 2) status = STATUS.SUCCESS;
+      else if (!this.glWarned) {
+        this.glWarned = true;
+        this.log(`opengl32: no OpenGL (unix call ${code})`);
       }
     } else {
       this.log(`unix call to unknown library ${hex(handle)} code ${code}`);

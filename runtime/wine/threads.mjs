@@ -118,6 +118,7 @@ export class Scheduler {
     try {
       const eip = this.m.run(t.cpu, t.resume);
       if (eip === this.stopAddr) throw new Error(`thread ${t.tid} returned from its start routine`);
+      if (t.state === 'running') throw new Error(`thread ${hex(t.tid)} yielded without blocking (in ${t.inCall})`);
     } catch (e) {
       if (!(e instanceof ThreadExit)) throw e;
       M?.stackRestore(sp);
@@ -146,6 +147,7 @@ export class Scheduler {
 
   /** Checks blocked threads; returns whether one became ready. */
   poll() {
+    this.serverTimers();
     let woke = false;
     const now = performance.now();
     for (const t of this.threads) {
@@ -154,7 +156,7 @@ export class Scheduler {
       this.switchTo(t);
       let status;
       try {
-        status = t.pending.check();
+        status = this.probe(t.pending.check);
       } finally {
         if (prev) this.switchTo(prev);
       }
@@ -187,8 +189,16 @@ export class Scheduler {
     return Math.max(0, Math.ceil(d - performance.now()));
   }
 
+  /** Runs wineserver's expired timers; returns ms until its next one (-1: none). */
+  serverTimers() {
+    return this.h.unix ? this.h.unix.M._wasm_server_run() : -1;
+  }
+
   /** Blocks for real until input arrives or `ms` pass; returns realWait's result. */
   idle(ms) {
+    // The server's timers (WM_TIMER, waitable timers) run while waiting.
+    const next = this.serverTimers();
+    if (next >= 0) ms = ms < 0 ? next : Math.min(ms, next);
     if (ms < 0 && globalThis.process?.env?.WWT_THREAD_DUMP) {
       this.dumpAt = 0;
       this.maybeDump();
@@ -204,6 +214,8 @@ export class Scheduler {
     this.dumpAt = globalThis.process?.env?.WWT_THREAD_DUMP ? performance.now() + Number(process.env.WWT_THREAD_DUMP) : Infinity;
     for (;;) {
       this.maybeDump();
+      // The embedder's check between slices (wine.mjs: --run-for).
+      this.onSlice?.();
       const t = this.pick(null);
       if (t) {
         this.runThread(t);
@@ -222,7 +234,11 @@ export class Scheduler {
     if (!(performance.now() > this.dumpAt)) return;
     this.dumpAt = Infinity;
     const lines = [`threads: ${this.describe()}`];
-    for (const t of this.live()) lines.push(`  ${hex(t.tid)} ${t.state} nest ${t.nest} eip ${hex(t.pending ? t.pending.ret : t.resume)} esp ${hex(this.m.reg(t.cpu, 4))}`);
+    for (const t of this.live()) lines.push(`  ${hex(t.tid)} ${t.state} nest ${t.nest} in ${t.inCall ?? '-'} eip ${hex(t.pending ? t.pending.ret : t.resume)} esp ${hex(this.m.reg(t.cpu, 4))}`);
+    if (globalThis.process?.env?.WWT_THREAD_DUMP_STACK) {
+      Error.stackTraceLimit = 200;
+      lines.push(new Error().stack.split('\n').filter((l) => !l.includes('wasm-function')).join('\n'));
+    }
     this.h.stderr(new TextEncoder().encode(lines.join('\n') + '\n'));
   }
 
@@ -238,13 +254,23 @@ export class Scheduler {
     return t && t.nest === 0 && t.state === 'running';
   }
 
+  /** Runs a wait's check: a poll, during which no other thread runs. */
+  probe(check) {
+    this.polling = (this.polling ?? 0) + 1;
+    try {
+      return check();
+    } finally {
+      this.polling--;
+    }
+  }
+
   /**
    * Blocks the current thread in a system call until `check()` returns a
    * status or the deadline passes (then `timeoutStatus`). Returns the status
    * now, or the YIELD address when the thread yielded.
    */
   block(name, ret, esp, check, deadline, timeoutStatus = STATUS_TIMEOUT, wakeAt = undefined) {
-    let status = check();
+    let status = this.probe(check);
     if (status !== undefined) return { status };
     if (performance.now() >= deadline) return { status: timeoutStatus };
     const t = this.current;
@@ -261,7 +287,7 @@ export class Scheduler {
       const until = Math.min(deadline, wakeAt?.() ?? Infinity);
       const left = until === Infinity ? -1 : Math.max(0, Math.ceil(until - performance.now()));
       this.waitNested(left);
-      status = check();
+      status = this.probe(check);
       if (status !== undefined) return { status };
       if (performance.now() >= deadline) return { status: timeoutStatus };
     }
@@ -275,8 +301,17 @@ export class Scheduler {
    */
   waitNested(ms) {
     this.maybeDump();
+    // Polling a wait (a zero timeout) must not run other threads: if Wine's
+    // Unix side still waits a moment (its clock trails the host's), sleep.
+    if (this.polling) return this.idle(ms < 0 || ms > 1 ? 1 : ms) > 0 ? 1 : 0;
     const self = this.current;
+    // A blocked thread can wait here too: polling it can call back into
+    // its guest code (a window procedure). It goes back to its state after.
+    const before = self?.state;
     if (self) self.state = 'waiting';
+    // Another exception on its way out (ProcessExit from a thread run
+    // here) wins over this thread's own end.
+    let done = false;
     try {
       let ran = false;
       for (;;) {
@@ -288,17 +323,20 @@ export class Scheduler {
         break;
       }
       if (!ran && this.poll()) ran = true;
-      if (ran) return 0;
-      const d = this.untilDeadline();
-      const wait = d < 0 ? ms : ms < 0 ? d : Math.min(ms, d);
-      const r = this.idle(wait);
-      if (r < 0 && d >= 0) return 0;
+      let r = 0;
+      if (!ran) {
+        const d = this.untilDeadline();
+        const wait = d < 0 ? ms : ms < 0 ? d : Math.min(ms, d);
+        r = this.idle(wait);
+        if (r < 0 && d >= 0) r = 0;
+      }
+      done = true;
       return r;
     } finally {
       if (self) {
-        if (self.state === 'waiting') self.state = 'running';
+        if (self.state === 'waiting') self.state = before;
         this.switchTo(self);
-        if (self.killed) throw new ThreadExit(self.exitStatus ?? 0);
+        if (self.killed && done) throw new ThreadExit(self.exitStatus ?? 0);
       }
     }
   }

@@ -18,7 +18,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSyn
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { parsePe, rebaseImage } from '../wine/host.mjs';
+import { parsePe, peImports as imports, rebaseImage } from '../wine/host.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const out = resolve(process.argv[2] ?? join(root, 'target/wine-bundle'));
@@ -29,6 +29,12 @@ const DLLS = ['ntdll', 'kernelbase', 'kernel32', 'msvcrt', 'ucrtbase'];
 const GUI_DLLS = [
   'advapi32', 'sechost', 'user32', 'gdi32', 'win32u', 'imm32', 'combase', 'comctl32', 'coml2', 'cryptbase',
   'ole32', 'rpcrt4', 'uxtheme', 'comdlg32', 'shcore', 'shell32', 'shlwapi', 'comctl32_v6', 'oleaut32',
+];
+// Sound, DirectDraw and DirectInput (Milestone 5): fetched only for programs that
+// import one of them (wined3d alone is megabytes), see runtime/web/worker.mjs.
+const MEDIA_DLLS = [
+  'version', 'winmm', 'msacm32', 'dsound', 'mmdevapi', 'winepulse.drv', 'ddraw', 'wined3d', 'opengl32',
+  'dinput', 'dinput8', 'hid', 'setupapi',
 ];
 const DEFAULT_BASE = 0x10000000;
 const PRELINK_BASE = 0x60000000;
@@ -45,10 +51,12 @@ const withUnix = existsSync(join(unixDir, 'wine_unix.mjs'));
 
 mkdirSync(out, { recursive: true });
 const manifest = { wine: '11.0', dlls: {}, nls: [] };
-const dllPath = (d) => join(wineBuild, 'dlls', d, 'i386-windows', `${d}.dll`);
+const fileName = (d) => (d.includes('.') ? d : `${d}.dll`);
+const dllPath = (d) => join(wineBuild, 'dlls', d, 'i386-windows', fileName(d));
 let nextBase = PRELINK_BASE;
-for (const d of [...DLLS, ...(withUnix ? GUI_DLLS : [])]) {
+for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS] : [])]) {
   const pe = dllPath(d);
+  const name = fileName(d);
   if (!existsSync(pe)) {
     console.error(`missing ${pe}; run tools/wine/build.sh ${d}`);
     process.exit(1);
@@ -62,9 +70,16 @@ for (const d of [...DLLS, ...(withUnix ? GUI_DLLS : [])]) {
       nextBase += (info.sizeOfImage + 0xffff) & ~0xffff;
     }
   }
-  writeFileSync(join(out, `${d}.dll`), bytes);
-  execFileSync(wwt, ['translate', join(out, `${d}.dll`), '-o', join(out, `${d}.dll.wasm`)], { stdio: ['ignore', 'ignore', 'inherit'] });
-  manifest.dlls[`${d}.dll`] = { pe: `${d}.dll`, wasm: `${d}.dll.wasm` };
+  writeFileSync(join(out, name), bytes);
+  const media = MEDIA_DLLS.includes(d);
+  // Without debug information (most of wined3d's size), when MinGW is here.
+  if (media) {
+    try {
+      execFileSync('i686-w64-mingw32-strip', ['--strip-debug', join(out, name)]);
+    } catch {}
+  }
+  execFileSync(wwt, ['translate', join(out, name), '-o', join(out, `${name}.wasm`)], { stdio: ['ignore', 'ignore', 'inherit'] });
+  manifest.dlls[name] = { pe: name, wasm: `${name}.wasm`, ...(media && { group: 'media' }) };
 }
 for (const n of NLS) {
   copyFileSync(join(wineSrc, 'nls', `${n}.nls`), join(out, `${n}.nls`));
@@ -114,23 +129,3 @@ if (missing.size) {
 }
 writeFileSync(join(out, 'manifest.json'), JSON.stringify(manifest, null, 2));
 console.log(`Wine bundle in ${out}${withUnix ? ' (with the Unix side, for windowed programs)' : ''}`);
-
-/** Names (lowercase) of the DLLs a PE image imports. */
-function imports(bytes) {
-  const info = parsePe(bytes);
-  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const off = (rva) => {
-    const sec = info.sections.find((x) => rva >= x.virtual_address && rva < x.virtual_address + Math.max(x.virtual_size, x.raw_size));
-    return sec ? rva - sec.virtual_address + sec.raw_offset : -1;
-  };
-  const opt = dv.getUint32(0x3c, true) + 24;
-  const names = [];
-  // Data directory 1: import descriptors of 20 bytes, ended by a zero one.
-  for (let d = off(dv.getUint32(opt + 96 + 8, true)); d >= 0 && dv.getUint32(d + 12, true); d += 20) {
-    let p = off(dv.getUint32(d + 12, true));
-    let name = '';
-    while (bytes[p]) name += String.fromCharCode(bytes[p++]);
-    names.push(name.toLowerCase());
-  }
-  return names;
-}

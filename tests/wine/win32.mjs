@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Windows-only test programs (Milestone 5 and on): exceptions, threads,
 // timers... They cannot run natively on Linux, so each has its expected
-// output recorded next to it (NAME.out); a `exit: N` line in the source
-// gives the expected exit code (default 0). Each is built with MinGW at -O0
+// output recorded next to it (NAME.out); an `exit: N` line in the source
+// gives the expected exit code (default 0), a `libs: -lfoo` line libraries
+// to link, a `native: skip` line keeps it off the native Windows check. Each is built with MinGW at -O0
 // and -O2 and run on translated Wine. CI runs the same executables on real
 // Windows (tests/programs/windows-check.mjs), which checks the recordings.
 //
@@ -56,12 +57,14 @@ const builds = [];
 for (const name of programs) {
   const source = readFileSync(join(src, `${name}.c`), 'utf8');
   const exit = Number(/exit:\s*(\d+)/.exec(source)?.[1] ?? 0);
+  const libs = (/libs:\s*(.*)/.exec(source)?.[1] ?? '').trim().split(/\s+/).filter(Boolean);
+  const native = !/native:\s*skip/.test(source);
   const outFile = join(src, `${name}.out`);
   const expected = existsSync(outFile) ? readFileSync(outFile, 'latin1') : null;
   for (const opt of ['O0', 'O2']) {
     const exe = join(work, `${name}-${opt}.exe`);
-    execFileSync('i686-w64-mingw32-gcc', [`-${opt}`, '-o', exe, join(src, `${name}.c`)], { stdio: 'inherit' });
-    builds.push({ name, opt, exe, exit, expected, outFile });
+    execFileSync('i686-w64-mingw32-gcc', [`-${opt}`, '-o', exe, join(src, `${name}.c`), ...libs], { stdio: 'inherit' });
+    builds.push({ name, opt, exe, exit, expected, outFile, native });
   }
 }
 
@@ -76,11 +79,12 @@ async function worker() {
     let status = 'pass';
     const why = [];
     if (exitCode !== b.exit) why.push(`exit ${r.signal ?? exitCode}, expected ${b.exit}`);
-    if (b.expected === null) why.push('no recorded output');
+    // (With --update, the -O2 run records it.)
+    if (b.expected === null) update || why.push('no recorded output');
     else if (r.stdout !== b.expected) why.push('output differs');
     if (why.length && !(update && b.opt === 'O2' && exitCode === b.exit)) status = 'fail';
     if (update && b.opt === 'O2' && exitCode === b.exit) writeFileSync(b.outFile, r.stdout, 'latin1');
-    results.push({ name: b.name, opt: b.opt, exe: basename(b.exe), status, exitCode: exitCode & 0xff, stdout: r.stdout });
+    results.push({ name: b.name, opt: b.opt, exe: basename(b.exe), status, exitCode: exitCode & 0xff, stdout: r.stdout, native: b.native });
     if (status === 'fail') {
       failed++;
       console.log(`FAIL ${b.name} -${b.opt}: ${why.join('; ')}`);

@@ -97,13 +97,14 @@ jobs:
           path: |
             ${{ github.workspace }}/../wine-src
             ${{ github.workspace }}/../wine-build
-          key: wine-${{ hashFiles('tools/wine/build.sh') }}
+          key: wine-${{ hashFiles('tools/wine/**', 'native/audio/**') }}
       - name: Build Wine's i386 PE DLLs, programs and conformance tests
         run: |
           sh tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost \
             user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 \
             rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts \
-            hid kernel32/tests user32/tests gdi32/tests
+            hid version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d opengl32 dinput dinput8 setupapi \
+            kernel32/tests user32/tests gdi32/tests
       - uses: mymindstorm/setup-emsdk@v14
       - name: Build
         run: |
@@ -144,7 +145,7 @@ jobs:
             else await github.rest.issues.createComment({ owner, repo, issue_number, body });
       - name: Programs on translated Wine
         run: node tests/programs/check.mjs --wine --jobs 4
-      - name: Windows test programs on translated Wine (exceptions, threads)
+      - name: Windows test programs on translated Wine (exceptions, threads, sound, DirectDraw)
         run: node tests/wine/win32.mjs --jobs 4
       - uses: actions/upload-artifact@v4
         if: always()
