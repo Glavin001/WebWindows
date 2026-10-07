@@ -116,6 +116,7 @@ The plan's verification pipeline, as implemented:
 | 3. Wine's own tests | Every unit of Wine's `kernel32`, `user32` and `gdi32` conformance tests on translated Wine, against recorded baselines | `node tests/wine/winetest.mjs --baseline tests/wine/baseline/user32_test.json .../user32_test.exe` |
 | 4. Real software (start) | The browser front end in headless Chromium: the cache and profile loop, the folder picker, and Wine's Minesweeper and Notepad driven with mouse and keyboard; the same windowed programs headless in Node with screenshots | `node tests/web/browser.mjs`, `tests/web/picker.mjs`, `tests/web/gui.mjs`, `tests/wine/gui.mjs` |
 | 5. Own output | Snapshots of IR and WAT for committed binaries | `cargo test -p wwt --test snapshots` |
+| Speed | CoreMark native vs. Emscripten vs. translated, with checksum check; profiles by function | `node tools/bench/coremark.mjs`, see [docs/performance.md](docs/performance.md) |
 
 Instruction fixtures (`tests/fixtures/instructions/*.jsonl.gz`) are recorded
 on x86 hardware and replayed anywhere:
@@ -147,5 +148,6 @@ tools/bench         CoreMark: native vs. translated (shims and Wine)
 tools/site          assembles the static site and deploys it to Vercel
 tests/              fixtures, test programs, Csmith runtime, browser test
 spikes/             M1 spikes: memory size, Emscripten above the guest limit
-docs/               the plan (plan.md) and each milestone's status
+docs/               the plan (plan.md), each milestone's status, performance guide
+tools/bench         CoreMark tiers, profiler, per-function comparison, A/B
 ```
