@@ -2,3 +2,4 @@
 node_modules/
 *.wwcache/
 /out/
+/dist

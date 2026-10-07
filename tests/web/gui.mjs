@@ -4,7 +4,11 @@
 // checks the canvas shows them, then clicks and types on the canvas and
 // checks the programs respond. Screens are saved in target/gui.
 //
-//   node runtime/node/wine-bundle.mjs && node tests/web/gui.mjs
+//   node runtime/node/wine-bundle.mjs && node tests/web/gui.mjs [--root DIR]
+//
+// --root serves another directory with the repository's layout, such as the
+// static site tools/site/build.sh assembles. Besides the canvas, whole-page
+// screenshots are saved (page-*.png).
 
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -20,11 +24,13 @@ try {
   ({ chromium } = require(join(process.execPath, '../../lib/node_modules/playwright')));
 }
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const outDir = join(root, 'target/gui');
+const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const rootArg = process.argv.indexOf('--root');
+const root = rootArg > 0 ? resolve(process.argv[rootArg + 1]) : repo;
+const outDir = join(repo, 'target/gui');
 mkdirSync(outDir, { recursive: true });
 const port = 19000 + Math.floor(Math.random() * 1000);
-const server = spawn('node', [join(root, 'runtime/web/serve.mjs'), String(port), root], { stdio: 'ignore' });
+const server = spawn('node', [join(repo, 'runtime/web/serve.mjs'), String(port), root], { stdio: 'ignore' });
 await new Promise((r) => setTimeout(r, 500));
 
 const results = [];
@@ -67,7 +73,10 @@ async function open(page, program) {
   if (exit) throw new Error(`${program} exited: ${await page.textContent('#out')}`);
 }
 
-const save = async (page, name) => writeFileSync(join(outDir, name), await page.locator('#screen').screenshot());
+const save = async (page, name) => {
+  writeFileSync(join(outDir, name), await page.locator('#screen').screenshot());
+  await page.screenshot({ path: join(outDir, `page-${name}`), fullPage: true });
+};
 
 const browser = await chromium.launch();
 try {

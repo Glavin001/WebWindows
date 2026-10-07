@@ -65,6 +65,9 @@ jobs:
   # Milestone 2: programs on Wine's own DLLs, translated (not ported).
   wine:
     runs-on: ubuntu-latest
+    # Writes the site-preview release's assets (Vercel previews).
+    permissions:
+      contents: write
     env:
       WINE_SRC: ${{ github.workspace }}/../wine-src/wine-11.0
       WINE_BUILD: ${{ github.workspace }}/../wine-build
@@ -99,6 +102,27 @@ jobs:
           cargo build --release -p wwt-cli
           cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
           sh native/wine-unix/build.sh
+      # The static site (page, runtime, translator, Wine bundle) for Vercel
+      # previews: tools/vercel-build.sh deploys these release assets.
+      - name: Publish the site for Vercel previews
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node runtime/node/wine-bundle.mjs
+          sh tools/site/build.sh target/site
+          branch=$(echo "$GITHUB_REF_NAME" | tr '/' '-')
+          tar czf "site-$GITHUB_SHA.tar.gz" -C target/site .
+          cp "site-$GITHUB_SHA.tar.gz" "site-latest-$branch.tar.gz"
+          gh release view site-preview > /dev/null 2>&1 ||
+            gh release create site-preview --prerelease --title "Site previews" \
+              --notes "Static sites CI builds for Vercel previews (tools/vercel-build.sh). Not a release."
+          gh release upload site-preview "site-$GITHUB_SHA.tar.gz" "site-latest-$branch.tar.gz" --clobber
+          # Keep the ten newest commits' sites.
+          gh release view site-preview --json assets \
+            --jq '[.assets[] | select(.name | test("^site-[0-9a-f]{40}"))] | sort_by(.createdAt) | reverse | .[10:] | .[].name' |
+            while read -r name; do gh release delete-asset site-preview "$name" -y; done
+          rm -f site-*.tar.gz
       - name: Programs on translated Wine
         run: node tests/programs/check.mjs --wine --jobs 4
       - name: Wine's kernel32 tests (layer 3), against the recorded baseline
