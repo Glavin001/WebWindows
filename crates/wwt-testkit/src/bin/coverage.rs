@@ -4,7 +4,9 @@
 //!
 //! Lists every instruction form (iced-x86 `Code`) the translator discovers
 //! in the given binaries and whether the instruction suite covers it with
-//! recorded cases. Exits non-zero when a form is not covered.
+//! recorded cases. Exits non-zero when a form is not covered. Instructions
+//! the translator refuses (they become a fault, e.g. far-pointer loads in
+//! data decoded as code) are listed apart: there is nothing to test.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -28,13 +30,25 @@ fn main() -> Result<()> {
         }
     }
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+    let mut unsupported: BTreeMap<String, usize> = BTreeMap::new();
     for f in &files {
         let pe = PeFile::parse(std::fs::read(f)?)?;
         let img = pe.image()?;
-        let d = wwt::translate::discover_pe(&pe, &img, &[], &wwt::Config::default());
-        for i in d.insts.values() {
-            *seen.entry(format!("{:?}", i.code())).or_default() += 1;
+        let cfg = wwt::Config::default();
+        let mut d = wwt::translate::discover_pe(&pe, &img, &[], &cfg);
+        let t = wwt::translate::translate_discovered(&img, &mut d, &cfg, None)?;
+        let refused: BTreeSet<u32> = t.report.unsupported.iter().map(|(va, _)| *va).collect();
+        for (va, i) in &d.insts {
+            let form = format!("{:?}", i.code());
+            if refused.contains(va) {
+                *unsupported.entry(form).or_default() += 1;
+            } else {
+                *seen.entry(form).or_default() += 1;
+            }
         }
+    }
+    for (c, n) in &unsupported {
+        println!("  unsupported (a fault when reached): {c} ({n} occurrences)");
     }
     let missing: Vec<_> = seen.iter().filter(|(c, _)| !tested.contains(*c)).collect();
     println!(
