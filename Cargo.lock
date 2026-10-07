@@ -476,6 +476,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "d3dgpu-web"
+version = "0.1.0"
+dependencies = [
+ "d3dgpu-core",
+ "d3dgpu-proto",
+ "d3dgpu-scenes",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "wgpu",
+]
+
+[[package]]
 name = "dispatch2"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

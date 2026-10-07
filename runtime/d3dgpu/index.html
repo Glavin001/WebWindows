@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>d3dgpu</title>
+<style>
+  :root { color-scheme: light dark; font: 14px/1.4 system-ui, sans-serif; }
+  body { margin: 16px; max-width: 980px; }
+  canvas { width: 640px; max-width: 100%; aspect-ratio: 4 / 3; background: #000; display: block; }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+  pre { font-size: 12px; white-space: pre-wrap; }
+  td { padding: 1px 8px; } .fail { color: #d33; } .pass { color: #393; }
+</style>
+</head>
+<body>
+<h1>d3dgpu</h1>
+<p>Direct3D 9 command streams executed on WebGPU by the Rust render core.
+A producer worker encodes batches into shared memory; the render worker
+(the only WebGPU user) takes them with <code>Atomics.waitAsync</code>.
+<a href="?test">Run the scene tests</a>.</p>
+<div id="demo" class="row">
+  <div>
+    <label>Scene <select id="scene"></select></label>
+    <canvas id="canvas" width="640" height="480"></canvas>
+  </div>
+  <pre id="stats"></pre>
+</div>
+<div id="tests"><table id="results"></table></div>
+<pre id="log"></pre>
+<script type="module" src="app.mjs"></script>
+</body>
+</html>

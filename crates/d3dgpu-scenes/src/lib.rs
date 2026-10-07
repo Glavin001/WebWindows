@@ -201,6 +201,50 @@ impl Builder {
     }
 }
 
+impl Built {
+    /// Checks a presented frame (tightly packed RGBA8, `width` wide) and the
+    /// shared memory after all fences against the expectations; returns the
+    /// failures.
+    pub fn check(&self, width: u32, pixels: &[u8], shared: &[u8]) -> Vec<String> {
+        let mut fails = Vec::new();
+        let px = |x: i32, y: i32| -> Option<[u8; 4]> {
+            let i = ((y as u32 * width + x as u32) * 4) as usize;
+            pixels.get(i..i + 4).map(|p| [p[0], p[1], p[2], p[3]])
+        };
+        let close = |a: Option<[u8; 4]>, b: [u8; 4], tol: u8| {
+            a.is_some_and(|a| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= tol))
+        };
+        for e in &self.expect {
+            match e {
+                Expect::Pixels { rect, rgba, tolerance } => {
+                    'outer: for y in rect.y1..rect.y2 {
+                        for x in rect.x1..rect.x2 {
+                            if !close(px(x, y), *rgba, *tolerance) {
+                                fails.push(format!("({x}, {y}) is {:?}, want {rgba:?}", px(x, y)));
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+                Expect::AnyPixel { rect, rgba, tolerance } => {
+                    let found =
+                        (rect.y1..rect.y2).any(|y| (rect.x1..rect.x2).any(|x| close(px(x, y), *rgba, *tolerance)));
+                    if !found {
+                        fails.push(format!("no pixel of {rect:?} is {rgba:?}"));
+                    }
+                }
+                Expect::Shared { offset, bytes } => {
+                    let got = shared.get(*offset as usize..*offset as usize + bytes.len());
+                    if got != Some(bytes.as_slice()) {
+                        fails.push(format!("shared memory at {offset} is {got:02x?}, want {bytes:02x?}"));
+                    }
+                }
+            }
+        }
+        fails
+    }
+}
+
 impl Scene {
     pub fn build(&self, width: u32, height: u32) -> Built {
         let mut b = Builder::new(width, height);

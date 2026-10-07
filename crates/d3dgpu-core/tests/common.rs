@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 use d3dgpu_core::{Core, HeadlessPresenter, Options};
-use d3dgpu_scenes::{Built, Expect, WINDOW};
+use d3dgpu_scenes::{Built, WINDOW};
 
 /// A device on the first native adapter with WebGPU's default limits and
 /// only `features` (those the adapter has). `None` when there is no GPU
@@ -73,41 +73,10 @@ pub fn run(device: &wgpu::Device, queue: &wgpu::Queue, opts: Options, built: &Bu
     Run { width, height, pixels, shared, core }
 }
 
-/// Checks a run against the scene's expectations; returns the failures.
+/// Checks a run against the scene's expectations, WebGPU validation
+/// errors and the core's own log; returns the failures.
 pub fn check(built: &Built, r: &Run) -> Vec<String> {
-    let mut fails = Vec::new();
-    let px = |x: i32, y: i32| -> [u8; 4] {
-        let i = ((y as u32 * r.width + x as u32) * 4) as usize;
-        [r.pixels[i], r.pixels[i + 1], r.pixels[i + 2], r.pixels[i + 3]]
-    };
-    let close = |a: [u8; 4], b: [u8; 4], tol: u8| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= tol);
-    for e in &built.expect {
-        match e {
-            Expect::Pixels { rect, rgba, tolerance } => {
-                'outer: for y in rect.y1..rect.y2 {
-                    for x in rect.x1..rect.x2 {
-                        let got = px(x, y);
-                        if !close(got, *rgba, *tolerance) {
-                            fails.push(format!("({x}, {y}) is {got:?}, want {rgba:?}"));
-                            break 'outer;
-                        }
-                    }
-                }
-            }
-            Expect::AnyPixel { rect, rgba, tolerance } => {
-                let found = (rect.y1..rect.y2).any(|y| (rect.x1..rect.x2).any(|x| close(px(x, y), *rgba, *tolerance)));
-                if !found {
-                    fails.push(format!("no pixel of {rect:?} is {rgba:?}"));
-                }
-            }
-            Expect::Shared { offset, bytes } => {
-                let got = &r.shared[*offset as usize..*offset as usize + bytes.len()];
-                if got != bytes.as_slice() {
-                    fails.push(format!("shared memory at {offset} is {got:02x?}, want {bytes:02x?}"));
-                }
-            }
-        }
-    }
+    let mut fails = built.check(r.width, &r.pixels, &r.shared);
     for e in take_errors() {
         fails.push(format!("WebGPU error: {e}"));
     }

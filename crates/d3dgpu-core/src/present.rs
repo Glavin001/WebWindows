@@ -347,8 +347,9 @@ impl HeadlessPresenter {
         HeadlessPresenter { front: None, gamma: Gamma::new(), frames: 0 }
     }
 
-    pub fn front_buffer(&self) -> Option<&wgpu::Texture> {
-        self.front.as_ref().map(|(t, _)| t)
+    /// The last frame's texture (RGBA8) and size.
+    pub fn front_buffer(&self) -> Option<(&wgpu::Texture, (u32, u32))> {
+        self.front.as_ref().map(|(t, s)| (t, *s))
     }
 
     /// The last frame as tightly packed RGBA8 rows (blocks; native only).

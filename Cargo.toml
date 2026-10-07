@@ -10,6 +10,7 @@ members = [
     "crates/d3dgpu-shader",
     "crates/d3dgpu-core",
     "crates/d3dgpu-scenes",
+    "crates/d3dgpu-web",
 ]
 
 [workspace.package]
