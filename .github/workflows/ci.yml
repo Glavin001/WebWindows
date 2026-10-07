@@ -59,6 +59,8 @@ jobs:
         run: |
           sh tools/torture/fetch.sh
           node tests/programs/check.mjs --torture target/gcc-src/gcc/testsuite/gcc.c-torture/execute --opt O0,O2 --jobs 4
+      - name: GCC torture, x86-64 (layer 2)
+        run: node tests/programs/check.mjs --arch x64 --torture target/gcc-src/gcc/testsuite/gcc.c-torture/execute --opt O0,O2 --jobs 4
       - name: Instruction coverage of MinGW output
         run: cargo run -p wwt-testkit --bin coverage -- target/programs/*.exe
       - name: Memory spike
@@ -214,6 +216,10 @@ jobs:
           grep -q "Hello from translated x86!" target/hello64.out
       - name: 64-bit programs on translated x86_64 Wine
         run: node tests/programs/check.mjs --arch x64 --wine --jobs 4
+      - name: x86-64 GCC torture on translated x86_64 Wine
+        run: |
+          sh tools/torture/fetch.sh
+          node tests/programs/check.mjs --arch x64 --wine --torture target/gcc-src/gcc/testsuite/gcc.c-torture/execute --opt O2 --jobs 4
       - name: 64-bit GUI programs on translated x86_64 Wine (headless)
         run: node tests/wine/gui.mjs --arch x64
       - name: Wine's x86_64 kernel32, user32 and gdi32 tests, against the recorded baselines

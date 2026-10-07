@@ -181,7 +181,7 @@ async function runOne(p, opt) {
   // Earlier Node 22 releases have 64-bit memory behind a flag (Node 24
   // rejects the flag).
   const nodeFlags = mem64 && process.version.startsWith('v22.') ? ['--experimental-wasm-memory64'] : [];
-  const run = await sh('node', [...nodeFlags, ...runner], { timeout: 120000 });
+  const run = await sh(process.execPath, [...nodeFlags, ...runner], { timeout: 120000 });
   run.ms = performance.now() - t0;
   if (run.error) return { status: 'fail', detail: `translated run: ${run.error.message}` };
   const want = { out: nat.stdout, code: nat.status & 0xff };

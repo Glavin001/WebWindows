@@ -169,6 +169,14 @@ Windows.) On a 64-bit memory the programs run at their preferred base,
 | 32-bit programs | 64-bit | 35/35 pass |
 | Csmith, 100 programs × -O0/-O2 | 32-bit | 186 pass, 0 fail, 14 skipped (native run timed out) |
 | Csmith, 40 more × -O0/-O2 (seeds 7000–7039) | 64-bit | 74 pass, 0 fail, 6 skipped |
+| GCC torture (`gcc.c-torture/execute`, 1646 tests), -O0 | 64-bit | 1629 pass, 0 fail, 13 skipped, 4 expected failures |
+| same, -O2 | 64-bit | 1618 pass, 0 fail, 20 skipped, 8 expected failures |
+| same, -O2, on translated x86_64 Wine (`--wine`) | 64-bit | 1618 pass, 0 fail, 20 skipped, 8 expected failures |
+
+Two expected failures are x86-64 only: MinGW GCC 13 miscompiles
+`pr109925` (two arrays share a stack slot while one is live) and
+`pr114965` (`main` can only reach `abort()`), the bugs these tests guard
+against; `tests/programs/torture-xfail.txt` gives the reasons.
 
 **Browser:** `tests/web/browser.mjs` runs x86-64 programs in headless
 Chromium like 32-bit ones: `jumps-O2.exe` (MinGW CRT, `setjmp`/`longjmp`)
