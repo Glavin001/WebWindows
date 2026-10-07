@@ -5,7 +5,8 @@ x86 machine code to WebAssembly ahead of time, translating anything the
 first pass missed while the program runs, and caching the result. Everything
 happens on the user's machine; nothing is uploaded.
 
-This repository implements **Milestones 1 to 4** of the plan: the
+This repository implements **Milestones 1 to 4** of
+[the plan](docs/plan.md) (problems, design and milestones M1–M8): the
 translator core and test harness (M1); Windows programs running on Wine's
 own DLLs translated to WebAssembly (M2); the translator, fast mode and a
 translation cache in the browser, with a folder picker (M3); and windowed
@@ -80,7 +81,8 @@ target/debug/wwt pack program.exe -o out/  # static web app directory
 
 * **Translator** (`crates/wwt`): the seven layers of the plan, one module
   each — `pe` (load), `discover` (find code, jump tables; decode with
-  `iced-x86`), `lift` (x86 semantics → IR, including x87), `opt` (flag
+  `iced-x86`), `lift` (x86 semantics → IR, including x87 and
+  SSE/SSE2/MMX), `opt` (flag
   lowering with compare-and-branch fusion, folding, liveness-based DCE),
   `codegen` (one WebAssembly function per x86 function, structured control
   flow from the dominator tree, `wasm-encoder`), `translate` (orchestration
@@ -95,8 +97,9 @@ target/debug/wwt pack program.exe -o out/  # static web app directory
   win32u and the browser display driver, M4); `node/` and `web/` are the
   two hosts.
 * **Memory**: x86 address `A` is WebAssembly address `A`. The low *guest
-  limit* bytes (1 GB by default) are the Windows process; the native runtime
-  lives above it. Registers live in WebAssembly locals inside a function and
+  limit* bytes (1 GB by default, 2 GB on Wine) are the Windows process; the
+  native runtime lives above it, and with Wine's Unix side, the Emscripten
+  module's data, heap and stacks above that (`native/wine-unix/build.sh`). Registers live in WebAssembly locals inside a function and
   are written back to a per-thread CPU struct at calls, exits and fault
   points.
 
@@ -136,7 +139,11 @@ runtime/            JavaScript runtime (Node and browser hosts)
 native/wine-unix    Wine's Unix side (wineserver, win32u, display driver) for Emscripten
 tools/oracle        native x86 oracle for instruction tests
 tools/wine          builds Wine's i386 PE DLLs, programs, tests and fonts
+tools/wine-layout   generates Wine's structure layouts for the runtime
+tools/torture       fetches GCC's torture tests
+tools/bench         CoreMark: native vs. translated (shims and Wine)
+tools/site          assembles the static site; tools/vercel-build.sh deploys it
 tests/              fixtures, test programs, Csmith runtime, browser test
 spikes/             M1 spikes: memory size, Emscripten above the guest limit
-docs/               plan status and design notes
+docs/               the plan (plan.md) and each milestone's status
 ```
