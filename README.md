@@ -20,8 +20,9 @@ known limitations.
 32-bit one ([the plan](docs/plan.md#64-bit-programs)): the translator, the
 runtime and the instruction and program tests handle x86-64 code, on a 32-bit
 or a 64-bit (memory64) WebAssembly memory, and 64-bit console programs run
-on the Milestone 1 shims at their own 64-bit addresses (`0x1_4000_0000` for
-an .exe). Wine's 64-bit side comes next. See
+at their own 64-bit addresses (`0x1_4000_0000` for an .exe), on the
+Milestone 1 shims and on Wine's own x86_64 DLLs, translated (console
+programs so far; windowed ones need Wine's Unix side built for wasm64). See
 [docs/milestone-9.md](docs/milestone-9.md).
 
 ## Quick start
@@ -48,6 +49,10 @@ node runtime/node/run.mjs hello64.exe
 tools/wine/build.sh
 cargo build --release -p wwt-cli
 node runtime/node/wine.mjs tests/programs/hello.exe
+
+# 64-bit programs on translated x86_64 Wine (a second build tree):
+ARCH=x86_64 tools/wine/build.sh
+node runtime/node/wine.mjs hello64.exe
 
 # Windowed programs: Wine's Unix side with Emscripten (emcc on PATH), the
 # DLLs, fonts and programs, then a program with a screenshot of its screen:

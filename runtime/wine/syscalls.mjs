@@ -1,13 +1,16 @@
 // System calls for translated Wine, standing in for ntdll's Unix side and
 // the wineserver (Milestone 2: memory, files in an in-memory file system,
 // image sections, one thread). Each function receives `a(i)`, the i-th
-// 32-bit argument, and returns an NTSTATUS (or {jump} to resume elsewhere).
+// argument, and returns an NTSTATUS (or {jump} to resume elsewhere).
+//
+// The same functions serve 32-bit and 64-bit Wine: structures come from the
+// host's layout (`this.L`), and pointer-sized fields (pointers, handles,
+// SIZE_T) are read and written with `this.ptr` and `this.wptr`.
 
 import { ProcessExit, GuestFault, hex } from '../runtime.mjs';
 import { parsePe } from './host.mjs';
 import { WIN32U_UNIXLIB } from './unix.mjs';
 
-import L from './layout.json' with { type: 'json' };
 import {
   MEM_COMMIT, MEM_RESERVE, MEM_RELEASE, MEM_DECOMMIT, MEM_TOP_DOWN, MEM_MAPPED, MEM_IMAGE,
   PAGE_READWRITE, PAGE_READONLY, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_WRITECOPY,
@@ -62,21 +65,26 @@ const FILETIME_2020 = 132223104000000000n;
 function iosb(h, addr, status, info) {
   if (!addr) return;
   h.w32(addr, status);
-  h.w32(addr + 4, info);
+  h.wptr(addr + h.L.IO_STATUS_BLOCK.Information, info);
 }
 
 /** Resolves an OBJECT_ATTRIBUTES to a DOS path. */
 function oaPath(h, oa) {
   if (!oa) return null;
-  const root = h.u32(oa + 4);
-  const name = h.ustr(h.u32(oa + 8));
+  const root = h.ptr(oa + h.L.OBJECT_ATTRIBUTES.RootDirectory);
+  const name = oaName(h, oa);
   if (name === null) return null;
   return h.ntToDos(name, root);
 }
 
 function oaName(h, oa) {
   if (!oa) return null;
-  return h.ustr(h.u32(oa + 8));
+  return h.ustr(h.ptr(oa + h.L.OBJECT_ATTRIBUTES.ObjectName));
+}
+
+/** Rounds down to a multiple of `n` (exact above 4 GB, unlike `& ~(n - 1)`). */
+function alignDown(v, n) {
+  return v - (v % n);
 }
 
 function fileInfo(h, path) {
@@ -93,29 +101,46 @@ function writeTimes(h, at) {
 function memInfo(h, addr, buf) {
   const q = h.vm.query(addr);
   if (!q) return STATUS.INVALID_PARAMETER;
-  h.w32(buf + 0, q.base);
-  h.w32(buf + 4, q.allocBase);
-  h.w32(buf + 8, q.allocProt);
-  h.w32(buf + 12, q.size);
-  h.w32(buf + 16, q.state);
-  h.w32(buf + 20, q.prot);
-  h.w32(buf + 24, q.type);
+  const M = h.L.MEMORY_BASIC_INFORMATION;
+  h.m.u8.fill(0, buf, buf + M.__size);
+  h.wptr(buf + M.BaseAddress, q.base);
+  h.wptr(buf + M.AllocationBase, q.allocBase);
+  h.w32(buf + M.AllocationProtect, q.allocProt);
+  h.wptr(buf + M.RegionSize, q.size);
+  h.w32(buf + M.State, q.state);
+  h.w32(buf + M.Protect, q.prot);
+  h.w32(buf + M.Type, q.type);
   return STATUS.SUCCESS;
 }
 
 /** Restores registers from a CONTEXT and resumes there. */
 function continueContext(h, cpu, ctx) {
-  const C = L.CONTEXT;
+  if (h.x64) return continueContext64(h, cpu, ctx);
+  const C = h.L.CONTEXT;
   const m = h.m;
   const regs = [C.Eax, C.Ecx, C.Edx, C.Ebx, C.Esp, C.Ebp, C.Esi, C.Edi];
   regs.forEach((off, i) => m.setReg(cpu, i, h.u32(ctx + off)));
   // EFlags: arithmetic flags explicitly, direction flag, system bits.
   const ef = h.u32(ctx + C.EFlags);
   const abi = m.abi;
-  m.u32[(cpu + abi.cpu.FK) >>> 2] = 0;
-  m.u32[(cpu + abi.cpu.FR) >>> 2] = ef & 0x8d5;
-  m.u32[(cpu + abi.cpu.DF) >>> 2] = (ef >>> 10) & 1;
+  m.w32(cpu + abi.cpu.FK, 0);
+  m.w32(cpu + abi.cpu.FR, ef & 0x8d5);
+  m.w32(cpu + abi.cpu.DF, (ef >>> 10) & 1);
   return { jump: h.u32(ctx + C.Eip) };
+}
+
+/** The x86-64 CONTEXT: sixteen registers, flags and rip. */
+function continueContext64(h, cpu, ctx) {
+  const C = h.L.CONTEXT;
+  const m = h.m;
+  const regs = ['Rax', 'Rcx', 'Rdx', 'Rbx', 'Rsp', 'Rbp', 'Rsi', 'Rdi', 'R8', 'R9', 'R10', 'R11', 'R12', 'R13', 'R14', 'R15'];
+  regs.forEach((r, i) => m.setReg64(cpu, i, h.u64(ctx + C[r])));
+  const ef = h.u32(ctx + C.EFlags);
+  const abi = m.abi;
+  m.w32(cpu + abi.cpu.FK, 0);
+  m.dv.setBigUint64(cpu + abi.cpu64.FR, BigInt(ef & 0x8d5), true);
+  m.w32(cpu + abi.cpu.DF, (ef >>> 10) & 1);
+  return { jump: h.ptr(ctx + C.Rip) };
 }
 
 // ---- system calls ------------------------------------------------------------
@@ -124,19 +149,19 @@ export const SYSCALLS = {
   // -- virtual memory
   NtAllocateVirtualMemory(a) {
     const [proc, pbase, , psize, type, prot] = [a(0), a(1), a(2), a(3), a(4), a(5)];
-    let base = this.u32(pbase);
-    let size = this.u32(psize);
+    let base = this.ptr(pbase);
+    let size = this.ptr(psize);
     if (!size) return STATUS.INVALID_PARAMETER;
     void proc;
     if (type & MEM_RESERVE || !base) {
-      const want = base ? base & ~0xffff : 0;
+      const want = base ? alignDown(base, 0x10000) : 0;
       const got = this.vm.reserve(want, size + (base ? base - want : 0), { prot, topDown: !!(type & MEM_TOP_DOWN) });
       if (!got) return base ? STATUS.CONFLICTING_ADDRESSES : STATUS.NO_MEMORY;
       if (!base) base = got;
       else size += base - want, (base = want);
     }
     if (type & MEM_COMMIT) {
-      const start = base & ~0xfff;
+      const start = alignDown(base, 0x1000);
       const end = Math.ceil((base + size) / 0x1000) * 0x1000;
       if (!this.vm.commit(start, end - start, prot)) return STATUS.CONFLICTING_ADDRESSES;
       base = start;
@@ -144,19 +169,19 @@ export const SYSCALLS = {
     } else {
       size = Math.ceil(size / 0x1000) * 0x1000;
     }
-    this.w32(pbase, base);
-    this.w32(psize, size);
+    this.wptr(pbase, base);
+    this.wptr(psize, size);
     return STATUS.SUCCESS;
   },
   NtFreeVirtualMemory(a) {
     const [, pbase, psize, type] = [a(0), a(1), a(2), a(3)];
-    const base = this.u32(pbase);
-    const size = this.u32(psize);
+    const base = this.ptr(pbase);
+    const size = this.ptr(psize);
     if (type & MEM_RELEASE) {
       const r = this.vm.regionAt(base);
       if (!r || !this.vm.release(r.base)) return STATUS.MEMORY_NOT_ALLOCATED;
-      this.w32(pbase, r.base);
-      this.w32(psize, r.size);
+      this.wptr(pbase, r.base);
+      this.wptr(psize, r.size);
     } else if (type & MEM_DECOMMIT) {
       this.vm.decommit(base, size || 0x1000);
     }
@@ -164,21 +189,22 @@ export const SYSCALLS = {
   },
   NtProtectVirtualMemory(a) {
     const [, pbase, psize, prot, pold] = [a(0), a(1), a(2), a(3), a(4)];
-    const base = this.u32(pbase) & ~0xfff;
-    const end = Math.ceil((this.u32(pbase) + this.u32(psize)) / 0x1000) * 0x1000;
+    const base = alignDown(this.ptr(pbase), 0x1000);
+    const end = Math.ceil((this.ptr(pbase) + this.ptr(psize)) / 0x1000) * 0x1000;
     const old = this.vm.protect(base, end - base, prot);
     if (old < 0) return STATUS.NOT_MAPPED_VIEW;
     if (pold) this.w32(pold, old);
-    this.w32(pbase, base);
-    this.w32(psize, end - base);
+    this.wptr(pbase, base);
+    this.wptr(psize, end - base);
     return STATUS.SUCCESS;
   },
   NtQueryVirtualMemory(a) {
     const [, addr, cls, buf, len, pret] = [a(0), a(1), a(2), a(3), a(4), a(5)];
     if (cls === 0) {
-      if (len < 28) return STATUS.INFO_LENGTH_MISMATCH;
+      const n = this.L.MEMORY_BASIC_INFORMATION.__size;
+      if (len < n) return STATUS.INFO_LENGTH_MISMATCH;
       const s = memInfo(this, addr, buf);
-      if (pret) this.w32(pret, 28);
+      if (pret) this.wptr(pret, n);
       return s;
     }
     if (cls === 2) {
@@ -186,8 +212,9 @@ export const SYSCALLS = {
       const img = [...this.images.entries()].find(([b, i]) => addr >= b && addr < b + i.size);
       if (!img) return STATUS.INVALID_ADDRESS;
       const name = '\\Device\\HarddiskVolume1' + img[1].path.slice(2);
-      this.putUstr(buf, buf + 8, name);
-      if (pret) this.w32(pret, 8 + name.length * 2 + 2);
+      const us = this.L.UNICODE_STRING.__size;
+      this.putUstr(buf, buf + us, name);
+      if (pret) this.wptr(pret, us + name.length * 2 + 2);
       return STATUS.SUCCESS;
     }
     if (cls === 1000) {
@@ -208,7 +235,7 @@ export const SYSCALLS = {
     const n = this.callbackResults.length;
     if (!n) return 0xc0000258; // STATUS_NO_CALLBACK_ACTIVE
     this.callbackResults[n - 1] = { ptr: a(0), len: a(1), status: a(2) };
-    return { jump: this.m.abi.stop_address };
+    return { jump: this.m.stopAddress };
   },
   NtFlushInstructionCache() {
     return STATUS.SUCCESS;
@@ -228,23 +255,23 @@ export const SYSCALLS = {
     const [, src, , pdst] = [a(0), a(1), a(2), a(3)];
     const obj = this.object(src);
     if (!obj) return STATUS.INVALID_HANDLE;
-    if (pdst) this.w32(pdst, this.newHandle(obj));
+    if (pdst) this.wptr(pdst, this.newHandle(obj));
     return STATUS.SUCCESS;
   },
   NtCreateEvent(a) {
-    this.w32(a(0), this.newHandle({ type: 'event', signaled: !!a(4), manual: a(3) === 0 }));
+    this.wptr(a(0), this.newHandle({ type: 'event', signaled: !!a(4), manual: a(3) === 0 }));
     return STATUS.SUCCESS;
   },
   NtCreateKeyedEvent(a) {
-    this.w32(a(0), this.newHandle({ type: 'keyedevent' }));
+    this.wptr(a(0), this.newHandle({ type: 'keyedevent' }));
     return STATUS.SUCCESS;
   },
   NtCreateMutant(a) {
-    this.w32(a(0), this.newHandle({ type: 'mutant' }));
+    this.wptr(a(0), this.newHandle({ type: 'mutant' }));
     return STATUS.SUCCESS;
   },
   NtCreateSemaphore(a) {
-    this.w32(a(0), this.newHandle({ type: 'semaphore', count: a(3), max: a(4) }));
+    this.wptr(a(0), this.newHandle({ type: 'semaphore', count: a(3), max: a(4) }));
     return STATUS.SUCCESS;
   },
   NtSetEvent(a) {
@@ -293,24 +320,26 @@ export const SYSCALLS = {
     const [, cls, buf, len, pret] = [a(0), a(1), a(2), a(3), a(4)];
     const ret = (n) => (pret && this.w32(pret, n), STATUS.SUCCESS);
     switch (cls) {
-      case 0: // ProcessBasicInformation
-        if (len < 24) return STATUS.INFO_LENGTH_MISMATCH;
-        this.m.u8.fill(0, buf, buf + 24);
-        this.w32(buf + 4, this.peb);
-        this.w32(buf + 8, 1);
-        this.w32(buf + 16, 0x20);
-        return ret(24);
+      case 0: { // ProcessBasicInformation
+        const B = this.L.PROCESS_BASIC_INFORMATION;
+        if (len < B.__size) return STATUS.INFO_LENGTH_MISMATCH;
+        this.m.u8.fill(0, buf, buf + B.__size);
+        this.wptr(buf + B.PebBaseAddress, this.peb);
+        this.wptr(buf + B.PebBaseAddress + this.ps, 1); // AffinityMask
+        this.wptr(buf + B.UniqueProcessId, 0x20);
+        return ret(B.__size);
+      }
       case 7: // ProcessDebugPort
       case 30: // ProcessDebugObjectHandle
-        this.w32(buf, 0);
-        return cls === 30 ? 0xc0000353 : ret(4);
+        this.wptr(buf, 0);
+        return cls === 30 ? 0xc0000353 : ret(this.ps);
       case 12: // ProcessDefaultHardErrorMode
       case 31: // ProcessDebugFlags
         this.w32(buf, cls === 31 ? 1 : 0);
         return ret(4);
       case 26: // ProcessWow64Information
-        this.w32(buf, 0);
-        return ret(4);
+        this.wptr(buf, 0);
+        return ret(this.ps);
       case 34: // ProcessExecuteFlags
         this.w32(buf, 0x30); // MEM_EXECUTE_OPTION_PERMANENT | DISABLE_ATL_THUNK_EMULATION... permissive
         return ret(4);
@@ -319,14 +348,15 @@ export const SYSCALLS = {
         return ret(4);
       case 37: { // ProcessImageInformation (SECTION_IMAGE_INFORMATION)
         sectionImageInfo(this, this.exe.info, this.exe.base, buf);
-        return ret(48);
+        return ret(this.L.SECTION_IMAGE_INFORMATION.__size);
       }
       case 27: // ProcessImageFileName
       case 43: { // ProcessImageFileNameWin32
         const name = cls === 27 ? '\\Device\\HarddiskVolume1' + this.exePath.slice(2) : this.exePath;
-        if (len < 8 + name.length * 2 + 2) return STATUS.INFO_LENGTH_MISMATCH;
-        this.putUstr(buf, buf + 8, name);
-        return ret(8 + name.length * 2 + 2);
+        const us = this.L.UNICODE_STRING.__size;
+        if (len < us + name.length * 2 + 2) return STATUS.INFO_LENGTH_MISMATCH;
+        this.putUstr(buf, buf + us, name);
+        return ret(us + name.length * 2 + 2);
       }
       case 20: // ProcessHandleCount
         this.w32(buf, this.handles.size);
@@ -347,19 +377,20 @@ export const SYSCALLS = {
     const [, cls, buf, len, pret] = [a(0), a(1), a(2), a(3), a(4)];
     if (cls === 0) {
       // ThreadBasicInformation
-      if (len < 28) return STATUS.INFO_LENGTH_MISMATCH;
-      this.m.u8.fill(0, buf, buf + 28);
-      this.w32(buf + 4, this.teb);
-      this.w32(buf + 8, 0x20);
-      this.w32(buf + 12, 0x24);
-      this.w32(buf + 16, 1);
-      if (pret) this.w32(pret, 28);
+      const B = this.L.THREAD_BASIC_INFORMATION;
+      if (len < B.__size) return STATUS.INFO_LENGTH_MISMATCH;
+      this.m.u8.fill(0, buf, buf + B.__size);
+      this.wptr(buf + B.TebBaseAddress, this.teb);
+      this.wptr(buf + B.ClientId, 0x20);
+      this.wptr(buf + B.ClientId + this.ps, 0x24);
+      this.wptr(buf + B.AffinityMask, 1);
+      if (pret) this.w32(pret, B.__size);
       return STATUS.SUCCESS;
     }
     if (cls === 9) {
       // ThreadQuerySetWin32StartAddress
-      this.w32(buf, 0);
-      if (pret) this.w32(pret, 4);
+      this.wptr(buf, 0);
+      if (pret) this.w32(pret, this.ps);
       return STATUS.SUCCESS;
     }
     this.log(`NtQueryInformationThread class ${cls} not implemented`);
@@ -374,16 +405,25 @@ export const SYSCALLS = {
     switch (cls) {
       case 0: // SystemBasicInformation
       case 0x3e: { // SystemEmulationBasicInformation
-        if (len < 44) return STATUS.INFO_LENGTH_MISMATCH;
-        const v = [0, 0x1000, 0x40000, 1, 0x40000, 0x10000, 0x10000, this.m.thunkBase - 1, 1, 1];
-        v.forEach((x, i) => this.w32(buf + i * 4, x));
-        this.m.u8[buf + 40] = 1;
-        return ret(44);
+        const B = this.L.SYSTEM_BASIC_INFORMATION;
+        if (len < B.__size) return STATUS.INFO_LENGTH_MISMATCH;
+        this.m.u8.fill(0, buf, buf + B.__size);
+        this.w32(buf + B.PageSize - 4, 156250); // KeMaximumIncrement
+        this.w32(buf + B.PageSize, 0x1000);
+        this.w32(buf + B.MmNumberOfPhysicalPages, 0x40000);
+        this.w32(buf + B.MmLowestPhysicalPage, 1);
+        this.w32(buf + B.MmHighestPhysicalPage, 0x40000);
+        this.w32(buf + B.AllocationGranularity, 0x10000);
+        this.wptr(buf + B.LowestUserAddress, 0x10000);
+        this.wptr(buf + B.HighestUserAddress, this.m.thunkBase - 1);
+        this.wptr(buf + B.ActiveProcessorsAffinityMask, 1);
+        this.m.u8[buf + B.NumberOfProcessors] = 1;
+        return ret(B.__size);
       }
       case 1: // SystemCpuInformation
       case 0x3f: {
         this.m.u8.fill(0, buf, buf + Math.min(len, 32));
-        this.w16(buf, 0); // PROCESSOR_ARCHITECTURE_INTEL
+        this.w16(buf, this.x64 ? 9 : 0); // PROCESSOR_ARCHITECTURE_AMD64 / _INTEL
         this.w16(buf + 2, 6); // level
         this.w16(buf + 4, 0x0f29);
         this.w32(buf + 8, 0x1 | 0x8 | 0x40); // feature set
@@ -437,11 +477,13 @@ export const SYSCALLS = {
   },
   NtRaiseException(a) {
     const rec = a(0);
+    const ps = this.ps;
+    // EXCEPTION_RECORD: code, flags, record, address, count, information[]
     const code = this.u32(rec);
-    const addr = this.u32(rec + 12);
-    const nparams = this.u32(rec + 16);
+    const addr = this.ptr(rec + 8 + ps);
+    const nparams = this.u32(rec + 8 + ps * 2);
     const params = [];
-    for (let i = 0; i < Math.min(nparams, 4); i++) params.push(hex(this.u32(rec + 20 + i * 4)));
+    for (let i = 0; i < Math.min(nparams, 4); i++) params.push(hex(this.ptr(rec + 8 + ps * 3 + i * ps)));
     throw new GuestFault(code, addr, 0, `exception ${hex(code)} raised at ${hex(addr)} params [${params.join(', ')}] (no SEH dispatch yet)`);
   },
   NtSetContextThread(a, cpu) {
@@ -472,7 +514,7 @@ export const SYSCALLS = {
   NtInitializeNlsFiles(a) {
     const r = mapReadOnlyFile(this, 'c:\\windows\\system32\\locale.nls');
     if (!r) return STATUS.OBJECT_NAME_NOT_FOUND;
-    this.w32(a(0), r.base);
+    this.wptr(a(0), r.base);
     this.w32(a(1), 0x409);
     if (a(2)) this.w64(a(2), r.size);
     return STATUS.SUCCESS;
@@ -485,8 +527,8 @@ export const SYSCALLS = {
     if (!name) return STATUS.INVALID_PARAMETER;
     const r = mapReadOnlyFile(this, `c:\\windows\\system32\\${name}.nls`);
     if (!r) return STATUS.OBJECT_NAME_NOT_FOUND;
-    this.w32(pptr, r.base);
-    if (psize) this.w32(psize, r.size);
+    this.wptr(pptr, r.base);
+    if (psize) this.wptr(psize, r.size);
     return STATUS.SUCCESS;
   },
 
@@ -730,7 +772,7 @@ export const SYSCALLS = {
     if (sec.image) {
       if (!f?.data || f.data[0] !== 0x4d || f.data[1] !== 0x5a) return STATUS.INVALID_IMAGE_FORMAT;
     }
-    this.w32(ph, this.newHandle(sec));
+    this.wptr(ph, this.newHandle(sec));
     return STATUS.SUCCESS;
   },
   NtOpenSection() {
@@ -743,15 +785,16 @@ export const SYSCALLS = {
     if (cls === 1 && s.image) {
       const info = parsePe(s.file.data);
       sectionImageInfo(this, info, info.imageBase, buf);
-      if (pret) this.w32(pret, 48);
+      if (pret) this.wptr(pret, this.L.SECTION_IMAGE_INFORMATION.__size);
       return STATUS.SUCCESS;
     }
     if (cls === 0) {
-      // SectionBasicInformation
-      this.w32(buf, 0);
-      this.w32(buf + 4, s.image ? SEC_IMAGE : 0x8000000);
-      this.w64(buf + 8, s.size);
-      if (pret) this.w32(pret, 16);
+      // SectionBasicInformation: base, attributes, size
+      const ps = this.ps;
+      this.wptr(buf, 0);
+      this.w32(buf + ps, s.image ? SEC_IMAGE : 0x8000000);
+      this.w64(buf + ps * 2, s.size);
+      if (pret) this.wptr(pret, ps * 2 + 8);
       return STATUS.SUCCESS;
     }
     return STATUS.INVALID_INFO_CLASS;
@@ -763,20 +806,20 @@ export const SYSCALLS = {
     if (s.image) {
       const r = this.mapImageFile(s.file.path, s.file.data);
       if (r.status) return r.status;
-      this.w32(pbase, r.base);
-      this.w32(psize, r.size);
+      this.wptr(pbase, r.base);
+      this.wptr(psize, r.size);
       return STATUS.SUCCESS;
     }
     // Data section: copy the file (or zero-fill).
     const off = poff ? Number(this.u64(poff)) : 0;
-    let size = this.u32(psize) || s.size - off;
-    const want = this.u32(pbase);
+    let size = this.ptr(psize) || s.size - off;
+    const want = this.ptr(pbase);
     const base = this.vm.reserve(want, size, { type: MEM_MAPPED, prot });
     if (!base) return want ? STATUS.CONFLICTING_ADDRESSES : STATUS.NO_MEMORY;
     this.vm.commit(base, size, prot || PAGE_READONLY);
     if (s.file?.data) this.m.u8.set(s.file.data.subarray(off, off + size), base);
-    this.w32(pbase, base);
-    this.w32(psize, Math.ceil(size / 0x1000) * 0x1000);
+    this.wptr(pbase, base);
+    this.wptr(psize, Math.ceil(size / 0x1000) * 0x1000);
     return STATUS.SUCCESS;
   },
   NtMapViewOfSectionEx(a, cpu, base) {
@@ -798,23 +841,24 @@ export const SYSCALLS = {
 };
 
 function sectionImageInfo(h, info, base, buf) {
-  h.m.u8.fill(0, buf, buf + 48);
-  h.w32(buf + 0, base + info.entryRva);
-  h.w32(buf + 8, info.stackReserve);
-  h.w32(buf + 12, info.stackCommit);
-  h.w32(buf + 16, info.subsystem);
-  h.w16(buf + 20, info.minorSubsystem);
-  h.w16(buf + 22, info.majorSubsystem);
-  h.w16(buf + 24, info.majorOs);
-  h.w16(buf + 26, info.minorOs);
-  h.w16(buf + 28, info.characteristics);
-  h.w16(buf + 30, info.dllCharacteristics);
-  h.w16(buf + 32, info.machine);
-  h.m.u8[buf + 34] = 1; // ImageContainsCode
-  h.m.u8[buf + 35] = 0; // ImageFlags
-  h.w32(buf + 36, info.loaderFlags);
-  h.w32(buf + 40, info.sizeOfImage);
-  h.w32(buf + 44, info.checksum);
+  const S = h.L.SECTION_IMAGE_INFORMATION;
+  h.m.u8.fill(0, buf, buf + S.__size);
+  h.wptr(buf + S.TransferAddress, base + info.entryRva);
+  h.wptr(buf + S.MaximumStackSize, info.stackReserve);
+  h.wptr(buf + S.CommittedStackSize, info.stackCommit);
+  h.w32(buf + S.SubSystemType, info.subsystem);
+  h.w16(buf + S.MinorSubsystemVersion, info.minorSubsystem);
+  h.w16(buf + S.MajorSubsystemVersion, info.majorSubsystem);
+  h.w16(buf + S.MajorOperatingSystemVersion, info.majorOs);
+  h.w16(buf + S.MinorOperatingSystemVersion, info.minorOs);
+  h.w16(buf + S.ImageCharacteristics, info.characteristics);
+  h.w16(buf + S.DllCharacteristics, info.dllCharacteristics);
+  h.w16(buf + S.Machine, info.machine);
+  h.m.u8[buf + S.ImageContainsCode] = 1;
+  h.m.u8[buf + S.ImageFlags] = 0;
+  h.w32(buf + S.LoaderFlags, info.loaderFlags);
+  h.w32(buf + S.ImageFileSize, info.sizeOfImage);
+  h.w32(buf + S.CheckSum, info.checksum);
 }
 
 /** Maps a data file read-only (NLS tables). Cached per path. */
@@ -840,7 +884,7 @@ function openFile(h, ph, oa, piosb, disposition) {
   if (!path) return STATUS.OBJECT_NAME_INVALID;
   const raw = oaName(h, oa);
   if (/^\\Device\\ConDrv/i.test(raw) || /\\conin\$|\\conout\$/i.test(raw)) {
-    h.w32(ph, h.newHandle({ type: 'file', std: /in/i.test(raw) ? 'stdin' : 'stdout', path: null }));
+    h.wptr(ph, h.newHandle({ type: 'file', std: /in/i.test(raw) ? 'stdin' : 'stdout', path: null }));
     iosb(h, piosb, 0, 1);
     return STATUS.SUCCESS;
   }
@@ -861,7 +905,7 @@ function openFile(h, ph, oa, piosb, disposition) {
     fi = fileInfo(h, path);
   }
   const obj = { type: 'file', path, dir: fi.dir, data: fi.dir ? null : h.fileAt(path), pos: 0 };
-  h.w32(ph, h.newHandle(obj));
+  h.wptr(ph, h.newHandle(obj));
   iosb(h, piosb, 0, 1); // FILE_OPENED
   return STATUS.SUCCESS;
 }

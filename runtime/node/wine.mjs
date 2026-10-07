@@ -13,6 +13,9 @@
 //
 // Wine's PE DLLs come from WINE_BUILD (default /opt/wine-build) and its NLS
 // files from WINE_SRC; translations are cached in target/wine-cache.
+// 64-bit programs run on Wine's x86_64 DLLs from WINE_BUILD64 (default
+// /opt/wine-build64, tools/wine/build.sh with ARCH=x86_64) on a 64-bit
+// (memory64) memory, at their own addresses.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -21,6 +24,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Machine, GuestFault, hex } from '../runtime.mjs';
+import { peArch } from '../pe.mjs';
 import { WineHost } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
@@ -32,7 +36,7 @@ import { FastTranslator, enableFastMode } from '../fastmode.mjs';
 import { stdout, stderr } from './output.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const wineBuild = process.env.WINE_BUILD ?? '/opt/wine-build';
+let wineBuild = process.env.WINE_BUILD ?? '/opt/wine-build';
 const wineSrc = process.env.WINE_SRC ?? '/opt/wine-src/wine-11.0';
 const cacheDir = join(root, 'target/wine-cache');
 
@@ -43,20 +47,23 @@ function wwt() {
     .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
 }
 
+/** 64-bit programs: x86_64 Wine on a 64-bit memory. */
+let x64 = false;
+
 /** Translates an image with the CLI, caching by content hash. */
 function translate(path, bytes) {
   mkdirSync(cacheDir, { recursive: true });
   // Keyed by the image and the translator build, so a rebuilt translator
   // never serves stale translations.
   const t = statSync(wwt());
-  const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}`).digest('hex').slice(0, 16);
+  const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}${x64 ? ':mem64' : ''}`).digest('hex').slice(0, 16);
   const out = join(cacheDir, `${path.split('\\').pop()}-${hash}.wasm`);
   if (!existsSync(out)) {
     // Several runners share the cache: write under a per-process name and
     // rename, so a reader never sees a partial file.
     const tmp = join(cacheDir, `${hash}.${process.pid}`);
     writeFileSync(`${tmp}.bin`, bytes);
-    execFileSync(wwt(), ['translate', `${tmp}.bin`, '-o', `${tmp}.wasm`], { stdio: ['ignore', 'ignore', 'inherit'] });
+    execFileSync(wwt(), ['translate', `${tmp}.bin`, '-o', `${tmp}.wasm`, ...(x64 ? ['--mem64'] : [])], { stdio: ['ignore', 'ignore', 'inherit'] });
     renameSync(`${tmp}.wasm`, out);
     rmSync(`${tmp}.bin`);
   }
@@ -136,11 +143,22 @@ if (!exe) {
   process.exit(2);
 }
 
+x64 = peArch(readFileSync(exe)) === 'x64';
+if (x64) {
+  wineBuild = process.env.WINE_BUILD64 ?? '/opt/wine-build64';
+  if (useUnix) {
+    // Wine's Unix side is a wasm32 build for now; 64-bit programs use the
+    // host's own system calls.
+    useUnix = false;
+  }
+}
+const peDir = x64 ? 'x86_64-windows' : 'i386-windows';
+
 // The virtual C: drive.
 const files = new Map();
 const sys32 = 'c:\\windows\\system32';
 for (const d of readdirSync(join(wineBuild, 'dlls'))) {
-  for (const f of [join(wineBuild, 'dlls', d, 'i386-windows', `${d}.dll`), join(wineBuild, 'dlls', d, 'i386-windows', d)]) {
+  for (const f of [join(wineBuild, 'dlls', d, peDir, `${d}.dll`), join(wineBuild, 'dlls', d, peDir, d)]) {
     if (existsSync(f) && statSync(f).isFile()) files.set(`${sys32}\\${basename(f).toLowerCase()}`, readFileSync(f));
   }
 }
@@ -154,14 +172,15 @@ files.set(exeDos, readFileSync(exe));
 mkdirSync(cacheDir, { recursive: true });
 const abi = JSON.parse(execFileSync(wwt(), ['abi']).toString());
 const kernelPath = join(cacheDir, `kernel.${process.pid}.wasm`);
-execFileSync(wwt(), ['kernel', '-o', kernelPath]);
+execFileSync(wwt(), ['kernel', '-o', kernelPath, ...(x64 ? ['--code64'] : [])]);
 const kernel = readFileSync(kernelPath);
 rmSync(kernelPath);
 const layout = useUnix ? JSON.parse(readFileSync(join(unixDir, 'wine_unix.json'), 'utf8')) : null;
 const machine = new Machine({
   abi,
   kernel,
-  guestLimit: 0x8000_0000,
+  // x86_64 Wine's DLLs load at 0x1_7000_0000 and up.
+  ...(x64 ? { arch: 'x64', mem64: true, guestLimit: 0x2_0000_0000 } : { guestLimit: 0x8000_0000 }),
   ...(layout && { nativeSize: layout.nativeSize, extraSize: layout.extraSize }),
   log: trace ? (s) => stderr(`[machine] ${s}\n`) : undefined,
 });

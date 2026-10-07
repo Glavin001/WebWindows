@@ -190,6 +190,46 @@ jobs:
           name: gui-screens
           path: target/gui/*.png
 
+  # 64-bit programs on Wine's x86_64 DLLs, translated, on a 64-bit
+  # (memory64) WebAssembly memory at their own addresses.
+  wine64:
+    runs-on: ubuntu-latest
+    env:
+      WINE_SRC: ${{ github.workspace }}/../wine-src/wine-11.0
+      WINE_BUILD64: ${{ github.workspace }}/../wine-build64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+      - name: Install toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 flex bison
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/../wine-src
+            ${{ github.workspace }}/../wine-build64
+          key: wine64-${{ hashFiles('tools/wine/build.sh') }}
+      - name: Build Wine's x86_64 PE DLLs
+        run: ARCH=x86_64 WINE_BUILD=$WINE_BUILD64 sh tools/wine/build.sh
+      - name: Build
+        run: |
+          cargo build --release -p wwt-cli
+          cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
+      - name: hello64 on translated x86_64 Wine
+        run: |
+          x86_64-w64-mingw32-gcc -O2 -nostdlib -o target/hello64.exe tests/programs/hello.c -lkernel32 -Wl,-e,start
+          node runtime/node/wine.mjs target/hello64.exe | tee target/hello64.out
+          grep -q "Hello from translated x86!" target/hello64.out
+      - name: 64-bit programs on translated x86_64 Wine
+        run: node tests/programs/check.mjs --arch x64 --wine --jobs 4
+
   # Runs the same MinGW executables on real Windows and checks they print
   # what the translated runs printed (validating the Linux reference).
   windows:

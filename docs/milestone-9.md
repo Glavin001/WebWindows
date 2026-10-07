@@ -2,8 +2,10 @@
 
 Status as of October 7, 2026. This is the first step of the plan's "after
 v1" item, "x86-64 on 64-bit WebAssembly memory" ([plan](plan.md#64-bit-programs)):
-the translator, the runtime and the test layers for 64-bit programs on the
-M1 shims. Wine's 64-bit side is the next step (see the end).
+the translator, the runtime and the test layers for 64-bit programs, on the
+M1 shims and on Wine's own x86_64 DLLs, translated. Console programs run
+on 64-bit Wine; windowed ones need Wine's Unix side built for wasm64 (see
+the end).
 
 ## The design: two stacks, one translator
 
@@ -213,20 +215,67 @@ first version of the script built CoreMark's "simple" port, which keeps
 pointers in a 32-bit integer; the script now builds a 64-bit copy of it.
 Translated and native x86-64 runs of that build produce identical CRCs.)
 
+## 64-bit Wine
+
+64-bit programs run on Wine 11's x86_64 PE DLLs (`ARCH=x86_64
+tools/wine/build.sh`, a separate tree in `/opt/wine-build64`), translated
+like the i386 ones and loaded at their own bases (`ntdll` at
+`0x1_7000_0000`, `kernelbase` at `0x1_7400_0000`, `kernel32` at
+`0x1_7800_0000`) on a 64-bit memory with an 8 GB guest region. The
+translator handles these DLLs whole: the only instructions it reports
+unsupported in `ntdll` are the 258 `syscall`s in the system-call stubs,
+which never run (below), and a handful of misdecoded data bytes in
+`kernelbase`, `msvcrt` and `ucrtbase`.
+
+`runtime/wine/host.mjs` and `syscalls.mjs` serve both architectures:
+
+* **System calls.** Wine's x86-64 stubs are `mov r10, rcx; mov eax, id;
+  test byte [0x7ffe0308], 1; jne 1f; syscall; ret; 1: ...; call
+  [0x7ffe1000]; ret`. The host sets `KUSER_SHARED_DATA.SystemCall` and
+  stores its thunk at `0x7ffe1000`, so every call arrives as `call
+  [0x7ffe1000]`, with the arguments in r10, rdx, r8 and r9 and then at
+  rsp+0x30. A 32-bit argument's stack slot can carry garbage in its upper
+  half (the caller wrote it with a 32-bit store), so an argument with upper
+  bits set counts as a pointer only when it points into mapped memory;
+  sign-extended values (pseudo-handles) read as their 32-bit forms.
+  `__wine_unix_call_dispatcher` takes the x64 convention.
+* **Process setup.** The TEB at `gs:0`, x64 selectors, and the initial
+  context for `LdrInitializeThunk` built as `signal_x86_64.c` builds it
+  (rcx = entry, rdx = PEB, rip = `RtlUserThreadStart`, the CONTEXT just
+  below the stack top, rcx pointing at it).
+* **Structures.** `tools/wine-layout` compiles its layout program with
+  either MinGW; the 64-bit one (itself a 64-bit program, run through the
+  translator) writes `runtime/wine/layout64.json`. The host and the system
+  calls take every structure offset from the layout for the process's
+  architecture and read and write pointer-sized fields (pointers, handles,
+  `SIZE_T`) through `ptr`/`wptr`: `OBJECT_ATTRIBUTES`, `UNICODE_STRING`,
+  `IO_STATUS_BLOCK`, `MEMORY_BASIC_INFORMATION`, the process, thread,
+  system and section information classes, `EXCEPTION_RECORD`, and the
+  x86-64 `CONTEXT` for `NtContinue`. The PE helpers read PE32+ headers and
+  apply DIR64 relocations when an image must move.
+* **Runner.** `runtime/node/wine.mjs` picks the x86_64 build, a 64-bit
+  machine and `--mem64` translation from the program's PE header.
+
+| Test | Result |
+| --- | --- |
+| `hello64.exe` (kernel32 only) on x86_64 Wine | prints both lines, exit 0 |
+| The 7 hand-written programs × 5 levels (MinGW CRT on Wine's msvcrt: printf, `setjmp`/`longjmp`, `qsort` callbacks, x87 and SSE) | 35/35 pass |
+| The same on i386 Wine (regression) | 35/35 pass |
+
+Fixing the layouts also corrected the i386 `SystemBasicInformation`, which
+had been written one field off (a 256 KB page size).
+
 ## Not done yet
 
-* **Wine for 64-bit programs.** The next step, in the plan's order:
-  Wine's x86_64 PE DLLs translated (`--enable-archs=x86_64`, a second build
-  tree); the x86-64 system-call boundary in `runtime/wine/host.mjs`
-  (Wine 11's stub is `mov r10, rcx; mov eax, id; test byte
-  [0x7ffe0308], 1; jne; syscall; ret; ... call [0x7ffe1000]`, so the host
-  commits 0x7ffe1000 with the dispatcher thunk and leaves
-  `KUSER_SHARED_DATA.SystemCall` clear; arguments in r10, rdx, r8, r9 and
-  then the stack from rsp+0x30); `KiUserCallbackDispatcher`'s fixed frame;
-  structure layouts generated with x86_64 MinGW; `syscalls.mjs` on
-  pointer-size accessors; and Wine's Unix side built for wasm64 with
-  Emscripten (`-sMEMORY64`, with `prepare.py` mapping wasm64 to the
-  x86_64 layout as it maps wasm32 to i386 today).
+* **Windowed 64-bit programs** (Notepad and Minesweeper as 64-bit
+  programs): win32u's Unix side and wineserver are the Emscripten build in
+  `native/wine-unix`, a wasm32 module. 64-bit Wine needs it built for wasm64
+  (`-sMEMORY64`, with `prepare.py` mapping wasm64 to the x86_64 layout as it
+  maps wasm32 to i386 today, and `gen-syscalls.py` reading the x86_64
+  syscall table), and the host's `userCallback` needs
+  `KiUserCallbackDispatcher`'s x86-64 frame (args at rsp+0x20, length at
+  +0x28, id at +0x2c). Until then `wine.mjs` runs 64-bit programs on the
+  host's own system calls.
 * **Exceptions:** x86-64 exceptions are table-based (`.pdata` unwind
   information). Translated code keeps the guest stack real, so Wine's
   `RtlVirtualUnwind` works on it as long as prologue saves and stack

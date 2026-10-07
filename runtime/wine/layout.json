@@ -118,6 +118,13 @@
     "ExtendedRegisters": 204,
     "__end": 0
   },
+  "UNICODE_STRING": {
+    "__size": 8,
+    "Length": 0,
+    "MaximumLength": 2,
+    "Buffer": 4,
+    "__end": 0
+  },
   "OBJECT_ATTRIBUTES": {
     "__size": 24,
     "RootDirectory": 4,
@@ -177,6 +184,7 @@
     "TickCountQuad": 800,
     "QpcFrequency": 768,
     "XState": 984,
+    "SystemCall": 776,
     "__end": 0
   },
   "IO_STATUS_BLOCK": {

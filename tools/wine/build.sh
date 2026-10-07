@@ -1,7 +1,8 @@
 #!/bin/sh
 # Fetches the pinned Wine release and builds the i386 PE DLLs the runtime
-# translates (Milestone 2). Only Wine's Windows side is used; its Unix side
-# is replaced by runtime/wine.
+# translates (Milestone 2), or with ARCH=x86_64 the x86_64 ones for 64-bit
+# programs, in a separate build tree. Only Wine's Windows side is used; its
+# Unix side is replaced by runtime/wine.
 #
 #   tools/wine/build.sh [dll ...]      # default: the DLLs a console app needs
 #   tools/wine/build.sh programs/cmd   # one of Wine's programs (cmd.exe)
@@ -9,12 +10,20 @@
 #   tools/wine/build.sh fonts          # the bitmap fonts (.fon) Wine generates;
 #                                      # needs FreeType's headers (libfreetype-dev)
 #
-# Environment: WINE_SRC (default /opt/wine-src/wine-$VERSION), WINE_BUILD
-# (default /opt/wine-build). Needs gcc, flex, bison and gcc-mingw-w64-i686.
+# Environment: ARCH (i386, the default, or x86_64), WINE_SRC (default
+# /opt/wine-src/wine-$VERSION), WINE_BUILD (default /opt/wine-build, or
+# /opt/wine-build64 for x86_64). Needs gcc, flex, bison and
+# gcc-mingw-w64-i686 (gcc-mingw-w64-x86-64 for x86_64).
 set -e
 VERSION=11.0
+ARCH=${ARCH:-i386}
+case $ARCH in
+  i386) default_build=/opt/wine-build ;;
+  x86_64) default_build=/opt/wine-build64 ;;
+  *) echo "ARCH must be i386 or x86_64" >&2; exit 2 ;;
+esac
 WINE_SRC=${WINE_SRC:-/opt/wine-src/wine-$VERSION}
-WINE_BUILD=${WINE_BUILD:-/opt/wine-build}
+WINE_BUILD=${WINE_BUILD:-$default_build}
 DLLS=${*:-"ntdll kernelbase kernel32 msvcrt ucrtbase"}
 
 if [ ! -d "$WINE_SRC" ]; then
@@ -24,7 +33,11 @@ fi
 mkdir -p "$WINE_BUILD"
 cd "$WINE_BUILD"
 if [ ! -f Makefile ]; then
-  "$WINE_SRC/configure" --enable-archs=i386 --without-x --without-freetype --without-wayland \
+  # An x86_64 build needs --enable-win64 for its Unix-side tools to be
+  # 64-bit; only its PE side is used.
+  win64=
+  [ "$ARCH" = x86_64 ] && win64=--enable-win64
+  "$WINE_SRC/configure" $win64 --enable-archs=$ARCH --without-x --without-freetype --without-wayland \
     --without-vulkan --without-gstreamer --without-pulse --without-alsa --without-oss --without-cups \
     --without-dbus --without-gnutls --without-sane --without-usb --without-v4l2 --without-pcap \
     --without-netapi --without-krb5 --without-gssapi --without-opencl --without-sdl --without-udev \
@@ -33,9 +46,9 @@ if [ ! -f Makefile ]; then
 fi
 target() {
   case $1 in
-    programs/*) n=${1#programs/}; case $n in *.*) echo "$1/i386-windows/$n" ;; *) echo "$1/i386-windows/$n.exe" ;; esac ;;
-    */tests) d=${1%/tests}; echo "dlls/$1/i386-windows/${d}_test.exe" ;;
-    *) echo "dlls/$1/i386-windows/$1.dll" ;;
+    programs/*) n=${1#programs/}; case $n in *.*) echo "$1/$ARCH-windows/$n" ;; *) echo "$1/$ARCH-windows/$n.exe" ;; esac ;;
+    */tests) d=${1%/tests}; echo "dlls/$1/$ARCH-windows/${d}_test.exe" ;;
+    *) echo "dlls/$1/$ARCH-windows/$1.dll" ;;
   esac
 }
 targets=""
