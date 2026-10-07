@@ -41,6 +41,20 @@ export class FastTranslator {
     return this.take(res);
   }
 
+  /** Translates a whole PE file; `profile` lists extra entry points. */
+  translatePe(file, { profile = [], opt = 1 } = {}) {
+    const x = this.x;
+    const fp = x.wwt_alloc(file.length);
+    new Uint8Array(x.memory.buffer).set(file, fp);
+    const pp = x.wwt_alloc(Math.max(profile.length, 1) * 4);
+    const v = new DataView(x.memory.buffer);
+    profile.forEach((e, i) => v.setUint32(pp + i * 4, e >>> 0, true));
+    const res = x.wwt_translate_pe(fp, file.length, pp, profile.length, opt, 0);
+    x.wwt_free(fp, file.length);
+    x.wwt_free(pp, Math.max(profile.length, 1) * 4);
+    return this.take(res);
+  }
+
   kernel() {
     return this.take(this.x.wwt_kernel());
   }

@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Everything that runs on x86 Linux, which is also the source of truth for
+  # instruction behavior: the oracle re-records every case on this CPU.
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+      - name: Install toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 csmith binaryen
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Build
+        run: |
+          cargo build --workspace
+          cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
+      - name: Unit, instruction (layer 1) and snapshot (layer 5) tests
+        run: cargo test --workspace
+      - name: Committed fixtures match this CPU
+        run: cargo run -p wwt-testkit --bin record -- --check
+      - name: Programs (layer 2)
+        run: node tests/programs/check.mjs --jobs 4
+      - name: Csmith (layer 2)
+        run: node tests/programs/check.mjs --csmith 40 --seed ${{ github.run_number }}000 --opt O0,O2 --jobs 4
+      - name: Instruction coverage of MinGW output
+        run: cargo run -p wwt-testkit --bin coverage -- target/programs/*.exe
+      - name: Spikes
+        run: node spikes/memory/run.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: programs
+          path: |
+            target/programs/*.exe
+            target/programs/results.json
+            target/program-failures/
+
+  # Runs the same MinGW executables on real Windows and checks they print
+  # what the translated runs printed (validating the Linux reference).
+  windows:
+    needs: linux
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: programs
+          path: programs
+      - name: Compare native Windows runs with translated runs
+        shell: pwsh
+        run: node tests/programs/windows-check.mjs programs

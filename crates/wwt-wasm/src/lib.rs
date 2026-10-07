@@ -6,6 +6,8 @@
 //! * `wwt_translate(code, code_len, base, entries, n_entries, known,
 //!   n_known, opt_level, flags) -> ptr` — returns a buffer `[len: u32][module bytes]`; free it
 //!   with `wwt_free(ptr, len + 4)`.
+//! * `wwt_translate_pe(file, len, profile, n_profile, opt_level, flags) ->
+//!   ptr` — ahead-of-time translation of a whole .exe/.dll.
 //! * `wwt_kernel() -> ptr` — the runtime kernel module, same format.
 //! * `wwt_abi() -> ptr` — the ABI JSON, same format.
 
@@ -73,6 +75,47 @@ pub unsafe extern "C" fn wwt_translate(
     cfg.codegen.smc_checks = sc;
     let src = FlatCode { base, bytes: code };
     match wwt::translate::translate_region_with_known(&src, &entries, &known, &cfg) {
+        Ok(t) => result(t.wasm),
+        Err(_) => result(vec![]),
+    }
+}
+
+/// Translates a whole PE file ahead of time, with `profile` addresses (code
+/// found at run time on earlier launches) as extra entry points. Returns an
+/// empty buffer on failure.
+///
+/// # Safety
+/// The pointers must describe valid buffers in this module's memory.
+#[no_mangle]
+pub unsafe extern "C" fn wwt_translate_pe(
+    file: *const u8,
+    file_len: usize,
+    profile: *const u32,
+    n_profile: usize,
+    opt_level: u32,
+    flags: u32,
+) -> *mut u8 {
+    let data = std::slice::from_raw_parts(file, file_len).to_vec();
+    let profile = if n_profile == 0 {
+        vec![]
+    } else {
+        std::slice::from_raw_parts(profile, n_profile).to_vec()
+    };
+    let mut cfg = if opt_level == 0 {
+        wwt::Config::fast()
+    } else {
+        wwt::Config::default()
+    };
+    let mc = flags & FLAG_NO_MEM_CHECKS == 0;
+    let sc = flags & FLAG_NO_SMC_CHECKS == 0;
+    cfg.lift.mem_checks = mc;
+    cfg.codegen.mem_checks = mc;
+    cfg.lift.smc_checks = sc;
+    cfg.codegen.smc_checks = sc;
+    let Ok(pe) = wwt::pe::PeFile::parse(data) else {
+        return result(vec![]);
+    };
+    match wwt::translate_pe(&pe, &cfg, &profile) {
         Ok(t) => result(t.wasm),
         Err(_) => result(vec![]),
     }
