@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
-use iced_x86::{ConditionCode, Instruction, Mnemonic, OpKind, Register};
+use iced_x86::{ConditionCode, Instruction, MemorySize, Mnemonic, OpKind, Register};
 
 use crate::abi::{fault, flags as fl};
 use crate::discover::{CodeSource, Discovery};
@@ -695,6 +695,15 @@ impl<'a> Lifter<'a> {
                 code: fault::PRIVILEGED_INSTRUCTION,
                 eip: self.eip,
             });
+            return false;
+        }
+        // Far pointers in memory (jmp/call far [m], lfs, ...): segment loads
+        // are not supported. These mostly come from data decoded as code.
+        if matches!(
+            i.memory_size(),
+            MemorySize::SegPtr16 | MemorySize::SegPtr32 | MemorySize::Fword6 | MemorySize::Fword10
+        ) {
+            self.unsupported(i, "far pointer operand");
             return false;
         }
         if fpu::is_fpu(i) {

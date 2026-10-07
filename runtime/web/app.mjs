@@ -50,7 +50,7 @@ $('fallback').onchange = (e) => {
   setPrograms();
 };
 
-function run(exeName, exeBytes, files) {
+function run(exeName, exeBytes, files, exePath) {
   out.textContent = '';
   logEl.textContent = '';
   $('status').textContent = `running ${exeName}…`;
@@ -74,6 +74,7 @@ function run(exeName, exeBytes, files) {
     worker.postMessage(
       {
         exeName,
+        exePath,
         exeBytes,
         files,
         argv: args ? args.split(/\s+/) : [],
@@ -92,7 +93,7 @@ $('run').onclick = async () => {
   const files = {};
   for (const [k, f] of folder) if (f.size < 64 << 20) files[k] = await f.arrayBuffer();
   const exe = await folder.get(name).arrayBuffer();
-  run(name.split('/').pop(), exe, files);
+  run(name.split('/').pop(), exe, files, name);
 };
 
 // ?exe=<url> runs a program directly (used by tests and demos).

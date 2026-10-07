@@ -36,3 +36,23 @@ fn cmpxchg_accumulator_destination() {
     // cmpxchg eax, ecx; ret
     translates(&[0x0f, 0xb1, 0xc8, 0xc3]);
 }
+
+/// Wine's kernel32 tests: data decoded as code produced `jmp far [m]`, whose
+/// 6-byte far pointer reached code generation as an ordinary load.
+#[test]
+fn far_pointer_operands_are_unsupported() {
+    let cfg = wwt::Config::default();
+    // jmp far [eax]; call far [eax]; lfs eax, [ecx]
+    for code in [
+        &[0xff, 0x28][..],
+        &[0xff, 0x18, 0xc3],
+        &[0x0f, 0xb4, 0x01, 0xc3],
+    ] {
+        let (f, unsupported) = translate_snippet(code, 0x401000, &cfg);
+        assert_eq!(unsupported.len(), 1, "{code:x?}: {unsupported:?}");
+        let wasm = build_module(&[f], &cfg);
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&wasm)
+            .expect("valid module");
+    }
+}
