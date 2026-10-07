@@ -1,0 +1,11 @@
+/target
+node_modules/
+*.wwcache/
+/out/
+/dist
+/.vercel
+# Build outputs and tool droppings
+/spikes/emscripten/out/
+/tests/programs/bench/bench.exe
+/tests/programs/bench/bench.native
+platform.info

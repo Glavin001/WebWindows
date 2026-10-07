@@ -1,0 +1,15 @@
+[package]
+name = "wwt-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+wwt = { path = "../wwt" }
+iced-x86.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+flate2 = "1"
+wasmtime = { version = "38", default-features = false, features = ["cranelift", "runtime", "threads", "std"] }

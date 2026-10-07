@@ -1,0 +1,3087 @@
+---
+source: crates/wwt/tests/snapshots.rs
+expression: "ir_of(&t, f.entry)"
+---
+function 0x404400:
+  b0 @0x404400:
+    v49 = const 0x4
+    v50 = I32Sub esp, v49
+    store4.trusted [v50], ebp
+    ebp = v50
+    v53 = const 0x4
+    v54 = I32Sub v50, v53
+    store4.trusted [v54], edi
+    edi = const 0x0
+    v58 = const 0x4
+    v59 = I32Sub v54, v58
+    store4.trusted [v59], esi
+    v61 = const 0x4
+    v62 = I32Sub v59, v61
+    store4.trusted [v62], ebx
+    v63 = const 0xcc
+    v65 = I32Sub v62, v63
+    fk = const 0x203
+    fr = v65
+    fa = v62
+    fb = const 0xcc
+    v69 = load4.trusted+0x14 [v50]
+    ebx = v69
+    v70 = const 0x404416
+    v71 = const 0x4
+    v72 = I32Sub v65, v71
+    store4.trusted [v72], v70
+    esp = v72
+    call 0x407e48 ret=0x404416 -> b1
+  b1 @0x404416:
+    v73 = const 0xffffffff
+    v75 = const 0xffffffc4
+    v76 = I32Add ebp, v75
+    store4.trusted [v76], v73
+    v78 = load4 [eax]
+    v79 = const 0xffffffff
+    v81 = const 0xffffffc8
+    v82 = I32Add ebp, v81
+    store4.trusted [v82], v79
+    v83 = const 0xfffffffd
+    v85 = const 0xffffffcc
+    v86 = I32Add ebp, v85
+    store4.trusted [v86], v83
+    v89 = const 0xffffff44
+    v90 = I32Add ebp, v89
+    store4.trusted [v90], v78
+    v92 = const 0xc
+    v93 = I32Add ebp, v92
+    v94 = load4.trusted [v93]
+    v95 = const 0xffff
+    v96 = I32And edi, v95
+    v98 = const 0xffffffd0
+    v99 = I32Add ebp, v98
+    store2.trusted [v99], v96
+    v102 = const 0xffffffbc
+    v103 = I32Add ebp, v102
+    store4.trusted [v103], v94
+    v105 = const 0x8
+    v106 = I32Add ebp, v105
+    v107 = load4.trusted [v106]
+    v108 = const 0x0
+    v110 = const 0xffffffd4
+    v111 = I32Add ebp, v110
+    store4.trusted [v111], v108
+    v112 = const 0x6000
+    v114 = I32And v107, v112
+    v115 = const 0x0
+    v117 = const 0xffffffdc
+    v118 = I32Add ebp, v117
+    store4.trusted [v118], v115
+    v121 = const 0xffffff4c
+    v122 = I32Add ebp, v121
+    store4.trusted [v122], v114
+    v125 = const 0xffffffc0
+    v126 = I32Add ebp, v125
+    store4.trusted [v126], v114
+    v130 = const 0x0
+    v132 = const 0xffffffd8
+    v133 = I32Add ebp, v132
+    store2.trusted [v133], v130
+    v135 = const 0x10
+    v136 = I32Add ebp, v135
+    v137 = load4.trusted [v136]
+    eax = v137
+    v138 = const 0xffffffff
+    v140 = const 0xffffffe4
+    v141 = I32Add ebp, v140
+    store4.trusted [v141], v138
+    v144 = const 0xffffffe0
+    v145 = I32Add ebp, v144
+    store4.trusted [v145], v137
+    v147 = load1 [ebx]
+    v148 = I32Extend8S v147
+    eax = v148
+    v2848 = I32Eqz v148
+    br v2848 ? b2 : b3
+  b2 @0x4045d3:
+    v153 = const 0xcc
+    v155 = I32Add esp, v153
+    fk = const 0x201
+    fr = v155
+    fa = esp
+    fb = const 0xcc
+    v156 = load4.trusted [v155]
+    v157 = const 0x4
+    v158 = I32Add v155, v157
+    ebx = v156
+    v159 = load4.trusted+0x4 [v155]
+    v160 = const 0x4
+    v161 = I32Add v158, v160
+    esi = v159
+    v162 = load4.trusted+0x4 [v158]
+    v163 = const 0x4
+    v164 = I32Add v161, v163
+    edi = v162
+    v165 = load4.trusted+0x4 [v161]
+    v166 = const 0x4
+    v167 = I32Add v164, v166
+    ebp = v165
+    v168 = load4.trusted+0x4 [v164]
+    v169 = const 0x4
+    v170 = I32Add v167, v169
+    esp = v170
+    ret v168
+  b3 @0x40447a:
+    v172 = const 0x1
+    v173 = I32Add ebx, v172
+    edi = v173
+    edx = eax
+    jump b4
+  b4 @0x4044be:
+    v175 = const 0x25
+    fb = const 0x25
+    v2849 = I32Ne eax, v175
+    br v2849 ? b5 : b6
+  b5 @0x404488:
+    v180 = const 0xffffffc0
+    v181 = I32Add ebp, v180
+    v182 = load4.trusted [v181]
+    ecx = v182
+    v184 = const 0xffffffdc
+    v185 = I32Add ebp, v184
+    v186 = load4.trusted [v185]
+    ebx = v186
+    v187 = const 0x40
+    v188 = const 0x8
+    v189 = I32ShrU v182, v188
+    v190 = const 0xff
+    v191 = I32And v189, v190
+    v192 = I32And v191, v187
+    v193 = const 0xff
+    v194 = I32And v192, v193
+    v2850 = const 0x0
+    v2851 = I32Ne v194, v2850
+    br v2851 ? b7 : b8
+  b6 @0x4044c3:
+    v197 = const 0xffffff4c
+    v198 = I32Add ebp, v197
+    v199 = load4.trusted [v198]
+    eax = v199
+    v200 = const 0xffffffff
+    v202 = const 0xffffffc8
+    v203 = I32Add ebp, v202
+    store4.trusted [v203], v200
+    v204 = const 0xffffffff
+    v206 = const 0xffffffc4
+    v207 = I32Add ebp, v206
+    store4.trusted [v207], v204
+    v210 = const 0xffffffc0
+    v211 = I32Add ebp, v210
+    store4.trusted [v211], v199
+    v213 = load1 [edi]
+    eax = v213
+    v214 = const 0xff
+    v215 = I32And v213, v214
+    v216 = const 0xff
+    v217 = I32And v213, v216
+    v218 = I32And v217, v215
+    v219 = const 0xff
+    v220 = I32And v218, v219
+    v2852 = I32Eqz v220
+    br v2852 ? b9 : b10
+  b7 @0x404498:
+    v223 = const 0xffffffbc
+    v224 = I32Add ebp, v223
+    v225 = load4.trusted [v224]
+    esi = v225
+    v226 = const 0x20
+    v227 = const 0x8
+    v228 = I32ShrU ecx, v227
+    v229 = const 0xff
+    v230 = I32And v228, v229
+    v231 = I32And v230, v226
+    v232 = const 0xff
+    v233 = I32And v231, v232
+    v234 = const 0xff
+    v235 = I32And v233, v234
+    v236 = const 0xffff00ff
+    v237 = I32And ecx, v236
+    v238 = const 0x8
+    v239 = I32Shl v235, v238
+    ecx = I32Or v237, v239
+    fk = const 0x5
+    fr = v233
+    fa = v230
+    v2853 = const 0x0
+    v2854 = I32Ne v233, v2853
+    br v2854 ? b11 : b12
+  b8 @0x404493:
+    v242 = const 0xffffffe0
+    v243 = I32Add ebp, v242
+    v245 = load4.trusted [v243]
+    fb = ebx
+    v2855 = I32LeS v245, ebx
+    br v2855 ? b13 : b7
+  b9 @0x4045d0:
+    v249 = const 0xffffffdc
+    v250 = I32Add ebp, v249
+    v251 = load4.trusted [v250]
+    eax = v251
+    jump b2
+  b10 @0x4044e5:
+    v252 = const 0x0
+    v254 = const 0xffffff54
+    v255 = I32Add ebp, v254
+    store4.trusted [v255], v252
+    v257 = const 0xffffffc4
+    v258 = I32Add ebp, v257
+    esi = edi
+    v262 = const 0xffffff48
+    v263 = I32Add ebp, v262
+    store4.trusted [v263], edi
+    v266 = const 0xffffff50
+    v267 = I32Add ebp, v266
+    store4.trusted [v267], v258
+    ecx = const 0x0
+    jump b14
+  b11 @0x404520:
+    v272 = const 0x4
+    v273 = I32Add esp, v272
+    store4.trusted [v273], esi
+    store4.trusted [esp], eax
+    v276 = const 0x40452c
+    v277 = const 0x4
+    v278 = I32Sub esp, v277
+    store4.trusted [v278], v276
+    esp = v278
+    call 0x407e90 ret=0x40452c -> b15
+  b12 @0x4044a4:
+    v279 = const 0xff
+    v280 = I32And edx, v279
+    v283 = I32Add esi, ebx
+    store1 [v283], v280
+    jump b13
+  b13 @0x4044a7:
+    v284 = const 0x1
+    v286 = I32Add ebx, v284
+    ebx = v286
+    v289 = const 0xffffffdc
+    v290 = I32Add ebp, v289
+    store4.trusted [v290], v286
+    jump b16
+  b14 @0x404502:
+    v292 = const 0xffffffe0
+    v293 = I32Add eax, v292
+    edx = v293
+    v295 = const 0x1
+    v296 = I32Add esi, v295
+    edi = v296
+    v297 = const 0xff
+    v298 = I32And eax, v297
+    v299 = I32Extend8S v298
+    ebx = v299
+    v300 = const 0x5a
+    v301 = const 0xff
+    v302 = I32And v293, v301
+    v303 = I32Sub v302, v300
+    v304 = const 0xff
+    v305 = I32And v303, v304
+    fk = const 0x3
+    fr = v305
+    fa = v302
+    fb = const 0x5a
+    v2856 = I32GtU v302, v300
+    br v2856 ? b17 : b18
+  b15 @0x40452c:
+    jump b13
+  b16 @0x4044ad:
+    v308 = load1 [edi]
+    edx = v308
+    v309 = const 0x1
+    v311 = I32Add edi, v309
+    edi = v311
+    v312 = const 0xff
+    v313 = I32And v308, v312
+    v314 = I32Extend8S v313
+    eax = v314
+    v2857 = I32Eqz v314
+    br v2857 ? b9 : b4
+  b17 @0x404570:
+    v319 = const 0x30
+    v321 = I32Sub eax, v319
+    v322 = const 0x9
+    v323 = const 0xff
+    v324 = I32And v321, v323
+    v325 = I32Sub v324, v322
+    v326 = const 0xff
+    v327 = I32And v325, v326
+    fk = const 0x3
+    fr = v327
+    fa = v324
+    fb = const 0x9
+    v2858 = I32GtU v324, v322
+    br v2858 ? b19 : b20
+  b18 @0x404510:
+    v329 = const 0xff
+    v330 = I32And edx, v329
+    edx = v330
+    v332 = const 0x2
+    v333 = I32Shl v330, v332
+    v334 = const 0x40a41c
+    v335 = I32Add v333, v334
+    v336 = load4 [v335]
+    v337 = const 0x40a41c
+    v338 = I32Sub v335, v337
+    v339 = const 0x3
+    v340 = I32And v338, v339
+    v341 = const 0x2
+    v342 = I32ShrU v338, v341
+    v343 = const 0xffffffff
+    v344 = select v340 ? v343 : v342
+    switch v344 [b21, b17, b17, b22, b17, b23, b17, b24, b17, b17, b25, b26, b17, b27, b28, b17, b29, b17, b17, b17, b17, b17, b17, b17, b17, b17, b17, b17, b17, b17, b17, b17, b17, b30, b17, b31, b17, b32, b33, b34, b17, b35, b17, b17, b36, b17, b17, b17, b17, b17, b17, b37, b17, b17, b17, b17, b38, b17, b17, b17, b17, b17, b17, b17, b17, b39, b17, b40, b41, b42, b43, b44, b45, b41, b46, b17, b47, b48, b49, b38, b50, b17, b17, b51, b52, b38, b17, b17, b38, b17, b52] else exit v336
+  b19 @0x4046d5:
+    v346 = const 0xffffff48
+    v347 = I32Add ebp, v346
+    v348 = load4.trusted [v347]
+    edi = v348
+    jump b23
+  b20 @0x40457b:
+    v349 = const 0x3
+    v351 = I32Sub ecx, v349
+    fk = const 0x203
+    fr = v351
+    fa = ecx
+    fb = const 0x3
+    v2859 = I32GtU ecx, v349
+    br v2859 ? b19 : b53
+  b21 @0x404b43:
+    v2860 = const 0x0
+    v2861 = I32Ne ecx, v2860
+    br v2861 ? b54 : b55
+  b22 @0x404b5a:
+    v2862 = const 0x0
+    v2863 = I32Ne ecx, v2862
+    br v2863 ? b54 : b56
+  b23 @0x4046db:
+    v362 = const 0xffffffbc
+    v363 = I32Add ebp, v362
+    edx = v363
+    eax = const 0x25
+    v365 = const 0x4046e8
+    v366 = const 0x4
+    v367 = I32Sub esp, v366
+    store4.trusted [v367], v365
+    esp = v367
+    call 0x4027d0 ret=0x4046e8 -> b57
+  b24 @0x404b74:
+    v2864 = const 0x0
+    v2865 = I32Ne ecx, v2864
+    br v2865 ? b54 : b58
+  b25 @0x404ab0:
+    v373 = const 0xffffff50
+    v374 = I32Add ebp, v373
+    v375 = load4.trusted [v374]
+    edx = v375
+    v2866 = I32Eqz v375
+    br v2866 ? b59 : b60
+  b26 @0x404af6:
+    v2867 = const 0x0
+    v2868 = I32Ne ecx, v2867
+    br v2868 ? b54 : b61
+  b27 @0x404b10:
+    v2869 = const 0x0
+    v2870 = I32Ne ecx, v2869
+    br v2870 ? b54 : b62
+  b28 @0x404b2a:
+    v388 = const 0x1
+    v2871 = I32LeU ecx, v388
+    br v2871 ? b63 : b59
+  b29 @0x4049bd:
+    v2872 = const 0x0
+    v2873 = I32Ne ecx, v2872
+    br v2873 ? b64 : b65
+  b30 @0x4049d7:
+    v397 = const 0xffffffc0
+    v398 = I32Add ebp, v397
+    v399 = load4.trusted [v398]
+    edx = v399
+    v401 = const 0x18
+    v402 = I32Add ebp, v401
+    v403 = load4.trusted [v402]
+    eax = v403
+    v406 = const 0xffffff50
+    v407 = I32Add ebp, v406
+    store4.trusted [v407], edi
+    v408 = const 0x4
+    v409 = const 0xff
+    v410 = I32And v399, v409
+    v411 = I32And v410, v408
+    v412 = const 0xff
+    v413 = I32And v411, v412
+    v2874 = const 0x0
+    v2875 = I32Ne v413, v2874
+    br v2875 ? b66 : b67
+  b31 @0x404c6c:
+    v416 = const 0x18
+    v417 = I32Add ebp, v416
+    v418 = load4.trusted [v417]
+    v421 = const 0xffffff50
+    v422 = I32Add ebp, v421
+    store4.trusted [v422], edi
+    v423 = const 0xffffffff
+    v425 = const 0xffffffc8
+    v426 = I32Add ebp, v425
+    store4.trusted [v426], v423
+    v428 = const 0x4
+    v429 = I32Add v418, v428
+    ebx = v429
+    jump b68
+  b32 @0x404bd6:
+    v431 = const 0xffffffc0
+    v432 = I32Add ebp, v431
+    v433 = load4.trusted [v432]
+    v436 = const 0xffffff50
+    v437 = I32Add ebp, v436
+    store4.trusted [v437], edi
+    v438 = const 0x4
+    v439 = const 0xff
+    v440 = I32And v433, v439
+    v441 = I32And v440, v438
+    v442 = const 0xff
+    v443 = I32And v441, v442
+    fk = const 0x5
+    fr = v443
+    fa = v440
+    v445 = const 0x18
+    v446 = I32Add ebp, v445
+    v447 = load4.trusted [v446]
+    eax = v447
+    v2876 = const 0x0
+    v2877 = I32Ne v443, v2876
+    br v2877 ? b69 : b70
+  b33 @0x404c08:
+    v450 = const 0xffffffc0
+    v451 = I32Add ebp, v450
+    v452 = load4.trusted [v451]
+    v455 = const 0xffffff50
+    v456 = I32Add ebp, v455
+    store4.trusted [v456], edi
+    v457 = const 0x4
+    v458 = const 0xff
+    v459 = I32And v452, v458
+    v460 = I32And v459, v457
+    v461 = const 0xff
+    v462 = I32And v460, v461
+    fk = const 0x5
+    fr = v462
+    fa = v459
+    v464 = const 0x18
+    v465 = I32Add ebp, v464
+    v466 = load4.trusted [v465]
+    eax = v466
+    v2878 = const 0x0
+    v2879 = I32Ne v462, v2878
+    br v2879 ? b71 : b72
+  b34 @0x404c3a:
+    v469 = const 0xffffffc0
+    v470 = I32Add ebp, v469
+    v471 = load4.trusted [v470]
+    v474 = const 0xffffff50
+    v475 = I32Add ebp, v474
+    store4.trusted [v475], edi
+    v476 = const 0x4
+    v477 = const 0xff
+    v478 = I32And v471, v477
+    v479 = I32And v478, v476
+    v480 = const 0xff
+    v481 = I32And v479, v480
+    fk = const 0x5
+    fr = v481
+    fa = v478
+    v483 = const 0x18
+    v484 = I32Add ebp, v483
+    v485 = load4.trusted [v484]
+    eax = v485
+    v2880 = const 0x0
+    v2881 = I32Ne v481, v2880
+    br v2881 ? b73 : b74
+  b35 @0x404531:
+    v488 = const 0x1
+    v489 = I32Add esi, v488
+    v490 = load1 [v489]
+    eax = v490
+    v491 = const 0x36
+    v492 = const 0xff
+    v493 = I32And v490, v492
+    v2882 = I32Eq v493, v491
+    br v2882 ? b75 : b76
+  b36 @0x404a9c:
+    v499 = const 0x1
+    v500 = I32Add esi, v499
+    v501 = load1 [v500]
+    eax = v501
+    v503 = const 0xffffffc0
+    v504 = I32Add ebp, v503
+    v505 = const 0x4
+    v506 = load4.trusted [v504]
+    v507 = I32Or v506, v505
+    store4.trusted [v504], v507
+    esi = edi
+    ecx = const 0x4
+    jump b77
+  b37 @0x404ca6:
+    v511 = const 0x18
+    v512 = I32Add ebp, v511
+    v513 = load4.trusted [v512]
+    v516 = const 0xffffff50
+    v517 = I32Add ebp, v516
+    store4.trusted [v517], edi
+    v519 = const 0x4
+    v520 = I32Add v513, v519
+    ebx = v520
+    jump b78
+  b38 @0x4045e0:
+    v522 = const 0xffffffc0
+    v523 = I32Add ebp, v522
+    v524 = const 0xfffffeff
+    v525 = load4.trusted [v523]
+    v526 = I32And v525, v524
+    store4.trusted [v523], v526
+    v528 = const 0xffffff54
+    v529 = I32Add ebp, v528
+    v530 = const 0x3
+    v531 = load4.trusted [v529]
+    v535 = const 0xffffff50
+    v536 = I32Add ebp, v535
+    store4.trusted [v536], edi
+    v538 = const 0x18
+    v539 = I32Add ebp, v538
+    v540 = load4.trusted [v539]
+    eax = v540
+    v2883 = I32Eq v531, v530
+    br v2883 ? b79 : b80
+  b39 @0x4048d7:
+    v543 = const 0xffffffc0
+    v544 = I32Add ebp, v543
+    v545 = load4.trusted [v544]
+    v547 = const 0x18
+    v548 = I32Add ebp, v547
+    v549 = load4.trusted [v548]
+    eax = v549
+    v552 = const 0xffffff50
+    v553 = I32Add ebp, v552
+    store4.trusted [v553], edi
+    v554 = const 0x20
+    v556 = I32Or v545, v554
+    edx = v556
+    v559 = const 0xffffffc0
+    v560 = I32Add ebp, v559
+    store4.trusted [v560], v556
+    v561 = const 0x4
+    v562 = const 0xff
+    v563 = I32And v556, v562
+    v564 = I32And v563, v561
+    v565 = const 0xff
+    v566 = I32And v564, v565
+    v2884 = I32Eqz v566
+    br v2884 ? b67 : b66
+  b40 @0x4046ed:
+    v569 = const 0xffffff54
+    v570 = I32Add ebp, v569
+    v571 = load4.trusted [v570]
+    v573 = const 0x18
+    v574 = I32Add ebp, v573
+    v575 = load4.trusted [v574]
+    eax = v575
+    v578 = const 0xffffff50
+    v579 = I32Add ebp, v578
+    store4.trusted [v579], edi
+    v581 = const 0x18
+    v582 = I32Add ebp, v581
+    v583 = load4.trusted [v582]
+    esi = v583
+    v584 = const 0xffffffff
+    v586 = const 0xffffffc8
+    v587 = I32Add ebp, v586
+    store4.trusted [v587], v584
+    v588 = const 0x2
+    v590 = I32Sub v571, v588
+    edx = v590
+    v592 = load4 [v575]
+    eax = v592
+    v594 = const 0x4
+    v595 = I32Add v583, v594
+    ebx = v595
+    v596 = const 0x1
+    v598 = I32Sub v590, v596
+    fk = const 0x203
+    fr = v598
+    fa = v590
+    fb = const 0x1
+    v2885 = I32LeU v590, v596
+    br v2885 ? b68 : b81
+  b41 @0x40465c:
+    v601 = const 0xffffffc0
+    v602 = I32Add ebp, v601
+    v603 = const 0x80
+    v604 = load4.trusted [v602]
+    v605 = I32Or v604, v603
+    store4.trusted [v602], v605
+    v607 = const 0xffffff54
+    v608 = I32Add ebp, v607
+    v609 = const 0x3
+    v610 = load4.trusted [v608]
+    v614 = const 0xffffff50
+    v615 = I32Add ebp, v614
+    store4.trusted [v615], edi
+    v617 = const 0x18
+    v618 = I32Add ebp, v617
+    v619 = load4.trusted [v618]
+    eax = v619
+    v2886 = I32Eq v610, v609
+    br v2886 ? b82 : b83
+  b42 @0x4047a8:
+    v622 = const 0xffffffc0
+    v623 = I32Add ebp, v622
+    v624 = load4.trusted [v623]
+    v627 = const 0xffffff50
+    v628 = I32Add ebp, v627
+    store4.trusted [v628], edi
+    v629 = const 0x20
+    v631 = I32Or v624, v629
+    v632 = const 0x4
+    v633 = const 0xff
+    v634 = I32And v631, v633
+    v635 = I32And v634, v632
+    v636 = const 0xff
+    v637 = I32And v635, v636
+    fk = const 0x5
+    fr = v637
+    fa = v634
+    v640 = const 0xffffffc0
+    v641 = I32Add ebp, v640
+    store4.trusted [v641], v631
+    v643 = const 0x18
+    v644 = I32Add ebp, v643
+    v645 = load4.trusted [v644]
+    eax = v645
+    v2887 = I32Eqz v637
+    br v2887 ? b70 : b69
+  b43 @0x404738:
+    v648 = const 0xffffffc0
+    v649 = I32Add ebp, v648
+    v650 = load4.trusted [v649]
+    v653 = const 0xffffff50
+    v654 = I32Add ebp, v653
+    store4.trusted [v654], edi
+    v655 = const 0x20
+    v657 = I32Or v650, v655
+    v658 = const 0x4
+    v659 = const 0xff
+    v660 = I32And v657, v659
+    v661 = I32And v660, v658
+    v662 = const 0xff
+    v663 = I32And v661, v662
+    fk = const 0x5
+    fr = v663
+    fa = v660
+    v666 = const 0xffffffc0
+    v667 = I32Add ebp, v666
+    store4.trusted [v667], v657
+    v669 = const 0x18
+    v670 = I32Add ebp, v669
+    v671 = load4.trusted [v670]
+    eax = v671
+    v2888 = I32Eqz v663
+    br v2888 ? b72 : b71
+  b44 @0x404770:
+    v674 = const 0xffffffc0
+    v675 = I32Add ebp, v674
+    v676 = load4.trusted [v675]
+    v679 = const 0xffffff50
+    v680 = I32Add ebp, v679
+    store4.trusted [v680], edi
+    v681 = const 0x20
+    v683 = I32Or v676, v681
+    v684 = const 0x4
+    v685 = const 0xff
+    v686 = I32And v683, v685
+    v687 = I32And v686, v684
+    v688 = const 0xff
+    v689 = I32And v687, v688
+    fk = const 0x5
+    fr = v689
+    fa = v686
+    v692 = const 0xffffffc0
+    v693 = I32Add ebp, v692
+    store4.trusted [v693], v683
+    v695 = const 0x18
+    v696 = I32Add ebp, v695
+    v697 = load4.trusted [v696]
+    eax = v697
+    v2889 = I32Eqz v689
+    br v2889 ? b74 : b73
+  b45 @0x404870:
+    v700 = const 0x1
+    v701 = I32Add esi, v700
+    v702 = load1 [v701]
+    eax = v702
+    v703 = const 0x68
+    v704 = const 0xff
+    v705 = I32And v702, v704
+    v2890 = I32Eq v705, v703
+    br v2890 ? b84 : b85
+  b46 @0x404834:
+    v711 = const 0x1
+    v712 = I32Add esi, v711
+    v713 = load1 [v712]
+    eax = v713
+    ecx = const 0x4
+    esi = edi
+    v716 = const 0x3
+    v718 = const 0xffffff54
+    v719 = I32Add ebp, v718
+    store4.trusted [v719], v716
+    jump b77
+  b47 @0x40484e:
+    v721 = const 0x1
+    v722 = I32Add esi, v721
+    v723 = load1 [v722]
+    eax = v723
+    v724 = const 0x6c
+    v725 = const 0xff
+    v726 = I32And v723, v725
+    v2891 = I32Eq v726, v724
+    br v2891 ? b86 : b87
+  b48 @0x404819:
+    v732 = const 0xffffff44
+    v733 = I32Add ebp, v732
+    v734 = load4.trusted [v733]
+    eax = v734
+    store4.trusted [esp], v734
+    v737 = const 0x404827
+    v738 = const 0x4
+    v739 = I32Sub esp, v738
+    store4.trusted [v739], v737
+    esp = v739
+    call 0x407ed0 ret=0x404827 -> b88
+  b49 @0x40496e:
+    v741 = const 0xffffff54
+    v742 = I32Add ebp, v741
+    v743 = const 0x5
+    v744 = load4.trusted [v742]
+    v747 = const 0xffffffdc
+    v748 = I32Add ebp, v747
+    v749 = load4.trusted [v748]
+    eax = v749
+    v752 = const 0xffffff50
+    v753 = I32Add ebp, v752
+    store4.trusted [v753], edi
+    v2892 = I32Eq v744, v743
+    br v2892 ? b89 : b90
+  b50 @0x404892:
+    v757 = const 0xffffff50
+    v758 = I32Add ebp, v757
+    store4.trusted [v758], edi
+    v2893 = const 0x0
+    v2894 = I32Ne ecx, v2893
+    br v2894 ? b91 : b92
+  b51 @0x4047e0:
+    v764 = const 0x18
+    v765 = I32Add ebp, v764
+    v766 = load4.trusted [v765]
+    v769 = const 0xffffff50
+    v770 = I32Add ebp, v769
+    store4.trusted [v770], edi
+    v772 = const 0x4
+    v773 = I32Add v766, v772
+    ebx = v773
+    v775 = const 0xffffff54
+    v776 = I32Add ebp, v775
+    v777 = load4.trusted [v776]
+    v778 = const 0x2
+    v780 = I32Sub v777, v778
+    v781 = const 0x1
+    v783 = I32Sub v780, v781
+    fk = const 0x203
+    fr = v783
+    fa = v780
+    fb = const 0x1
+    v2895 = I32LeU v780, v781
+    br v2895 ? b78 : b93
+  b52 @0x4046bb:
+    v786 = const 0x1
+    v787 = I32Add esi, v786
+    v788 = load1 [v787]
+    eax = v788
+    ecx = const 0x4
+    esi = edi
+    v791 = const 0x0
+    v793 = const 0xffffff54
+    v794 = I32Add ebp, v793
+    store4.trusted [v794], v791
+    jump b77
+  b53 @0x404584:
+    v2896 = const 0x0
+    v2897 = I32Ne ecx, v2896
+    br v2897 ? b94 : b95
+  b54 @0x4045c0:
+    v800 = const 0x1
+    v801 = I32Add esi, v800
+    v802 = load1 [v801]
+    eax = v802
+    esi = edi
+    jump b77
+  b55 @0x404b4b:
+    v805 = const 0xffffffc0
+    v806 = I32Add ebp, v805
+    v807 = const 0x40
+    v808 = load4.trusted [v806]
+    v809 = I32Or v808, v807
+    store4.trusted [v806], v809
+    v811 = const 0x1
+    v812 = I32Add esi, v811
+    v813 = load1 [v812]
+    eax = v813
+    esi = edi
+    jump b77
+  b56 @0x404b62:
+    v816 = const 0xffffffc0
+    v817 = I32Add ebp, v816
+    v818 = const 0x800
+    v819 = load4.trusted [v817]
+    v820 = I32Or v819, v818
+    store4.trusted [v817], v820
+    v822 = const 0x1
+    v823 = I32Add esi, v822
+    v824 = load1 [v823]
+    eax = v824
+    esi = edi
+    jump b77
+  b57 @0x4046e8:
+    jump b16
+  b58 @0x404b7c:
+    v828 = const 0xffffff40
+    v829 = I32Add ebp, v828
+    store4.trusted [v829], ecx
+    v831 = const 0xffffffa8
+    v832 = I32Add ebp, v831
+    ebx = v832
+    v834 = const 0xffffffc0
+    v835 = I32Add ebp, v834
+    v836 = const 0x1000
+    v837 = load4.trusted [v835]
+    v838 = I32Or v837, v836
+    store4.trusted [v835], v838
+    fk = const 0x205
+    fr = v838
+    fa = v837
+    v839 = const 0x0
+    v841 = const 0xffffffa8
+    v842 = I32Add ebp, v841
+    store4.trusted [v842], v839
+    v843 = const 0x404b98
+    v844 = const 0x4
+    v845 = I32Sub esp, v844
+    store4.trusted [v845], v843
+    esp = v845
+    call 0x407ea8 ret=0x404b98 -> b96
+  b59 @0x404b33:
+    v847 = const 0x1
+    v848 = I32Add esi, v847
+    v849 = load1 [v848]
+    eax = v849
+    ecx = const 0x4
+    esi = edi
+    jump b77
+  b60 @0x404aba:
+    v852 = const 0xfffffffd
+    v854 = I32And ecx, v852
+    v2898 = const 0x0
+    v2899 = I32Ne v854, v2898
+    br v2899 ? b97 : b98
+  b61 @0x404afe:
+    v857 = const 0xffffffc0
+    v858 = I32Add ebp, v857
+    v859 = const 0x100
+    v860 = load4.trusted [v858]
+    v861 = I32Or v860, v859
+    store4.trusted [v858], v861
+    v863 = const 0x1
+    v864 = I32Add esi, v863
+    v865 = load1 [v864]
+    eax = v865
+    esi = edi
+    jump b77
+  b62 @0x404b18:
+    v868 = const 0xffffffc0
+    v869 = I32Add ebp, v868
+    v870 = const 0x400
+    v871 = load4.trusted [v869]
+    v872 = I32Or v871, v870
+    store4.trusted [v869], v872
+    v874 = const 0x1
+    v875 = I32Add esi, v874
+    v876 = load1 [v875]
+    eax = v876
+    esi = edi
+    jump b77
+  b63 @0x404d9d:
+    v879 = const 0xffffffc8
+    v880 = I32Add ebp, v879
+    ecx = v880
+    v882 = const 0x1
+    v883 = I32Add esi, v882
+    v884 = load1 [v883]
+    eax = v884
+    v885 = const 0x0
+    v887 = const 0xffffffc8
+    v888 = I32Add ebp, v887
+    store4.trusted [v888], v885
+    esi = edi
+    v892 = const 0xffffff50
+    v893 = I32Add ebp, v892
+    store4.trusted [v893], v880
+    ecx = const 0x2
+    jump b77
+  b64 @0x404ce9:
+    v895 = const 0x3
+    v897 = I32Sub ecx, v895
+    fk = const 0x203
+    fr = v897
+    fa = ecx
+    fb = const 0x3
+    v2900 = I32GtU ecx, v895
+    br v2900 ? b19 : b99
+  b65 @0x4049c5:
+    v900 = const 0xffffffc0
+    v901 = I32Add ebp, v900
+    v902 = const 0x200
+    v903 = load4.trusted [v901]
+    v904 = I32Or v903, v902
+    store4.trusted [v901], v904
+    v906 = const 0x1
+    v907 = I32Add esi, v906
+    v908 = load1 [v907]
+    eax = v908
+    esi = edi
+    jump b77
+  b66 @0x4048f2:
+    v911 = load8 [eax]
+    v912 = const 0x8
+    v913 = I32Add eax, v912
+    v914 = load2 [v913]
+    v915 = helper.F80ToF64(v911, v914)
+    v916 = const 0x1
+    v917 = I32Sub ftop, v916
+    v918 = const 0x7
+    v919 = I32And v917, v918
+    ftop = v919
+    v921 = const 0x3
+    v922 = I32Shl v919, v921
+    v923 = I32Add cpu, v922
+    store8.native+0x60 [v923], v915
+    v924 = load1.native+0x5c [cpu]
+    v925 = const 0x1
+    v926 = I32Shl v925, v919
+    v927 = I32Or v924, v926
+    store1.native+0x5c [cpu], v927
+    v929 = const 0xc
+    v930 = I32Add eax, v929
+    edi = v930
+    v932 = const 0x3
+    v933 = I32Shl v919, v932
+    v934 = I32Add cpu, v933
+    v935 = load8.native+0x60 [v934]
+    v936 = I64ReinterpretF64 v935
+    v937 = const 0x3f
+    v938 = I64ShrU v936, v937
+    v939 = I32WrapI64 v938
+    v940 = F64Abs v935
+    v941 = const 0x7ff0000000000000
+    v942 = F64Eq v940, v941
+    v943 = F64Ne v935, v935
+    v944 = const 0x0
+    v945 = F64Eq v935, v944
+    v946 = load1.native+0x5c [cpu]
+    v947 = I32ShrU v946, v919
+    v948 = const 0x1
+    v949 = I32And v947, v948
+    v950 = I32Eqz v949
+    v951 = const 0x400
+    v952 = const 0x500
+    v953 = const 0x100
+    v954 = const 0x4000
+    v955 = const 0x4100
+    v956 = select v945 ? v954 : v951
+    v957 = select v942 ? v952 : v956
+    v958 = select v943 ? v953 : v957
+    v959 = select v950 ? v955 : v958
+    v960 = const 0x9
+    v961 = I32Shl v939, v960
+    v962 = I32Or v959, v961
+    v963 = const 0xb8ff
+    v964 = I32And fsw, v963
+    fsw = I32Or v964, v962
+    v965 = const 0xb
+    v966 = I32Shl v919, v965
+    v967 = const 0xc7ff
+    v968 = I32And fsw, v967
+    v969 = I32Or v968, v966
+    v970 = const 0xffff0000
+    v971 = I32And eax, v970
+    v972 = const 0xffff
+    v973 = I32And v969, v972
+    eax = I32Or v971, v973
+    v974 = const 0x4500
+    v975 = const 0xffff
+    v976 = I32And eax, v975
+    v977 = I32And v976, v974
+    v978 = const 0xffff
+    v979 = I32And v977, v978
+    v980 = const 0xffff0000
+    v981 = I32And eax, v980
+    v982 = const 0xffff
+    v983 = I32And v979, v982
+    eax = I32Or v981, v983
+    v984 = const 0x100
+    v985 = const 0xffff
+    v986 = I32And eax, v985
+    fb = const 0x100
+    v2901 = I32Eq v986, v984
+    br v2901 ? b100 : b101
+  b67 @0x4049ec:
+    v992 = load8 [eax]
+    v993 = const 0x1
+    v994 = I32Sub ftop, v993
+    v995 = const 0x7
+    v996 = I32And v994, v995
+    v998 = const 0x3
+    v999 = I32Shl v996, v998
+    v1000 = I32Add cpu, v999
+    store8.native+0x60 [v1000], v992
+    v1001 = load1.native+0x5c [cpu]
+    v1002 = const 0x1
+    v1003 = I32Shl v1002, v996
+    v1004 = I32Or v1001, v1003
+    store1.native+0x5c [cpu], v1004
+    v1006 = const 0x8
+    v1007 = I32Add eax, v1006
+    edi = v1007
+    v1009 = const 0x3
+    v1010 = I32Shl v996, v1009
+    v1011 = I32Add cpu, v1010
+    v1012 = load8.native+0x60 [v1011]
+    v1013 = const 0x1
+    v1014 = I32Sub v996, v1013
+    v1015 = const 0x7
+    v1016 = I32And v1014, v1015
+    ftop = v1016
+    v1018 = const 0x3
+    v1019 = I32Shl v1016, v1018
+    v1020 = I32Add cpu, v1019
+    store8.native+0x60 [v1020], v1012
+    v1021 = load1.native+0x5c [cpu]
+    v1022 = const 0x1
+    v1023 = I32Shl v1022, v1016
+    v1024 = I32Or v1021, v1023
+    store1.native+0x5c [cpu], v1024
+    v1026 = const 0x3
+    v1027 = I32Shl v1016, v1026
+    v1028 = I32Add cpu, v1027
+    v1029 = load8.native+0x60 [v1028]
+    v1030 = I64ReinterpretF64 v1029
+    v1031 = const 0x3f
+    v1032 = I64ShrU v1030, v1031
+    v1033 = I32WrapI64 v1032
+    v1034 = F64Abs v1029
+    v1035 = const 0x7ff0000000000000
+    v1036 = F64Eq v1034, v1035
+    v1037 = F64Ne v1029, v1029
+    v1038 = const 0x0
+    v1039 = F64Eq v1029, v1038
+    v1040 = load1.native+0x5c [cpu]
+    v1041 = I32ShrU v1040, v1016
+    v1042 = const 0x1
+    v1043 = I32And v1041, v1042
+    v1044 = I32Eqz v1043
+    v1045 = const 0x400
+    v1046 = const 0x500
+    v1047 = const 0x100
+    v1048 = const 0x4000
+    v1049 = const 0x4100
+    v1050 = select v1039 ? v1048 : v1045
+    v1051 = select v1036 ? v1046 : v1050
+    v1052 = select v1037 ? v1047 : v1051
+    v1053 = select v1044 ? v1049 : v1052
+    v1054 = const 0x9
+    v1055 = I32Shl v1033, v1054
+    v1056 = I32Or v1053, v1055
+    v1057 = const 0xb8ff
+    v1058 = I32And fsw, v1057
+    fsw = I32Or v1058, v1056
+    v1059 = const 0xb
+    v1060 = I32Shl v1016, v1059
+    v1061 = const 0xc7ff
+    v1062 = I32And fsw, v1061
+    v1063 = I32Or v1062, v1060
+    v1064 = const 0xffff0000
+    v1065 = I32And eax, v1064
+    v1066 = const 0xffff
+    v1067 = I32And v1063, v1066
+    eax = I32Or v1065, v1067
+    v1068 = const 0x4500
+    v1069 = const 0xffff
+    v1070 = I32And eax, v1069
+    v1071 = I32And v1070, v1068
+    v1072 = const 0xffff
+    v1073 = I32And v1071, v1072
+    v1074 = const 0xffff0000
+    v1075 = I32And eax, v1074
+    v1076 = const 0xffff
+    v1077 = I32And v1073, v1076
+    eax = I32Or v1075, v1077
+    v1078 = const 0x100
+    v1079 = const 0xffff
+    v1080 = I32And eax, v1079
+    fb = const 0x100
+    v2902 = I32Eq v1080, v1078
+    br v2902 ? b102 : b103
+  b68 @0x404c7f:
+    v1086 = const 0x18
+    v1087 = I32Add ebp, v1086
+    v1088 = load4.trusted [v1087]
+    eax = v1088
+    v1090 = const 0xffffffbc
+    v1091 = I32Add ebp, v1090
+    ecx = v1091
+    edx = const 0x1
+    v1094 = load4 [v1088]
+    v1095 = const 0xffff
+    v1096 = I32And v1094, v1095
+    v1098 = const 0xffffffa8
+    v1099 = I32Add ebp, v1098
+    store2.trusted [v1099], v1096
+    v1101 = const 0xffffffa8
+    v1102 = I32Add ebp, v1101
+    eax = v1102
+    v1103 = const 0x404c98
+    v1104 = const 0x4
+    v1105 = I32Sub esp, v1104
+    store4.trusted [v1105], v1103
+    esp = v1105
+    call 0x402830 ret=0x404c98 -> b104
+  b69 @0x4047c2:
+    v1107 = load8 [eax]
+    v1108 = const 0x8
+    v1109 = I32Add eax, v1108
+    v1110 = load2 [v1109]
+    v1111 = helper.F80ToF64(v1107, v1110)
+    v1112 = const 0x1
+    v1113 = I32Sub ftop, v1112
+    v1114 = const 0x7
+    v1115 = I32And v1113, v1114
+    v1117 = const 0x3
+    v1118 = I32Shl v1115, v1117
+    v1119 = I32Add cpu, v1118
+    store8.native+0x60 [v1119], v1111
+    v1120 = load1.native+0x5c [cpu]
+    v1121 = const 0x1
+    v1122 = I32Shl v1121, v1115
+    v1123 = I32Or v1120, v1122
+    store1.native+0x5c [cpu], v1123
+    v1125 = const 0xc
+    v1126 = I32Add eax, v1125
+    ebx = v1126
+    v1128 = const 0xffffffbc
+    v1129 = I32Add ebp, v1128
+    eax = v1129
+    v1131 = const 0x3
+    v1132 = I32Shl v1115, v1131
+    v1133 = I32Add cpu, v1132
+    v1134 = load8.native+0x60 [v1133]
+    v1136 = helper.F64ToF80Lo(v1134)
+    v1137 = helper.F64ToF80Hi(v1134)
+    store8.trusted [esp], v1136
+    v1138 = const 0x8
+    v1139 = I32Add esp, v1138
+    store2.trusted [v1139], v1137
+    v1140 = load1.native+0x5c [cpu]
+    v1141 = const 0x1
+    v1142 = I32Shl v1141, v1115
+    v1143 = const 0xff
+    v1144 = I32Xor v1142, v1143
+    v1145 = I32And v1140, v1144
+    store1.native+0x5c [cpu], v1145
+    v1146 = const 0x1
+    v1147 = I32Add v1115, v1146
+    v1148 = const 0x7
+    v1149 = I32And v1147, v1148
+    ftop = v1149
+    v1150 = const 0x4047d2
+    v1151 = const 0x4
+    v1152 = I32Sub esp, v1151
+    store4.trusted [v1152], v1150
+    esp = v1152
+    call 0x403bd0 ret=0x4047d2 -> b105
+  b70 @0x404bea:
+    v1154 = load8 [eax]
+    v1155 = const 0x1
+    v1156 = I32Sub ftop, v1155
+    v1157 = const 0x7
+    v1158 = I32And v1156, v1157
+    v1160 = const 0x3
+    v1161 = I32Shl v1158, v1160
+    v1162 = I32Add cpu, v1161
+    store8.native+0x60 [v1162], v1154
+    v1163 = load1.native+0x5c [cpu]
+    v1164 = const 0x1
+    v1165 = I32Shl v1164, v1158
+    v1166 = I32Or v1163, v1165
+    store1.native+0x5c [cpu], v1166
+    v1168 = const 0x8
+    v1169 = I32Add eax, v1168
+    ebx = v1169
+    v1171 = const 0xffffffbc
+    v1172 = I32Add ebp, v1171
+    eax = v1172
+    v1174 = const 0x3
+    v1175 = I32Shl v1158, v1174
+    v1176 = I32Add cpu, v1175
+    v1177 = load8.native+0x60 [v1176]
+    v1179 = helper.F64ToF80Lo(v1177)
+    v1180 = helper.F64ToF80Hi(v1177)
+    store8.trusted [esp], v1179
+    v1181 = const 0x8
+    v1182 = I32Add esp, v1181
+    store2.trusted [v1182], v1180
+    v1183 = load1.native+0x5c [cpu]
+    v1184 = const 0x1
+    v1185 = I32Shl v1184, v1158
+    v1186 = const 0xff
+    v1187 = I32Xor v1185, v1186
+    v1188 = I32And v1183, v1187
+    store1.native+0x5c [cpu], v1188
+    v1189 = const 0x1
+    v1190 = I32Add v1158, v1189
+    v1191 = const 0x7
+    v1192 = I32And v1190, v1191
+    ftop = v1192
+    v1193 = const 0x404bfa
+    v1194 = const 0x4
+    v1195 = I32Sub esp, v1194
+    store4.trusted [v1195], v1193
+    esp = v1195
+    call 0x403bd0 ret=0x404bfa -> b106
+  b71 @0x404752:
+    v1197 = load8 [eax]
+    v1198 = const 0x8
+    v1199 = I32Add eax, v1198
+    v1200 = load2 [v1199]
+    v1201 = helper.F80ToF64(v1197, v1200)
+    v1202 = const 0x1
+    v1203 = I32Sub ftop, v1202
+    v1204 = const 0x7
+    v1205 = I32And v1203, v1204
+    v1207 = const 0x3
+    v1208 = I32Shl v1205, v1207
+    v1209 = I32Add cpu, v1208
+    store8.native+0x60 [v1209], v1201
+    v1210 = load1.native+0x5c [cpu]
+    v1211 = const 0x1
+    v1212 = I32Shl v1211, v1205
+    v1213 = I32Or v1210, v1212
+    store1.native+0x5c [cpu], v1213
+    v1215 = const 0xc
+    v1216 = I32Add eax, v1215
+    ebx = v1216
+    v1218 = const 0xffffffbc
+    v1219 = I32Add ebp, v1218
+    eax = v1219
+    v1221 = const 0x3
+    v1222 = I32Shl v1205, v1221
+    v1223 = I32Add cpu, v1222
+    v1224 = load8.native+0x60 [v1223]
+    v1226 = helper.F64ToF80Lo(v1224)
+    v1227 = helper.F64ToF80Hi(v1224)
+    store8.trusted [esp], v1226
+    v1228 = const 0x8
+    v1229 = I32Add esp, v1228
+    store2.trusted [v1229], v1227
+    v1230 = load1.native+0x5c [cpu]
+    v1231 = const 0x1
+    v1232 = I32Shl v1231, v1205
+    v1233 = const 0xff
+    v1234 = I32Xor v1232, v1233
+    v1235 = I32And v1230, v1234
+    store1.native+0x5c [cpu], v1235
+    v1236 = const 0x1
+    v1237 = I32Add v1205, v1236
+    v1238 = const 0x7
+    v1239 = I32And v1237, v1238
+    ftop = v1239
+    v1240 = const 0x404762
+    v1241 = const 0x4
+    v1242 = I32Sub esp, v1241
+    store4.trusted [v1242], v1240
+    esp = v1242
+    call 0x403c60 ret=0x404762 -> b107
+  b72 @0x404c1c:
+    v1244 = load8 [eax]
+    v1245 = const 0x1
+    v1246 = I32Sub ftop, v1245
+    v1247 = const 0x7
+    v1248 = I32And v1246, v1247
+    v1250 = const 0x3
+    v1251 = I32Shl v1248, v1250
+    v1252 = I32Add cpu, v1251
+    store8.native+0x60 [v1252], v1244
+    v1253 = load1.native+0x5c [cpu]
+    v1254 = const 0x1
+    v1255 = I32Shl v1254, v1248
+    v1256 = I32Or v1253, v1255
+    store1.native+0x5c [cpu], v1256
+    v1258 = const 0x8
+    v1259 = I32Add eax, v1258
+    ebx = v1259
+    v1261 = const 0xffffffbc
+    v1262 = I32Add ebp, v1261
+    eax = v1262
+    v1264 = const 0x3
+    v1265 = I32Shl v1248, v1264
+    v1266 = I32Add cpu, v1265
+    v1267 = load8.native+0x60 [v1266]
+    v1269 = helper.F64ToF80Lo(v1267)
+    v1270 = helper.F64ToF80Hi(v1267)
+    store8.trusted [esp], v1269
+    v1271 = const 0x8
+    v1272 = I32Add esp, v1271
+    store2.trusted [v1272], v1270
+    v1273 = load1.native+0x5c [cpu]
+    v1274 = const 0x1
+    v1275 = I32Shl v1274, v1248
+    v1276 = const 0xff
+    v1277 = I32Xor v1275, v1276
+    v1278 = I32And v1273, v1277
+    store1.native+0x5c [cpu], v1278
+    v1279 = const 0x1
+    v1280 = I32Add v1248, v1279
+    v1281 = const 0x7
+    v1282 = I32And v1280, v1281
+    ftop = v1282
+    v1283 = const 0x404c2c
+    v1284 = const 0x4
+    v1285 = I32Sub esp, v1284
+    store4.trusted [v1285], v1283
+    esp = v1285
+    call 0x403c60 ret=0x404c2c -> b108
+  b73 @0x40478a:
+    v1287 = load8 [eax]
+    v1288 = const 0x8
+    v1289 = I32Add eax, v1288
+    v1290 = load2 [v1289]
+    v1291 = helper.F80ToF64(v1287, v1290)
+    v1292 = const 0x1
+    v1293 = I32Sub ftop, v1292
+    v1294 = const 0x7
+    v1295 = I32And v1293, v1294
+    v1297 = const 0x3
+    v1298 = I32Shl v1295, v1297
+    v1299 = I32Add cpu, v1298
+    store8.native+0x60 [v1299], v1291
+    v1300 = load1.native+0x5c [cpu]
+    v1301 = const 0x1
+    v1302 = I32Shl v1301, v1295
+    v1303 = I32Or v1300, v1302
+    store1.native+0x5c [cpu], v1303
+    v1305 = const 0xc
+    v1306 = I32Add eax, v1305
+    ebx = v1306
+    v1308 = const 0xffffffbc
+    v1309 = I32Add ebp, v1308
+    eax = v1309
+    v1311 = const 0x3
+    v1312 = I32Shl v1295, v1311
+    v1313 = I32Add cpu, v1312
+    v1314 = load8.native+0x60 [v1313]
+    v1316 = helper.F64ToF80Lo(v1314)
+    v1317 = helper.F64ToF80Hi(v1314)
+    store8.trusted [esp], v1316
+    v1318 = const 0x8
+    v1319 = I32Add esp, v1318
+    store2.trusted [v1319], v1317
+    v1320 = load1.native+0x5c [cpu]
+    v1321 = const 0x1
+    v1322 = I32Shl v1321, v1295
+    v1323 = const 0xff
+    v1324 = I32Xor v1322, v1323
+    v1325 = I32And v1320, v1324
+    store1.native+0x5c [cpu], v1325
+    v1326 = const 0x1
+    v1327 = I32Add v1295, v1326
+    v1328 = const 0x7
+    v1329 = I32And v1327, v1328
+    ftop = v1329
+    v1330 = const 0x40479a
+    v1331 = const 0x4
+    v1332 = I32Sub esp, v1331
+    store4.trusted [v1332], v1330
+    esp = v1332
+    call 0x403d30 ret=0x40479a -> b109
+  b74 @0x404c4e:
+    v1334 = load8 [eax]
+    v1335 = const 0x1
+    v1336 = I32Sub ftop, v1335
+    v1337 = const 0x7
+    v1338 = I32And v1336, v1337
+    v1340 = const 0x3
+    v1341 = I32Shl v1338, v1340
+    v1342 = I32Add cpu, v1341
+    store8.native+0x60 [v1342], v1334
+    v1343 = load1.native+0x5c [cpu]
+    v1344 = const 0x1
+    v1345 = I32Shl v1344, v1338
+    v1346 = I32Or v1343, v1345
+    store1.native+0x5c [cpu], v1346
+    v1348 = const 0x8
+    v1349 = I32Add eax, v1348
+    ebx = v1349
+    v1351 = const 0xffffffbc
+    v1352 = I32Add ebp, v1351
+    eax = v1352
+    v1354 = const 0x3
+    v1355 = I32Shl v1338, v1354
+    v1356 = I32Add cpu, v1355
+    v1357 = load8.native+0x60 [v1356]
+    v1359 = helper.F64ToF80Lo(v1357)
+    v1360 = helper.F64ToF80Hi(v1357)
+    store8.trusted [esp], v1359
+    v1361 = const 0x8
+    v1362 = I32Add esp, v1361
+    store2.trusted [v1362], v1360
+    v1363 = load1.native+0x5c [cpu]
+    v1364 = const 0x1
+    v1365 = I32Shl v1364, v1338
+    v1366 = const 0xff
+    v1367 = I32Xor v1365, v1366
+    v1368 = I32And v1363, v1367
+    store1.native+0x5c [cpu], v1368
+    v1369 = const 0x1
+    v1370 = I32Add v1338, v1369
+    v1371 = const 0x7
+    v1372 = I32And v1370, v1371
+    ftop = v1372
+    v1373 = const 0x404c5e
+    v1374 = const 0x4
+    v1375 = I32Sub esp, v1374
+    store4.trusted [v1375], v1373
+    esp = v1375
+    call 0x403d30 ret=0x404c5e -> b110
+  b75 @0x404e4b:
+    v1377 = const 0x2
+    v1378 = I32Add esi, v1377
+    v1379 = const 0x34
+    v1380 = load1 [v1378]
+    v2903 = I32Ne v1380, v1379
+    br v2903 ? b111 : b112
+  b76 @0x40453d:
+    v1385 = const 0x33
+    v1386 = const 0xff
+    v1387 = I32And eax, v1386
+    v2904 = I32Ne v1387, v1385
+    br v2904 ? b113 : b114
+  b77 @0x4045c6:
+    v1392 = const 0xff
+    v1393 = I32And eax, v1392
+    v1394 = const 0xff
+    v1395 = I32And eax, v1394
+    v1396 = I32And v1395, v1393
+    v1397 = const 0xff
+    v1398 = I32And v1396, v1397
+    v2905 = const 0x0
+    v2906 = I32Ne v1398, v2905
+    br v2906 ? b14 : b115
+  b78 @0x404cb2:
+    v1401 = const 0x18
+    v1402 = I32Add ebp, v1401
+    v1403 = load4.trusted [v1402]
+    eax = v1403
+    v1405 = load4 [v1403]
+    v2907 = I32Eqz v1405
+    v1411 = const 0x40a404
+    v1413 = select v2907 ? v1411 : v1405
+    esi = v1413
+    v1415 = const 0xffffffc8
+    v1416 = I32Add ebp, v1415
+    v1417 = load4.trusted [v1416]
+    eax = v1417
+    fk = const 0x205
+    fr = v1417
+    fa = v1417
+    v2908 = const 0x1f
+    v2909 = I32ShrU v1417, v2908
+    v2910 = const 0x1
+    v2911 = I32And v2909, v2910
+    br v2911 ? b116 : b117
+  b79 @0x404de5:
+    v1423 = const 0x4
+    v1424 = I32Add eax, v1423
+    v1425 = load4 [v1424]
+    edx = v1425
+    v1427 = const 0x8
+    v1428 = I32Add eax, v1427
+    esi = v1428
+    v1430 = load4 [eax]
+    eax = v1430
+    jump b118
+  b80 @0x4045fd:
+    v1432 = const 0xffffff54
+    v1433 = I32Add ebp, v1432
+    v1434 = const 0x2
+    v1435 = load4.trusted [v1433]
+    v1438 = const 0x4
+    v1439 = I32Add eax, v1438
+    esi = v1439
+    v2912 = I32Eq v1435, v1434
+    br v2912 ? b119 : b120
+  b81 @0x404717:
+    v1441 = const 0xff
+    v1442 = I32And eax, v1441
+    v1444 = const 0xffffffa8
+    v1445 = I32Add ebp, v1444
+    store1.trusted [v1445], v1442
+    v1447 = const 0xffffffbc
+    v1448 = I32Add ebp, v1447
+    ecx = v1448
+    edx = const 0x1
+    v1451 = const 0xffffffa8
+    v1452 = I32Add ebp, v1451
+    eax = v1452
+    v1453 = const 0x40472a
+    v1454 = const 0x4
+    v1455 = I32Sub esp, v1454
+    store4.trusted [v1455], v1453
+    esp = v1455
+    call 0x4029b0 ret=0x40472a -> b121
+  b82 @0x404e70:
+    v1457 = const 0x18
+    v1458 = I32Add ebp, v1457
+    v1459 = load4.trusted [v1458]
+    esi = v1459
+    v1461 = const 0x4
+    v1462 = I32Add eax, v1461
+    v1463 = load4 [v1462]
+    edx = v1463
+    v1465 = load4 [eax]
+    eax = v1465
+    v1466 = const 0x8
+    v1468 = I32Add v1459, v1466
+    esi = v1468
+    fk = const 0x201
+    fr = v1468
+    fa = v1459
+    fb = const 0x8
+    v1471 = const 0x18
+    v1472 = I32Add ebp, v1471
+    store4.trusted [v1472], v1468
+    jump b122
+  b83 @0x404679:
+    v1474 = load4 [eax]
+    ecx = v1474
+    v1476 = const 0xffffff54
+    v1477 = I32Add ebp, v1476
+    v1478 = load4.trusted [v1477]
+    esi = v1478
+    v1480 = const 0x18
+    v1481 = I32Add ebp, v1480
+    v1482 = const 0x4
+    v1483 = load4.trusted [v1481]
+    v1484 = I32Add v1483, v1482
+    store4.trusted [v1481], v1484
+    eax = v1474
+    v1486 = const 0x1f
+    v1487 = I32ShrS v1474, v1486
+    edx = v1487
+    v1488 = const 0x2
+    v1490 = I32Sub v1478, v1488
+    fk = const 0x203
+    fr = v1490
+    fa = v1478
+    fb = const 0x2
+    v2913 = I32Eq v1478, v1488
+    br v2913 ? b122 : b123
+  b84 @0x404e0d:
+    v1493 = const 0x2
+    v1494 = I32Add esi, v1493
+    v1495 = load1 [v1494]
+    eax = v1495
+    ecx = const 0x4
+    v1497 = const 0x2
+    v1499 = I32Add esi, v1497
+    esi = v1499
+    v1500 = const 0x5
+    v1502 = const 0xffffff54
+    v1503 = I32Add ebp, v1502
+    store4.trusted [v1503], v1500
+    jump b77
+  b85 @0x40487c:
+    v1504 = const 0x1
+    v1506 = const 0xffffff54
+    v1507 = I32Add ebp, v1506
+    store4.trusted [v1507], v1504
+    esi = edi
+    ecx = const 0x4
+    jump b77
+  b86 @0x404df2:
+    v1511 = const 0x2
+    v1512 = I32Add esi, v1511
+    v1513 = load1 [v1512]
+    eax = v1513
+    ecx = const 0x4
+    v1515 = const 0x2
+    v1517 = I32Add esi, v1515
+    esi = v1517
+    v1518 = const 0x3
+    v1520 = const 0xffffff54
+    v1521 = I32Add ebp, v1520
+    store4.trusted [v1521], v1518
+    jump b77
+  b87 @0x40485a:
+    v1522 = const 0x2
+    v1524 = const 0xffffff54
+    v1525 = I32Add ebp, v1524
+    store4.trusted [v1525], v1522
+    esi = edi
+    ecx = const 0x4
+    jump b77
+  b88 @0x404827:
+    v1529 = const 0xffffffbc
+    v1530 = I32Add ebp, v1529
+    edx = v1530
+    v1531 = const 0x40482f
+    v1532 = const 0x4
+    v1533 = I32Sub esp, v1532
+    store4.trusted [v1533], v1531
+    esp = v1533
+    call 0x402b10 ret=0x40482f -> b124
+  b89 @0x404dd9:
+    v1535 = const 0x18
+    v1536 = I32Add ebp, v1535
+    v1537 = load4.trusted [v1536]
+    esi = v1537
+    v1539 = load4 [v1537]
+    edx = v1539
+    v1540 = const 0xff
+    v1541 = I32And eax, v1540
+    store1 [v1539], v1541
+    jump b125
+  b90 @0x404984:
+    v1544 = const 0xffffff54
+    v1545 = I32Add ebp, v1544
+    v1546 = const 0x1
+    v1547 = load4.trusted [v1545]
+    v2914 = I32Eq v1547, v1546
+    br v2914 ? b126 : b127
+  b91 @0x4048ab:
+    v1551 = const 0x18
+    v1552 = I32Add ebp, v1551
+    v1553 = load4.trusted [v1552]
+    eax = v1553
+    v1555 = const 0xffffffbc
+    v1556 = I32Add ebp, v1555
+    ecx = v1556
+    edx = const 0x0
+    fk = const 0x205
+    fr = const 0x0
+    fa = const 0x0
+    v1560 = const 0x4
+    v1561 = I32Add v1553, v1560
+    ebx = v1561
+    v1563 = load4 [v1553]
+    store4.trusted [esp], v1556
+    ecx = const 0x0
+    edx = v1563
+    eax = const 0x78
+    v1569 = const 0x4048c9
+    v1570 = const 0x4
+    v1571 = I32Sub esp, v1570
+    store4.trusted [v1571], v1569
+    esp = v1571
+    call 0x402bf0 ret=0x4048c9 -> b128
+  b92 @0x40489c:
+    v1573 = const 0xffffff4c
+    v1574 = I32Add ebp, v1573
+    v1575 = load4.trusted [v1574]
+    eax = v1575
+    v1577 = const 0xffffffc0
+    v1578 = I32Add ebp, v1577
+    v1580 = load4.trusted [v1578]
+    fb = v1575
+    v2915 = I32Eq v1580, v1575
+    br v2915 ? b129 : b91
+  b93 @0x4047fe:
+    v1584 = const 0x18
+    v1585 = I32Add ebp, v1584
+    v1586 = load4.trusted [v1585]
+    eax = v1586
+    v1588 = const 0xffffffbc
+    v1589 = I32Add ebp, v1588
+    edx = v1589
+    v1591 = load4 [v1586]
+    eax = v1591
+    v1592 = const 0x40480b
+    v1593 = const 0x4
+    v1594 = I32Sub esp, v1593
+    store4.trusted [v1594], v1592
+    esp = v1594
+    call 0x402b10 ret=0x40480b -> b130
+  b94 @0x404cf7:
+    v1595 = const 0x2
+    v2916 = I32Eq ecx, v1595
+    v1600 = const 0x3
+    v1602 = select v2916 ? v1600 : ecx
+    ecx = v1602
+    jump b131
+  b95 @0x40458c:
+    ecx = const 0x1
+    jump b131
+  b96 @0x404b98:
+    v1606 = const 0xc
+    v1607 = I32Add esp, v1606
+    store4.trusted [v1607], ebx
+    v1608 = const 0x10
+    v1610 = const 0x8
+    v1611 = I32Add esp, v1610
+    store4.trusted [v1611], v1608
+    v1613 = const 0x4
+    v1614 = I32Add eax, v1613
+    v1615 = load4 [v1614]
+    v1618 = const 0x4
+    v1619 = I32Add esp, v1618
+    store4.trusted [v1619], v1615
+    v1621 = const 0xffffffa6
+    v1622 = I32Add ebp, v1621
+    eax = v1622
+    store4.trusted [esp], v1622
+    v1625 = const 0x404bb6
+    v1626 = const 0x4
+    v1627 = I32Sub esp, v1626
+    store4.trusted [v1627], v1625
+    esp = v1627
+    call 0x407c20 ret=0x404bb6 -> b132
+  b97 @0x404d07:
+    v1629 = const 0x1
+    v1630 = I32Add esi, v1629
+    v1631 = load1 [v1630]
+    eax = v1631
+    ecx = const 0x4
+    esi = edi
+    v1634 = const 0x0
+    v1636 = const 0xffffff50
+    v1637 = I32Add ebp, v1636
+    store4.trusted [v1637], v1634
+    jump b77
+  b98 @0x404ac6:
+    v1639 = const 0x18
+    v1640 = I32Add ebp, v1639
+    v1641 = load4.trusted [v1640]
+    eax = v1641
+    v1643 = const 0xffffff50
+    v1644 = I32Add ebp, v1643
+    v1645 = load4.trusted [v1644]
+    ebx = v1645
+    v1647 = const 0x4
+    v1648 = I32Add v1641, v1647
+    edx = v1648
+    v1650 = load4 [v1641]
+    eax = v1650
+    store4 [v1645], v1650
+    v2917 = const 0x1f
+    v2918 = I32ShrU v1650, v2917
+    v2919 = const 0x1
+    v2920 = I32And v2918, v2919
+    br v2920 ? b133 : b134
+  b99 @0x404cf2:
+    ebx = const 0x30
+    jump b94
+  b100 @0x404dbd:
+    v1659 = const 0x3
+    v1660 = I32Shl ftop, v1659
+    v1661 = I32Add cpu, v1660
+    v1662 = load8.native+0x60 [v1661]
+    v1664 = const 0x3
+    v1665 = I32Shl ftop, v1664
+    v1666 = I32Add cpu, v1665
+    store8.native+0x60 [v1666], v1662
+    v1667 = load1.native+0x5c [cpu]
+    v1670 = const 0x7
+    v1671 = I32And ftop, v1670
+    v1672 = const 0x1
+    v1673 = I32Shl v1672, v1671
+    v1674 = I32Or v1667, v1673
+    store1.native+0x5c [cpu], v1674
+    v1675 = load1.native+0x5c [cpu]
+    v1676 = const 0x1
+    v1677 = I32Shl v1676, ftop
+    v1678 = const 0xff
+    v1679 = I32Xor v1677, v1678
+    v1680 = I32And v1675, v1679
+    store1.native+0x5c [cpu], v1680
+    v1681 = const 0x1
+    v1682 = I32Add ftop, v1681
+    v1683 = const 0x7
+    v1684 = I32And v1682, v1683
+    ftop = v1684
+    jump b135
+  b101 @0x40490a:
+    v1686 = const 0x3
+    v1687 = I32Shl ftop, v1686
+    v1688 = I32Add cpu, v1687
+    v1689 = load8.native+0x60 [v1688]
+    v1690 = const 0x1
+    v1691 = I32Sub ftop, v1690
+    v1692 = const 0x7
+    v1693 = I32And v1691, v1692
+    v1695 = const 0x3
+    v1696 = I32Shl v1693, v1695
+    v1697 = I32Add cpu, v1696
+    store8.native+0x60 [v1697], v1689
+    v1698 = load1.native+0x5c [cpu]
+    v1699 = const 0x1
+    v1700 = I32Shl v1699, v1693
+    v1701 = I32Or v1698, v1700
+    store1.native+0x5c [cpu], v1701
+    v1703 = const 0x3
+    v1704 = I32Shl v1693, v1703
+    v1705 = I32Add cpu, v1704
+    v1706 = load8.native+0x60 [v1705]
+    v1708 = const 0xffffff88
+    v1709 = I32Add ebp, v1708
+    v1710 = helper.F64ToF80Lo(v1706)
+    v1711 = helper.F64ToF80Hi(v1706)
+    store8.trusted [v1709], v1710
+    store2.trusted+0x8 [v1709], v1711
+    v1714 = load1.native+0x5c [cpu]
+    v1715 = const 0x1
+    v1716 = I32Shl v1715, v1693
+    v1717 = const 0xff
+    v1718 = I32Xor v1716, v1717
+    v1719 = I32And v1714, v1718
+    store1.native+0x5c [cpu], v1719
+    v1720 = const 0x1
+    v1721 = I32Add v1693, v1720
+    v1722 = const 0x7
+    v1723 = I32And v1721, v1722
+    ftop = v1723
+    v1725 = const 0xffffff90
+    v1726 = I32Add ebp, v1725
+    v1727 = load2.trusted [v1726]
+    ecx = v1727
+    v1728 = const 0xffff
+    v1729 = I32And v1727, v1728
+    v1730 = const 0xffff
+    v1731 = I32And v1727, v1730
+    v1732 = I32And v1731, v1729
+    v1733 = const 0xffff
+    v1734 = I32And v1732, v1733
+    v2921 = const 0xf
+    v2922 = I32ShrU v1734, v2921
+    v2923 = const 0x1
+    v2924 = I32And v2922, v2923
+    v2925 = I32Eqz v2924
+    br v2925 ? b136 : b137
+  b102 @0x404dc1:
+    v1737 = const 0x3
+    v1738 = I32Shl ftop, v1737
+    v1739 = I32Add cpu, v1738
+    v1740 = load8.native+0x60 [v1739]
+    v1742 = const 0x3
+    v1743 = I32Shl ftop, v1742
+    v1744 = I32Add cpu, v1743
+    store8.native+0x60 [v1744], v1740
+    v1745 = load1.native+0x5c [cpu]
+    v1748 = const 0x7
+    v1749 = I32And ftop, v1748
+    v1750 = const 0x1
+    v1751 = I32Shl v1750, v1749
+    v1752 = I32Or v1745, v1751
+    store1.native+0x5c [cpu], v1752
+    v1753 = load1.native+0x5c [cpu]
+    v1754 = const 0x1
+    v1755 = I32Shl v1754, ftop
+    v1756 = const 0xff
+    v1757 = I32Xor v1755, v1756
+    v1758 = I32And v1753, v1757
+    store1.native+0x5c [cpu], v1758
+    v1759 = const 0x1
+    v1760 = I32Add ftop, v1759
+    v1761 = const 0x7
+    v1762 = I32And v1760, v1761
+    v1764 = const 0x3
+    v1765 = I32Shl v1762, v1764
+    v1766 = I32Add cpu, v1765
+    v1767 = load8.native+0x60 [v1766]
+    v1769 = const 0x3
+    v1770 = I32Shl v1762, v1769
+    v1771 = I32Add cpu, v1770
+    store8.native+0x60 [v1771], v1767
+    v1772 = load1.native+0x5c [cpu]
+    v1775 = const 0x7
+    v1776 = I32And v1762, v1775
+    v1777 = const 0x1
+    v1778 = I32Shl v1777, v1776
+    v1779 = I32Or v1772, v1778
+    store1.native+0x5c [cpu], v1779
+    v1780 = load1.native+0x5c [cpu]
+    v1781 = const 0x1
+    v1782 = I32Shl v1781, v1762
+    v1783 = const 0xff
+    v1784 = I32Xor v1782, v1783
+    v1785 = I32And v1780, v1784
+    store1.native+0x5c [cpu], v1785
+    v1786 = const 0x1
+    v1787 = I32Add v1762, v1786
+    v1788 = const 0x7
+    v1789 = I32And v1787, v1788
+    ftop = v1789
+    jump b135
+  b103 @0x404a06:
+    v1791 = const 0x3
+    v1792 = I32Shl ftop, v1791
+    v1793 = I32Add cpu, v1792
+    v1794 = load8.native+0x60 [v1793]
+    v1796 = const 0xffffff68
+    v1797 = I32Add ebp, v1796
+    v1798 = helper.F64ToF80Lo(v1794)
+    v1799 = helper.F64ToF80Hi(v1794)
+    store8.trusted [v1797], v1798
+    store2.trusted+0x8 [v1797], v1799
+    v1802 = load1.native+0x5c [cpu]
+    v1803 = const 0x1
+    v1804 = I32Shl v1803, ftop
+    v1805 = const 0xff
+    v1806 = I32Xor v1804, v1805
+    v1807 = I32And v1802, v1806
+    store1.native+0x5c [cpu], v1807
+    v1808 = const 0x1
+    v1809 = I32Add ftop, v1808
+    v1810 = const 0x7
+    v1811 = I32And v1809, v1810
+    v1813 = const 0xffffff68
+    v1814 = I32Add ebp, v1813
+    v1815 = load8.trusted [v1814]
+    v1818 = load2.trusted+0x8 [v1814]
+    v1819 = helper.F80ToF64(v1815, v1818)
+    v1820 = const 0x1
+    v1821 = I32Sub v1811, v1820
+    v1822 = const 0x7
+    v1823 = I32And v1821, v1822
+    ftop = v1823
+    v1825 = const 0x3
+    v1826 = I32Shl v1823, v1825
+    v1827 = I32Add cpu, v1826
+    store8.native+0x60 [v1827], v1819
+    v1828 = load1.native+0x5c [cpu]
+    v1829 = const 0x1
+    v1830 = I32Shl v1829, v1823
+    v1831 = I32Or v1828, v1830
+    store1.native+0x5c [cpu], v1831
+    v1833 = const 0xffffff70
+    v1834 = I32Add ebp, v1833
+    v1835 = load2.trusted [v1834]
+    ebx = v1835
+    v1836 = const 0xffff
+    v1837 = I32And v1835, v1836
+    v1838 = const 0xffff
+    v1839 = I32And v1835, v1838
+    v1840 = I32And v1839, v1837
+    v1841 = const 0xffff
+    v1842 = I32And v1840, v1841
+    v2926 = const 0xf
+    v2927 = I32ShrU v1842, v2926
+    v2928 = const 0x1
+    v2929 = I32And v2927, v2928
+    v2930 = I32Eqz v2929
+    br v2930 ? b138 : b139
+  b104 @0x404c98:
+    v1846 = const 0x18
+    v1847 = I32Add ebp, v1846
+    store4.trusted [v1847], ebx
+    v1849 = const 0xffffff50
+    v1850 = I32Add ebp, v1849
+    v1851 = load4.trusted [v1850]
+    edi = v1851
+    jump b16
+  b105 @0x4047d2:
+    v1854 = const 0x18
+    v1855 = I32Add ebp, v1854
+    store4.trusted [v1855], ebx
+    v1857 = const 0xffffff50
+    v1858 = I32Add ebp, v1857
+    v1859 = load4.trusted [v1858]
+    edi = v1859
+    jump b16
+  b106 @0x404bfa:
+    v1862 = const 0x18
+    v1863 = I32Add ebp, v1862
+    store4.trusted [v1863], ebx
+    v1865 = const 0xffffff50
+    v1866 = I32Add ebp, v1865
+    v1867 = load4.trusted [v1866]
+    edi = v1867
+    jump b16
+  b107 @0x404762:
+    v1870 = const 0x18
+    v1871 = I32Add ebp, v1870
+    store4.trusted [v1871], ebx
+    v1873 = const 0xffffff50
+    v1874 = I32Add ebp, v1873
+    v1875 = load4.trusted [v1874]
+    edi = v1875
+    jump b16
+  b108 @0x404c2c:
+    v1878 = const 0x18
+    v1879 = I32Add ebp, v1878
+    store4.trusted [v1879], ebx
+    v1881 = const 0xffffff50
+    v1882 = I32Add ebp, v1881
+    v1883 = load4.trusted [v1882]
+    edi = v1883
+    jump b16
+  b109 @0x40479a:
+    v1886 = const 0x18
+    v1887 = I32Add ebp, v1886
+    store4.trusted [v1887], ebx
+    v1889 = const 0xffffff50
+    v1890 = I32Add ebp, v1889
+    v1891 = load4.trusted [v1890]
+    edi = v1891
+    jump b16
+  b110 @0x404c5e:
+    v1894 = const 0x18
+    v1895 = I32Add ebp, v1894
+    store4.trusted [v1895], ebx
+    v1897 = const 0xffffff50
+    v1898 = I32Add ebp, v1897
+    v1899 = load4.trusted [v1898]
+    edi = v1899
+    jump b16
+  b111 @0x40454f:
+    v1900 = const 0x0
+    v1902 = const 0xffffff54
+    v1903 = I32Add ebp, v1902
+    store4.trusted [v1903], v1900
+    v1905 = const 0x2
+    v1906 = I32Add esi, v1905
+    edx = v1906
+    v1907 = const 0xff
+    v1908 = I32And eax, v1907
+    v1909 = I32Extend8S v1908
+    ebx = v1909
+    esi = edi
+    ecx = const 0x4
+    edi = v1906
+    esi = esi
+    jump b17
+  b112 @0x404e55:
+    v1915 = const 0x3
+    v1916 = I32Add esi, v1915
+    v1917 = load1 [v1916]
+    eax = v1917
+    ecx = const 0x4
+    v1919 = const 0x3
+    v1921 = I32Add esi, v1919
+    esi = v1921
+    v1922 = const 0x3
+    v1924 = const 0xffffff54
+    v1925 = I32Add ebp, v1924
+    store4.trusted [v1925], v1922
+    jump b77
+  b113 @0x404d21:
+    v1926 = const 0x0
+    v1928 = const 0xffffff54
+    v1929 = I32Add ebp, v1928
+    store4.trusted [v1929], v1926
+    esi = edi
+    ecx = const 0x4
+    jump b77
+  b114 @0x404545:
+    v1933 = const 0x2
+    v1934 = I32Add esi, v1933
+    v1935 = const 0x32
+    v1936 = load1 [v1934]
+    v2931 = I32Eq v1936, v1935
+    br v2931 ? b140 : b111
+  b115 @0x4045ce:
+    jump b9
+  b116 @0x404e32:
+    store4.trusted [esp], esi
+    v1943 = const 0x404e3a
+    v1944 = const 0x4
+    v1945 = I32Sub esp, v1944
+    store4.trusted [v1945], v1943
+    esp = v1945
+    call 0x407ef0 ret=0x404e3a -> b141
+  b117 @0x404ccc:
+    v1948 = const 0x4
+    v1949 = I32Add esp, v1948
+    store4.trusted [v1949], eax
+    store4.trusted [esp], esi
+    v1952 = const 0x404cd8
+    v1953 = const 0x4
+    v1954 = I32Sub esp, v1953
+    store4.trusted [v1954], v1952
+    esp = v1954
+    call 0x407760 ret=0x404cd8 -> b142
+  b118 @0x40462e:
+    v1957 = const 0xffffffa8
+    v1958 = I32Add ebp, v1957
+    store4.trusted [v1958], eax
+    v1960 = const 0xffffffbc
+    v1961 = I32Add ebp, v1960
+    ecx = v1961
+    v1964 = const 0xffffffac
+    v1965 = I32Add ebp, v1964
+    store4.trusted [v1965], edx
+    v1966 = const 0x75
+    v1968 = I32Sub ebx, v1966
+    fk = const 0x203
+    fr = v1968
+    fa = ebx
+    fb = const 0x75
+    v2932 = I32Eq ebx, v1966
+    br v2932 ? b143 : b144
+  b119 @0x404ea4:
+    v1971 = load4 [eax]
+    eax = v1971
+    edx = const 0x0
+    jump b118
+  b120 @0x40460d:
+    v1975 = const 0x18
+    v1976 = I32Add ebp, v1975
+    v1977 = load4.trusted [v1976]
+    eax = v1977
+    v1979 = const 0xffffff54
+    v1980 = I32Add ebp, v1979
+    v1981 = const 0x1
+    v1982 = load4.trusted [v1980]
+    v1985 = load4 [v1977]
+    eax = v1985
+    v2933 = I32Eq v1982, v1981
+    br v2933 ? b145 : b146
+  b121 @0x40472a:
+    v1989 = const 0x18
+    v1990 = I32Add ebp, v1989
+    store4.trusted [v1990], ebx
+    v1992 = const 0xffffff50
+    v1993 = I32Add ebp, v1992
+    v1994 = load4.trusted [v1993]
+    edi = v1994
+    jump b16
+  b122 @0x4046a8:
+    v1996 = const 0xffffffbc
+    v1997 = I32Add ebp, v1996
+    ecx = v1997
+    v1998 = const 0x4046b0
+    v1999 = const 0x4
+    v2000 = I32Sub esp, v1999
+    store4.trusted [v2000], v1998
+    esp = v2000
+    call 0x4031a0 ret=0x4046b0 -> b147
+  b123 @0x40468d:
+    v2001 = const 0x1
+    v2003 = I32Sub esi, v2001
+    fk = const 0x203
+    fr = v2003
+    fa = esi
+    fb = const 0x1
+    v2934 = I32Eq esi, v2001
+    br v2934 ? b148 : b149
+  b124 @0x40482f:
+    jump b16
+  b125 @0x4049ae:
+    v2006 = const 0x18
+    v2007 = I32Add ebp, v2006
+    v2008 = const 0x4
+    v2009 = load4.trusted [v2007]
+    v2010 = I32Add v2009, v2008
+    store4.trusted [v2007], v2010
+    v2012 = const 0xffffff50
+    v2013 = I32Add ebp, v2012
+    v2014 = load4.trusted [v2013]
+    edi = v2014
+    jump b16
+  b126 @0x404e97:
+    v2016 = const 0x18
+    v2017 = I32Add ebp, v2016
+    v2018 = load4.trusted [v2017]
+    esi = v2018
+    v2020 = load4 [v2018]
+    edx = v2020
+    v2021 = const 0xffff
+    v2022 = I32And eax, v2021
+    store2 [v2020], v2022
+    jump b125
+  b127 @0x404991:
+    v2025 = const 0xffffff54
+    v2026 = I32Add ebp, v2025
+    v2027 = const 0x2
+    v2028 = load4.trusted [v2026]
+    v2935 = I32Eq v2028, v2027
+    br v2935 ? b150 : b151
+  b128 @0x4048c9:
+    v2033 = const 0x18
+    v2034 = I32Add ebp, v2033
+    store4.trusted [v2034], ebx
+    v2036 = const 0xffffff50
+    v2037 = I32Add ebp, v2036
+    v2038 = load4.trusted [v2037]
+    edi = v2038
+    jump b16
+  b129 @0x404d4b:
+    v2039 = const 0x2
+    v2040 = const 0x8
+    v2041 = I32ShrU eax, v2040
+    v2042 = const 0xff
+    v2043 = I32And v2041, v2042
+    v2044 = I32Or v2043, v2039
+    v2045 = const 0xff
+    v2046 = I32And v2044, v2045
+    v2047 = const 0xff
+    v2048 = I32And v2046, v2047
+    v2049 = const 0xffff00ff
+    v2050 = I32And eax, v2049
+    v2051 = const 0x8
+    v2052 = I32Shl v2048, v2051
+    eax = I32Or v2050, v2052
+    v2053 = const 0x8
+    v2055 = const 0xffffffc8
+    v2056 = I32Add ebp, v2055
+    store4.trusted [v2056], v2053
+    v2059 = const 0xffffffc0
+    v2060 = I32Add ebp, v2059
+    store4.trusted [v2060], eax
+    jump b91
+  b130 @0x40480b:
+    v2063 = const 0x18
+    v2064 = I32Add ebp, v2063
+    store4.trusted [v2064], ebx
+    v2066 = const 0xffffff50
+    v2067 = I32Add ebp, v2066
+    v2068 = load4.trusted [v2067]
+    edi = v2068
+    jump b16
+  b131 @0x404591:
+    v2070 = const 0xffffff50
+    v2071 = I32Add ebp, v2070
+    v2072 = load4.trusted [v2071]
+    eax = v2072
+    v2936 = I32Eqz v2072
+    br v2936 ? b54 : b152
+  b132 @0x404bb6:
+    v2078 = const 0xffffff40
+    v2079 = I32Add ebp, v2078
+    v2080 = load4.trusted [v2079]
+    ecx = v2080
+    v2937 = const 0x0
+    v2938 = I32LeS eax, v2937
+    br v2938 ? b153 : b154
+  b133 @0x404ee3:
+    v2939 = const 0x0
+    v2940 = I32Ne ecx, v2939
+    br v2940 ? b155 : b156
+  b134 @0x404ade:
+    v2090 = const 0x1
+    v2091 = I32Add esi, v2090
+    v2092 = load1 [v2091]
+    eax = v2092
+    v2095 = const 0x18
+    v2096 = I32Add ebp, v2095
+    store4.trusted [v2096], edx
+    esi = edi
+    v2098 = const 0x0
+    v2100 = const 0xffffff50
+    v2101 = I32Add ebp, v2100
+    store4.trusted [v2101], v2098
+    jump b77
+  b135 @0x404dc5:
+    v2103 = const 0xffffffbc
+    v2104 = I32Add ebp, v2103
+    ecx = v2104
+    edx = const 0x40a412
+    eax = const 0x0
+    fk = const 0x205
+    fr = const 0x0
+    fa = const 0x0
+    v2108 = const 0x404dd4
+    v2109 = const 0x4
+    v2110 = I32Sub esp, v2109
+    store4.trusted [v2110], v2108
+    esp = v2110
+    call 0x402b60 ret=0x404dd4 -> b157
+  b136 @0x40491e:
+    v2112 = const 0x3
+    v2113 = I32Shl ftop, v2112
+    v2114 = I32Add cpu, v2113
+    v2115 = load8.native+0x60 [v2114]
+    v2116 = I64ReinterpretF64 v2115
+    v2117 = const 0x3f
+    v2118 = I64ShrU v2116, v2117
+    v2119 = I32WrapI64 v2118
+    v2120 = F64Abs v2115
+    v2121 = const 0x7ff0000000000000
+    v2122 = F64Eq v2120, v2121
+    v2123 = F64Ne v2115, v2115
+    v2124 = const 0x0
+    v2125 = F64Eq v2115, v2124
+    v2126 = load1.native+0x5c [cpu]
+    v2127 = I32ShrU v2126, ftop
+    v2128 = const 0x1
+    v2129 = I32And v2127, v2128
+    v2130 = I32Eqz v2129
+    v2131 = const 0x400
+    v2132 = const 0x500
+    v2133 = const 0x100
+    v2134 = const 0x4000
+    v2135 = const 0x4100
+    v2136 = select v2125 ? v2134 : v2131
+    v2137 = select v2122 ? v2132 : v2136
+    v2138 = select v2123 ? v2133 : v2137
+    v2139 = select v2130 ? v2135 : v2138
+    v2140 = const 0x9
+    v2141 = I32Shl v2119, v2140
+    v2142 = I32Or v2139, v2141
+    v2143 = const 0xb8ff
+    v2144 = I32And fsw, v2143
+    fsw = I32Or v2144, v2142
+    v2145 = const 0xb
+    v2146 = I32Shl ftop, v2145
+    v2147 = const 0xc7ff
+    v2148 = I32And fsw, v2147
+    v2149 = I32Or v2148, v2146
+    v2150 = const 0xffff0000
+    v2151 = I32And eax, v2150
+    v2152 = const 0xffff
+    v2153 = I32And v2149, v2152
+    eax = I32Or v2151, v2153
+    v2154 = const 0x4500
+    v2155 = const 0xffff
+    v2156 = I32And eax, v2155
+    v2157 = I32And v2156, v2154
+    v2158 = const 0xffff
+    v2159 = I32And v2157, v2158
+    v2160 = const 0xffff0000
+    v2161 = I32And eax, v2160
+    v2162 = const 0xffff
+    v2163 = I32And v2159, v2162
+    eax = I32Or v2161, v2163
+    v2164 = const 0x500
+    v2165 = const 0xffff
+    v2166 = I32And eax, v2165
+    fb = const 0x500
+    v2941 = I32Eq v2166, v2164
+    br v2941 ? b158 : b159
+  b137 @0x404918:
+    v2171 = const 0x80
+    v2172 = const 0xff
+    v2173 = I32And edx, v2172
+    v2174 = I32Or v2173, v2171
+    v2175 = const 0xff
+    v2176 = I32And v2174, v2175
+    v2177 = const 0xff
+    v2178 = I32And v2176, v2177
+    v2179 = const 0xffffff00
+    v2180 = I32And edx, v2179
+    edx = I32Or v2180, v2178
+    v2183 = const 0xffffffc0
+    v2184 = I32Add ebp, v2183
+    store4.trusted [v2184], edx
+    jump b136
+  b138 @0x404a24:
+    v2186 = const 0x3
+    v2187 = I32Shl ftop, v2186
+    v2188 = I32Add cpu, v2187
+    v2189 = load8.native+0x60 [v2188]
+    v2190 = I64ReinterpretF64 v2189
+    v2191 = const 0x3f
+    v2192 = I64ShrU v2190, v2191
+    v2193 = I32WrapI64 v2192
+    v2194 = F64Abs v2189
+    v2195 = const 0x7ff0000000000000
+    v2196 = F64Eq v2194, v2195
+    v2197 = F64Ne v2189, v2189
+    v2198 = const 0x0
+    v2199 = F64Eq v2189, v2198
+    v2200 = load1.native+0x5c [cpu]
+    v2201 = I32ShrU v2200, ftop
+    v2202 = const 0x1
+    v2203 = I32And v2201, v2202
+    v2204 = I32Eqz v2203
+    v2205 = const 0x400
+    v2206 = const 0x500
+    v2207 = const 0x100
+    v2208 = const 0x4000
+    v2209 = const 0x4100
+    v2210 = select v2199 ? v2208 : v2205
+    v2211 = select v2196 ? v2206 : v2210
+    v2212 = select v2197 ? v2207 : v2211
+    v2213 = select v2204 ? v2209 : v2212
+    v2214 = const 0x9
+    v2215 = I32Shl v2193, v2214
+    v2216 = I32Or v2213, v2215
+    v2217 = const 0xb8ff
+    v2218 = I32And fsw, v2217
+    fsw = I32Or v2218, v2216
+    v2219 = const 0xb
+    v2220 = I32Shl ftop, v2219
+    v2221 = const 0xc7ff
+    v2222 = I32And fsw, v2221
+    v2223 = I32Or v2222, v2220
+    v2224 = const 0xffff0000
+    v2225 = I32And eax, v2224
+    v2226 = const 0xffff
+    v2227 = I32And v2223, v2226
+    eax = I32Or v2225, v2227
+    v2229 = const 0x3
+    v2230 = I32Shl ftop, v2229
+    v2231 = I32Add cpu, v2230
+    v2232 = load8.native+0x60 [v2231]
+    v2234 = const 0x3
+    v2235 = I32Shl ftop, v2234
+    v2236 = I32Add cpu, v2235
+    store8.native+0x60 [v2236], v2232
+    v2237 = load1.native+0x5c [cpu]
+    v2240 = const 0x7
+    v2241 = I32And ftop, v2240
+    v2242 = const 0x1
+    v2243 = I32Shl v2242, v2241
+    v2244 = I32Or v2237, v2243
+    store1.native+0x5c [cpu], v2244
+    v2245 = load1.native+0x5c [cpu]
+    v2246 = const 0x1
+    v2247 = I32Shl v2246, ftop
+    v2248 = const 0xff
+    v2249 = I32Xor v2247, v2248
+    v2250 = I32And v2245, v2249
+    store1.native+0x5c [cpu], v2250
+    v2251 = const 0x1
+    v2252 = I32Add ftop, v2251
+    v2253 = const 0x7
+    v2254 = I32And v2252, v2253
+    ftop = v2254
+    v2255 = const 0x4500
+    v2256 = const 0xffff
+    v2257 = I32And eax, v2256
+    v2258 = I32And v2257, v2255
+    v2259 = const 0xffff
+    v2260 = I32And v2258, v2259
+    v2261 = const 0xffff0000
+    v2262 = I32And eax, v2261
+    v2263 = const 0xffff
+    v2264 = I32And v2260, v2263
+    eax = I32Or v2262, v2264
+    v2265 = const 0x500
+    v2266 = const 0xffff
+    v2267 = I32And eax, v2266
+    fb = const 0x500
+    v2942 = I32Eq v2267, v2265
+    br v2942 ? b160 : b161
+  b139 @0x404a1e:
+    v2272 = const 0x80
+    v2273 = const 0xff
+    v2274 = I32And edx, v2273
+    v2275 = I32Or v2274, v2272
+    v2276 = const 0xff
+    v2277 = I32And v2275, v2276
+    v2278 = const 0xff
+    v2279 = I32And v2277, v2278
+    v2280 = const 0xffffff00
+    v2281 = I32And edx, v2280
+    edx = I32Or v2281, v2279
+    v2284 = const 0xffffffc0
+    v2285 = I32Add ebp, v2284
+    store4.trusted [v2285], edx
+    jump b138
+  b140 @0x404ef6:
+    v2287 = const 0x3
+    v2288 = I32Add esi, v2287
+    v2289 = load1 [v2288]
+    eax = v2289
+    ecx = const 0x4
+    v2291 = const 0x3
+    v2293 = I32Add esi, v2291
+    esi = v2293
+    v2294 = const 0x2
+    v2296 = const 0xffffff54
+    v2297 = I32Add ebp, v2296
+    store4.trusted [v2297], v2294
+    jump b77
+  b141 @0x404e3a:
+    v2299 = const 0xffffffbc
+    v2300 = I32Add ebp, v2299
+    ecx = v2300
+    edx = eax
+    eax = esi
+    v2303 = const 0x404e46
+    v2304 = const 0x4
+    v2305 = I32Sub esp, v2304
+    store4.trusted [v2305], v2303
+    esp = v2305
+    call 0x402830 ret=0x404e46 -> b162
+  b142 @0x404cd8:
+    v2307 = const 0xffffffbc
+    v2308 = I32Add ebp, v2307
+    ecx = v2308
+    edx = eax
+    eax = esi
+    v2311 = const 0x404ce4
+    v2312 = const 0x4
+    v2313 = I32Sub esp, v2312
+    store4.trusted [v2313], v2311
+    esp = v2313
+    call 0x402830 ret=0x404ce4 -> b163
+  b143 @0x404e28:
+    v2314 = const 0x404e2d
+    v2315 = const 0x4
+    v2316 = I32Sub esp, v2315
+    store4.trusted [v2316], v2314
+    esp = v2316
+    call 0x4031a0 ret=0x404e2d -> b164
+  b144 @0x404640:
+    store4.trusted [esp], ecx
+    ecx = edx
+    edx = eax
+    eax = ebx
+    v2322 = const 0x40464e
+    v2323 = const 0x4
+    v2324 = I32Sub esp, v2323
+    store4.trusted [v2324], v2322
+    esp = v2324
+    call 0x402bf0 ret=0x40464e -> b165
+  b145 @0x404d70:
+    v2325 = const 0xffff
+    v2326 = I32And eax, v2325
+    eax = v2326
+    edx = const 0x0
+    jump b118
+  b146 @0x40461f:
+    v2330 = const 0xffffff54
+    v2331 = I32Add ebp, v2330
+    v2332 = const 0x5
+    v2333 = load4.trusted [v2331]
+    v2943 = I32Eq v2333, v2332
+    br v2943 ? b166 : b167
+  b147 @0x4046b0:
+    v2337 = const 0xffffff50
+    v2338 = I32Add ebp, v2337
+    v2339 = load4.trusted [v2338]
+    edi = v2339
+    jump b16
+  b148 @0x404d7a:
+    v2340 = const 0xffff
+    v2341 = I32And ecx, v2340
+    v2342 = I32Extend16S v2341
+    eax = v2342
+    v2344 = const 0x1f
+    v2345 = I32ShrS v2342, v2344
+    edx = v2345
+    jump b122
+  b149 @0x404696:
+    v2347 = const 0xffffff54
+    v2348 = I32Add ebp, v2347
+    v2349 = const 0x5
+    v2350 = load4.trusted [v2348]
+    v2351 = I32Sub v2350, v2349
+    fk = const 0x203
+    fr = v2351
+    fa = v2350
+    fb = const 0x5
+    v2944 = I32Ne v2350, v2349
+    br v2944 ? b122 : b168
+  b150 @0x4049a7:
+    v2354 = const 0x18
+    v2355 = I32Add ebp, v2354
+    v2356 = load4.trusted [v2355]
+    esi = v2356
+    v2358 = load4 [v2356]
+    edx = v2358
+    store4 [v2358], eax
+    jump b125
+  b151 @0x40499a:
+    v2362 = const 0xffffff54
+    v2363 = I32Add ebp, v2362
+    v2364 = const 0x3
+    v2365 = load4.trusted [v2363]
+    v2945 = I32Eq v2365, v2364
+    br v2945 ? b169 : b150
+  b152 @0x40459b:
+    v2369 = const 0xffffff50
+    v2370 = I32Add ebp, v2369
+    v2371 = load4.trusted [v2370]
+    edx = v2371
+    v2373 = load4 [v2371]
+    eax = v2373
+    v2946 = const 0x1f
+    v2947 = I32ShrU v2373, v2946
+    v2948 = const 0x1
+    v2949 = I32And v2947, v2948
+    br v2949 ? b170 : b171
+  b153 @0x404bc8:
+    v2380 = const 0xffffffd4
+    v2381 = I32Add ebp, v2380
+    store4.trusted [v2381], eax
+    v2383 = const 0x1
+    v2384 = I32Add esi, v2383
+    v2385 = load1 [v2384]
+    eax = v2385
+    esi = edi
+    jump b77
+  b154 @0x404bc0:
+    v2388 = const 0xffffffa6
+    v2389 = I32Add ebp, v2388
+    v2390 = load2.trusted [v2389]
+    edx = v2390
+    v2391 = const 0xffff
+    v2392 = I32And v2390, v2391
+    v2394 = const 0xffffffd8
+    v2395 = I32Add ebp, v2394
+    store2.trusted [v2395], v2392
+    jump b153
+  b155 @0x404f23:
+    v2397 = const 0x1
+    v2398 = I32Add esi, v2397
+    v2399 = load1 [v2398]
+    eax = v2399
+    v2402 = const 0x18
+    v2403 = I32Add ebp, v2402
+    store4.trusted [v2403], edx
+    esi = edi
+    ecx = const 0x2
+    v2406 = const 0xffffffff
+    v2408 = const 0xffffffc8
+    v2409 = I32Add ebp, v2408
+    store4.trusted [v2409], v2406
+    v2410 = const 0x0
+    v2412 = const 0xffffff50
+    v2413 = I32Add ebp, v2412
+    store4.trusted [v2413], v2410
+    jump b77
+  b156 @0x404ee7:
+    v2415 = const 0xffffffc0
+    v2416 = I32Add ebp, v2415
+    v2417 = const 0x400
+    v2418 = load4.trusted [v2416]
+    v2419 = I32Or v2418, v2417
+    store4.trusted [v2416], v2419
+    v2421 = const 0xffffffc4
+    v2422 = I32Add ebp, v2421
+    v2423 = load4.trusted [v2422]
+    v2424 = const 0x0
+    v2425 = I32Sub v2424, v2423
+    store4.trusted [v2422], v2425
+    jump b134
+  b157 @0x404dd4:
+    jump b172
+  b158 @0x404ec8:
+    v2427 = const 0x3
+    v2428 = I32Shl ftop, v2427
+    v2429 = I32Add cpu, v2428
+    v2430 = load8.native+0x60 [v2429]
+    v2432 = const 0x3
+    v2433 = I32Shl ftop, v2432
+    v2434 = I32Add cpu, v2433
+    store8.native+0x60 [v2434], v2430
+    v2435 = load1.native+0x5c [cpu]
+    v2438 = const 0x7
+    v2439 = I32And ftop, v2438
+    v2440 = const 0x1
+    v2441 = I32Shl v2440, v2439
+    v2442 = I32Or v2435, v2441
+    store1.native+0x5c [cpu], v2442
+    v2443 = load1.native+0x5c [cpu]
+    v2444 = const 0x1
+    v2445 = I32Shl v2444, ftop
+    v2446 = const 0xff
+    v2447 = I32Xor v2445, v2446
+    v2448 = I32And v2443, v2447
+    store1.native+0x5c [cpu], v2448
+    v2449 = const 0x1
+    v2450 = I32Add ftop, v2449
+    v2451 = const 0x7
+    v2452 = I32And v2450, v2451
+    ftop = v2452
+    eax = ecx
+    edx = const 0x40a416
+    v2456 = const 0xffffffbc
+    v2457 = I32Add ebp, v2456
+    ecx = v2457
+    v2458 = const 0x8000
+    v2459 = eax
+    v2460 = I32And eax, v2458
+    eax = v2460
+    fk = const 0x205
+    fr = v2460
+    fa = v2459
+    v2461 = const 0x404ede
+    v2462 = const 0x4
+    v2463 = I32Sub esp, v2462
+    store4.trusted [v2463], v2461
+    esp = v2463
+    call 0x402b60 ret=0x404ede -> b173
+  b159 @0x404931:
+    v2465 = const 0x3
+    v2466 = I32Shl ftop, v2465
+    v2467 = I32Add cpu, v2466
+    v2468 = load8.native+0x60 [v2467]
+    v2470 = const 0xffffff78
+    v2471 = I32Add ebp, v2470
+    v2472 = helper.F64ToF80Lo(v2468)
+    v2473 = helper.F64ToF80Hi(v2468)
+    store8.trusted [v2471], v2472
+    store2.trusted+0x8 [v2471], v2473
+    v2476 = load1.native+0x5c [cpu]
+    v2477 = const 0x1
+    v2478 = I32Shl v2477, ftop
+    v2479 = const 0xff
+    v2480 = I32Xor v2478, v2479
+    v2481 = I32And v2476, v2480
+    store1.native+0x5c [cpu], v2481
+    v2482 = const 0x1
+    v2483 = I32Add ftop, v2482
+    v2484 = const 0x7
+    v2485 = I32And v2483, v2484
+    ftop = v2485
+    v2487 = const 0xffffff78
+    v2488 = I32Add ebp, v2487
+    v2489 = load4.trusted [v2488]
+    ebx = v2489
+    v2491 = const 0xffffff7c
+    v2492 = I32Add ebp, v2491
+    v2493 = load4.trusted [v2492]
+    edx = v2493
+    v2494 = const 0x7fff
+    v2495 = const 0xffff
+    v2496 = I32And ecx, v2495
+    v2497 = I32And v2496, v2494
+    v2498 = const 0xffff
+    v2499 = I32And v2497, v2498
+    v2500 = const 0xffff0000
+    v2501 = I32And ecx, v2500
+    v2502 = const 0xffff
+    v2503 = I32And v2499, v2502
+    ecx = I32Or v2501, v2503
+    v2950 = I32Eqz v2499
+    br v2950 ? b174 : b175
+  b160 @0x404ead:
+    v2506 = const 0x3
+    v2507 = I32Shl ftop, v2506
+    v2508 = I32Add cpu, v2507
+    v2509 = load8.native+0x60 [v2508]
+    v2511 = const 0x3
+    v2512 = I32Shl ftop, v2511
+    v2513 = I32Add cpu, v2512
+    store8.native+0x60 [v2513], v2509
+    v2514 = load1.native+0x5c [cpu]
+    v2517 = const 0x7
+    v2518 = I32And ftop, v2517
+    v2519 = const 0x1
+    v2520 = I32Shl v2519, v2518
+    v2521 = I32Or v2514, v2520
+    store1.native+0x5c [cpu], v2521
+    v2522 = load1.native+0x5c [cpu]
+    v2523 = const 0x1
+    v2524 = I32Shl v2523, ftop
+    v2525 = const 0xff
+    v2526 = I32Xor v2524, v2525
+    v2527 = I32And v2522, v2526
+    store1.native+0x5c [cpu], v2527
+    v2528 = const 0x1
+    v2529 = I32Add ftop, v2528
+    v2530 = const 0x7
+    v2531 = I32And v2529, v2530
+    ftop = v2531
+    v2534 = const 0xffffffbc
+    v2535 = I32Add ebp, v2534
+    ecx = v2535
+    edx = const 0x40a416
+    v2537 = const 0x8000
+    v2539 = I32And ebx, v2537
+    eax = v2539
+    fk = const 0x205
+    fr = v2539
+    fa = ebx
+    v2540 = const 0x404ec3
+    v2541 = const 0x4
+    v2542 = I32Sub esp, v2541
+    store4.trusted [v2542], v2540
+    esp = v2542
+    call 0x402b60 ret=0x404ec3 -> b176
+  b161 @0x404a39:
+    v2544 = const 0x3
+    v2545 = I32Shl ftop, v2544
+    v2546 = I32Add cpu, v2545
+    v2547 = load8.native+0x60 [v2546]
+    v2549 = const 0xffffff58
+    v2550 = I32Add ebp, v2549
+    v2551 = helper.F64ToF80Lo(v2547)
+    v2552 = helper.F64ToF80Hi(v2547)
+    store8.trusted [v2550], v2551
+    store2.trusted+0x8 [v2550], v2552
+    v2555 = load1.native+0x5c [cpu]
+    v2556 = const 0x1
+    v2557 = I32Shl v2556, ftop
+    v2558 = const 0xff
+    v2559 = I32Xor v2557, v2558
+    v2560 = I32And v2555, v2559
+    store1.native+0x5c [cpu], v2560
+    v2561 = const 0x1
+    v2562 = I32Add ftop, v2561
+    v2563 = const 0x7
+    v2564 = I32And v2562, v2563
+    ftop = v2564
+    v2566 = const 0xffffff58
+    v2567 = I32Add ebp, v2566
+    v2568 = load4.trusted [v2567]
+    eax = v2568
+    v2570 = const 0xffffff5c
+    v2571 = I32Add ebp, v2570
+    v2572 = load4.trusted [v2571]
+    edx = v2572
+    v2573 = const 0x7fff
+    v2574 = const 0xffff
+    v2575 = I32And ebx, v2574
+    v2576 = I32And v2575, v2573
+    v2577 = const 0xffff
+    v2578 = I32And v2576, v2577
+    v2579 = const 0xffff0000
+    v2580 = I32And ebx, v2579
+    v2581 = const 0xffff
+    v2582 = I32And v2578, v2581
+    ebx = I32Or v2580, v2582
+    v2951 = I32Eqz v2578
+    br v2951 ? b177 : b178
+  b162 @0x404e46:
+    jump b108
+  b163 @0x404ce4:
+    jump b108
+  b164 @0x404e2d:
+    jump b165
+  b165 @0x40464e:
+    v2586 = const 0x18
+    v2587 = I32Add ebp, v2586
+    store4.trusted [v2587], esi
+    v2589 = const 0xffffff50
+    v2590 = I32Add ebp, v2589
+    v2591 = load4.trusted [v2590]
+    edi = v2591
+    jump b16
+  b166 @0x404d85:
+    v2592 = const 0xff
+    v2593 = I32And eax, v2592
+    eax = v2593
+    jump b167
+  b167 @0x40462c:
+    edx = const 0x0
+    jump b118
+  b168 @0x40469f:
+    v2596 = const 0xff
+    v2597 = I32And ecx, v2596
+    v2598 = I32Extend8S v2597
+    eax = v2598
+    v2600 = const 0x1f
+    v2601 = I32ShrS v2598, v2600
+    edx = v2601
+    esi = esi
+    jump b122
+  b169 @0x404f11:
+    v2604 = const 0x18
+    v2605 = I32Add ebp, v2604
+    v2606 = load4.trusted [v2605]
+    esi = v2606
+    v2608 = load4 [v2606]
+    edx = v2608
+    store4 [v2608], eax
+    v2611 = const 0x1f
+    v2613 = I32ShrS eax, v2611
+    eax = v2613
+    store4+0x4 [v2608], v2613
+    jump b125
+  b170 @0x404d8d:
+    v2618 = const 0x30
+    v2620 = I32Sub ebx, v2618
+    ebx = v2620
+    store4 [edx], v2620
+    v2624 = const 0x1
+    v2625 = I32Add esi, v2624
+    v2626 = load1 [v2625]
+    eax = v2626
+    esi = edi
+    jump b77
+  b171 @0x4045ab:
+    v2630 = const 0x2
+    v2631 = I32Shl eax, v2630
+    v2632 = I32Add eax, v2631
+    v2635 = const 0x1
+    v2636 = I32Shl v2632, v2635
+    v2637 = I32Add ebx, v2636
+    v2638 = const 0xffffffd0
+    v2639 = I32Add v2637, v2638
+    eax = v2639
+    v2641 = const 0xffffff50
+    v2642 = I32Add ebp, v2641
+    v2643 = load4.trusted [v2642]
+    ebx = v2643
+    store4 [v2643], v2639
+    esi = esi
+    jump b54
+  b172 @0x404960:
+    v2649 = const 0x18
+    v2650 = I32Add ebp, v2649
+    store4.trusted [v2650], edi
+    v2652 = const 0xffffff50
+    v2653 = I32Add ebp, v2652
+    v2654 = load4.trusted [v2653]
+    edi = v2654
+    jump b16
+  b173 @0x404ede:
+    jump b172
+  b174 @0x404d37:
+    v2658 = I32Or ebx, edx
+    fk = const 0x205
+    fr = v2658
+    fa = ebx
+    v2952 = I32Eqz v2658
+    br v2952 ? b179 : b180
+  b175 @0x40494e:
+    v2660 = const 0x3fff
+    v2661 = const 0xffff
+    v2662 = I32And ecx, v2661
+    v2663 = I32Sub v2662, v2660
+    v2664 = const 0xffff
+    v2665 = I32And v2663, v2664
+    v2666 = const 0xffff0000
+    v2667 = I32And ecx, v2666
+    v2668 = const 0xffff
+    v2669 = I32And v2665, v2668
+    ecx = I32Or v2667, v2669
+    fk = const 0x103
+    fr = v2665
+    fa = v2662
+    fb = const 0x3fff
+    jump b179
+  b176 @0x404ec3:
+    jump b172
+  b177 @0x404e83:
+    v2673 = I32Or eax, edx
+    v2953 = I32Eqz v2673
+    br v2953 ? b181 : b182
+  b178 @0x404a56:
+    v2676 = const 0xffff
+    v2677 = I32And ebx, v2676
+    v2954 = I32Extend16S v2677
+    v2955 = const 0x3c00
+    v2956 = I32GtS v2954, v2955
+    br v2956 ? b183 : b184
+  b179 @0x404953:
+    v2683 = const 0xffffffbc
+    v2684 = I32Add ebp, v2683
+    store4.trusted [esp], v2684
+    eax = ebx
+    v2688 = const 0x404960
+    v2689 = const 0x4
+    v2690 = I32Sub esp, v2689
+    store4.trusted [v2690], v2688
+    esp = v2690
+    call 0x403ea0 ret=0x404960 -> b172
+  b180 @0x404d41:
+    ecx = const 0xffffc002
+    jump b179
+  b181 @0x404a83:
+    v2693 = const 0xffffffbc
+    v2694 = I32Add ebp, v2693
+    v2698 = I64ExtendI32U eax
+    v2699 = I64ExtendI32U edx
+    v2700 = const 0x20
+    v2701 = const 0x3
+    v2702 = I64Shl v2699, v2700
+    v2703 = I64Or v2702, v2698
+    v2704 = I64ShrU v2703, v2701
+    v2705 = I32WrapI64 v2704
+    eax = v2705
+    v2740 = const 0x3
+    v2741 = edx
+    v2742 = I32ShrU edx, v2740
+    edx = v2742
+    fk = const 0x20a
+    fr = v2742
+    fa = v2741
+    fb = const 0x3
+    store4.trusted [esp], v2694
+    ecx = ebx
+    v2746 = const 0x404a97
+    v2747 = const 0x4
+    v2748 = I32Sub esp, v2747
+    store4.trusted [v2748], v2746
+    esp = v2748
+    call 0x403ea0 ret=0x404a97 -> b185
+  b182 @0x404e8d:
+    ebx = const 0xfffffc05
+    jump b181
+  b183 @0x404d5d:
+    v2750 = const 0xffff
+    v2751 = I32And ebx, v2750
+    v2752 = const 0xffff
+    v2753 = I32And ebx, v2752
+    v2754 = I32And v2753, v2751
+    v2755 = const 0xffff
+    v2756 = I32And v2754, v2755
+    v2957 = I32Eqz v2756
+    br v2957 ? b177 : b186
+  b184 @0x404a61:
+    v2758 = const 0xffff
+    v2759 = I32And ebx, v2758
+    v2760 = I32Extend16S v2759
+    v2763 = const 0x3c01
+    v2764 = I32Sub v2763, v2760
+    esi = const 0x0
+    v2768 = const 0xff
+    v2769 = I32And v2764, v2768
+    v2770 = const 0x1f
+    v2771 = I32And v2769, v2770
+    v2773 = I64ExtendI32U eax
+    v2774 = I64ExtendI32U edx
+    v2775 = const 0x20
+    v2776 = I64ExtendI32U v2771
+    v2777 = I64Shl v2774, v2775
+    v2778 = I64Or v2777, v2773
+    v2779 = I64ShrU v2778, v2776
+    v2780 = I32WrapI64 v2779
+    v2818 = const 0xff
+    v2819 = I32And v2764, v2818
+    v2820 = const 0x1f
+    v2821 = I32And v2819, v2820
+    v2823 = I32ShrU edx, v2821
+    v2827 = const 0x20
+    v2828 = const 0xff
+    v2829 = I32And v2764, v2828
+    v2830 = I32And v2829, v2827
+    v2831 = const 0xff
+    v2832 = I32And v2830, v2831
+    v2958 = const 0x0
+    v2959 = I32Ne v2832, v2958
+    v2836 = select v2959 ? v2823 : v2780
+    eax = v2836
+    v2960 = const 0x0
+    v2961 = I32Ne v2832, v2960
+    v2838 = const 0x0
+    v2840 = select v2961 ? v2838 : v2823
+    edx = v2840
+    v2843 = I32Add v2764, ebx
+    ecx = v2843
+    jump b187
+  b185 @0x404a97:
+    jump b172
+  b186 @0x404d66:
+    ecx = ebx
+    jump b187
+  b187 @0x404a7d:
+    v2846 = const 0xffffc004
+    v2847 = I32Add ecx, v2846
+    ebx = v2847
+    jump b181

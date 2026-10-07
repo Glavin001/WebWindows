@@ -1,0 +1,867 @@
+// System calls for translated Wine, standing in for ntdll's Unix side and
+// the wineserver (Milestone 2: memory, files in an in-memory file system,
+// image sections, one thread). Each function receives `a(i)`, the i-th
+// 32-bit argument, and returns an NTSTATUS (or {jump} to resume elsewhere).
+
+import { ProcessExit, GuestFault, hex } from '../runtime.mjs';
+import { parsePe } from './host.mjs';
+import { WIN32U_UNIXLIB } from './unix.mjs';
+
+import L from './layout.json' with { type: 'json' };
+import {
+  MEM_COMMIT, MEM_RESERVE, MEM_RELEASE, MEM_DECOMMIT, MEM_TOP_DOWN, MEM_MAPPED, MEM_IMAGE,
+  PAGE_READWRITE, PAGE_READONLY, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_WRITECOPY,
+} from './vm.mjs';
+
+export const STATUS = {
+  DLL_NOT_FOUND: 0xc0000135,
+  SUCCESS: 0,
+  BUFFER_OVERFLOW: 0x80000005,
+  NO_MORE_FILES: 0x80000006,
+  NO_MORE_ENTRIES: 0x8000001a,
+  NOT_IMPLEMENTED: 0xc0000002,
+  INVALID_INFO_CLASS: 0xc0000003,
+  INFO_LENGTH_MISMATCH: 0xc0000004,
+  INVALID_HANDLE: 0xc0000008,
+  INVALID_PARAMETER: 0xc000000d,
+  NO_SUCH_FILE: 0xc000000f,
+  END_OF_FILE: 0xc0000011,
+  NO_MEMORY: 0xc0000017,
+  CONFLICTING_ADDRESSES: 0xc0000018,
+  NOT_MAPPED_VIEW: 0xc0000019,
+  UNABLE_TO_FREE_VM: 0xc000001a,
+  ACCESS_DENIED: 0xc0000022,
+  BUFFER_TOO_SMALL: 0xc0000023,
+  OBJECT_TYPE_MISMATCH: 0xc0000024,
+  OBJECT_NAME_INVALID: 0xc0000033,
+  OBJECT_NAME_NOT_FOUND: 0xc0000034,
+  OBJECT_NAME_COLLISION: 0xc0000035,
+  OBJECT_PATH_NOT_FOUND: 0xc000003a,
+  INVALID_PAGE_PROTECTION: 0xc0000045,
+  MEMORY_NOT_ALLOCATED: 0xc00000a0,
+  FILE_IS_A_DIRECTORY: 0xc00000ba,
+  NOT_SUPPORTED: 0xc00000bb,
+  NOT_A_DIRECTORY: 0xc0000103,
+  INVALID_IMAGE_FORMAT: 0xc000007b,
+  IMAGE_NOT_AT_BASE: 0x40000003,
+  OBJECT_NAME_EXISTS: 0x40000000,
+  TIMEOUT: 0x102,
+  PENDING: 0x103,
+  INVALID_ADDRESS: 0xc0000141,
+};
+
+const SEC_IMAGE = 0x1000000;
+const FILE_ATTRIBUTE_DIRECTORY = 0x10;
+const FILE_ATTRIBUTE_ARCHIVE = 0x20;
+const FILE_ATTRIBUTE_NORMAL = 0x80;
+const FILETIME_2020 = 132223104000000000n;
+
+// ---- helpers -----------------------------------------------------------------
+
+/** Writes an IO_STATUS_BLOCK. */
+function iosb(h, addr, status, info) {
+  if (!addr) return;
+  h.w32(addr, status);
+  h.w32(addr + 4, info);
+}
+
+/** Resolves an OBJECT_ATTRIBUTES to a DOS path. */
+function oaPath(h, oa) {
+  if (!oa) return null;
+  const root = h.u32(oa + 4);
+  const name = h.ustr(h.u32(oa + 8));
+  if (name === null) return null;
+  return h.ntToDos(name, root);
+}
+
+function oaName(h, oa) {
+  if (!oa) return null;
+  return h.ustr(h.u32(oa + 8));
+}
+
+function fileInfo(h, path) {
+  const f = h.fileAt(path);
+  if (f) return { dir: false, size: f.length, data: f };
+  if (h.isDir(path)) return { dir: true, size: 0 };
+  return null;
+}
+
+function writeTimes(h, at) {
+  for (let i = 0; i < 4; i++) h.w64(at + i * 8, FILETIME_2020);
+}
+
+function memInfo(h, addr, buf) {
+  const q = h.vm.query(addr);
+  if (!q) return STATUS.INVALID_PARAMETER;
+  h.w32(buf + 0, q.base);
+  h.w32(buf + 4, q.allocBase);
+  h.w32(buf + 8, q.allocProt);
+  h.w32(buf + 12, q.size);
+  h.w32(buf + 16, q.state);
+  h.w32(buf + 20, q.prot);
+  h.w32(buf + 24, q.type);
+  return STATUS.SUCCESS;
+}
+
+/** Restores registers from a CONTEXT and resumes there. */
+function continueContext(h, cpu, ctx) {
+  const C = L.CONTEXT;
+  const m = h.m;
+  const regs = [C.Eax, C.Ecx, C.Edx, C.Ebx, C.Esp, C.Ebp, C.Esi, C.Edi];
+  regs.forEach((off, i) => m.setReg(cpu, i, h.u32(ctx + off)));
+  // EFlags: arithmetic flags explicitly, direction flag, system bits.
+  const ef = h.u32(ctx + C.EFlags);
+  const abi = m.abi;
+  m.u32[(cpu + abi.cpu.FK) >>> 2] = 0;
+  m.u32[(cpu + abi.cpu.FR) >>> 2] = ef & 0x8d5;
+  m.u32[(cpu + abi.cpu.DF) >>> 2] = (ef >>> 10) & 1;
+  return { jump: h.u32(ctx + C.Eip) };
+}
+
+// ---- system calls ------------------------------------------------------------
+
+export const SYSCALLS = {
+  // -- virtual memory
+  NtAllocateVirtualMemory(a) {
+    const [proc, pbase, , psize, type, prot] = [a(0), a(1), a(2), a(3), a(4), a(5)];
+    let base = this.u32(pbase);
+    let size = this.u32(psize);
+    if (!size) return STATUS.INVALID_PARAMETER;
+    void proc;
+    if (type & MEM_RESERVE || !base) {
+      const want = base ? base & ~0xffff : 0;
+      const got = this.vm.reserve(want, size + (base ? base - want : 0), { prot, topDown: !!(type & MEM_TOP_DOWN) });
+      if (!got) return base ? STATUS.CONFLICTING_ADDRESSES : STATUS.NO_MEMORY;
+      if (!base) base = got;
+      else size += base - want, (base = want);
+    }
+    if (type & MEM_COMMIT) {
+      const start = base & ~0xfff;
+      const end = Math.ceil((base + size) / 0x1000) * 0x1000;
+      if (!this.vm.commit(start, end - start, prot)) return STATUS.CONFLICTING_ADDRESSES;
+      base = start;
+      size = end - start;
+    } else {
+      size = Math.ceil(size / 0x1000) * 0x1000;
+    }
+    this.w32(pbase, base);
+    this.w32(psize, size);
+    return STATUS.SUCCESS;
+  },
+  NtFreeVirtualMemory(a) {
+    const [, pbase, psize, type] = [a(0), a(1), a(2), a(3)];
+    const base = this.u32(pbase);
+    const size = this.u32(psize);
+    if (type & MEM_RELEASE) {
+      const r = this.vm.regionAt(base);
+      if (!r || !this.vm.release(r.base)) return STATUS.MEMORY_NOT_ALLOCATED;
+      this.w32(pbase, r.base);
+      this.w32(psize, r.size);
+    } else if (type & MEM_DECOMMIT) {
+      this.vm.decommit(base, size || 0x1000);
+    }
+    return STATUS.SUCCESS;
+  },
+  NtProtectVirtualMemory(a) {
+    const [, pbase, psize, prot, pold] = [a(0), a(1), a(2), a(3), a(4)];
+    const base = this.u32(pbase) & ~0xfff;
+    const end = Math.ceil((this.u32(pbase) + this.u32(psize)) / 0x1000) * 0x1000;
+    const old = this.vm.protect(base, end - base, prot);
+    if (old < 0) return STATUS.NOT_MAPPED_VIEW;
+    if (pold) this.w32(pold, old);
+    this.w32(pbase, base);
+    this.w32(psize, end - base);
+    return STATUS.SUCCESS;
+  },
+  NtQueryVirtualMemory(a) {
+    const [, addr, cls, buf, len, pret] = [a(0), a(1), a(2), a(3), a(4), a(5)];
+    if (cls === 0) {
+      if (len < 28) return STATUS.INFO_LENGTH_MISMATCH;
+      const s = memInfo(this, addr, buf);
+      if (pret) this.w32(pret, 28);
+      return s;
+    }
+    if (cls === 2) {
+      // MemoryMappedFilenameInformation
+      const img = [...this.images.entries()].find(([b, i]) => addr >= b && addr < b + i.size);
+      if (!img) return STATUS.INVALID_ADDRESS;
+      const name = '\\Device\\HarddiskVolume1' + img[1].path.slice(2);
+      this.putUstr(buf, buf + 8, name);
+      if (pret) this.w32(pret, 8 + name.length * 2 + 2);
+      return STATUS.SUCCESS;
+    }
+    if (cls === 1000) {
+      // MemoryWineUnixFuncs: the handle a DLL uses for __wine_unix_call.
+      // win32u's Unix side is in the Emscripten module (./unix.mjs).
+      const img = this.images.get(addr);
+      if (this.unix && img && /\\win32u\.dll$/i.test(img.path)) {
+        this.w32(buf, WIN32U_UNIXLIB);
+        this.w32(buf + 4, 0);
+        return STATUS.SUCCESS;
+      }
+      return STATUS.DLL_NOT_FOUND;
+    }
+    return STATUS.INVALID_INFO_CLASS;
+  },
+  // -- user callbacks (see WineHost.userCallback)
+  NtCallbackReturn(a) {
+    const n = this.callbackResults.length;
+    if (!n) return 0xc0000258; // STATUS_NO_CALLBACK_ACTIVE
+    this.callbackResults[n - 1] = { ptr: a(0), len: a(1), status: a(2) };
+    return { jump: this.m.abi.stop_address };
+  },
+  NtFlushInstructionCache() {
+    return STATUS.SUCCESS;
+  },
+  NtFlushProcessWriteBuffers() {
+    return STATUS.SUCCESS;
+  },
+
+  // -- handles and objects
+  NtClose(a) {
+    const h = a(0);
+    if (!this.handles.has(h)) return STATUS.INVALID_HANDLE;
+    this.handles.delete(h);
+    return STATUS.SUCCESS;
+  },
+  NtDuplicateObject(a) {
+    const [, src, , pdst] = [a(0), a(1), a(2), a(3)];
+    const obj = this.object(src);
+    if (!obj) return STATUS.INVALID_HANDLE;
+    if (pdst) this.w32(pdst, this.newHandle(obj));
+    return STATUS.SUCCESS;
+  },
+  NtCreateEvent(a) {
+    this.w32(a(0), this.newHandle({ type: 'event', signaled: !!a(4), manual: a(3) === 0 }));
+    return STATUS.SUCCESS;
+  },
+  NtCreateKeyedEvent(a) {
+    this.w32(a(0), this.newHandle({ type: 'keyedevent' }));
+    return STATUS.SUCCESS;
+  },
+  NtCreateMutant(a) {
+    this.w32(a(0), this.newHandle({ type: 'mutant' }));
+    return STATUS.SUCCESS;
+  },
+  NtCreateSemaphore(a) {
+    this.w32(a(0), this.newHandle({ type: 'semaphore', count: a(3), max: a(4) }));
+    return STATUS.SUCCESS;
+  },
+  NtSetEvent(a) {
+    const e = this.object(a(0));
+    if (e) e.signaled = true;
+    return STATUS.SUCCESS;
+  },
+  NtResetEvent(a) {
+    const e = this.object(a(0));
+    if (e) e.signaled = false;
+    return STATUS.SUCCESS;
+  },
+  NtClearEvent(a) {
+    const e = this.object(a(0));
+    if (e) e.signaled = false;
+    return STATUS.SUCCESS;
+  },
+  NtReleaseMutant() {
+    return STATUS.SUCCESS;
+  },
+  NtReleaseSemaphore() {
+    return STATUS.SUCCESS;
+  },
+  NtWaitForSingleObject() {
+    // One thread: waits on unsignaled objects would deadlock; report success.
+    return STATUS.SUCCESS;
+  },
+  NtWaitForMultipleObjects() {
+    return STATUS.SUCCESS;
+  },
+  NtWaitForKeyedEvent() {
+    return STATUS.SUCCESS;
+  },
+  NtReleaseKeyedEvent() {
+    return STATUS.SUCCESS;
+  },
+  NtDelayExecution() {
+    return STATUS.SUCCESS;
+  },
+  NtYieldExecution() {
+    return STATUS.SUCCESS;
+  },
+
+  // -- process, thread, system
+  NtQueryInformationProcess(a) {
+    const [, cls, buf, len, pret] = [a(0), a(1), a(2), a(3), a(4)];
+    const ret = (n) => (pret && this.w32(pret, n), STATUS.SUCCESS);
+    switch (cls) {
+      case 0: // ProcessBasicInformation
+        if (len < 24) return STATUS.INFO_LENGTH_MISMATCH;
+        this.m.u8.fill(0, buf, buf + 24);
+        this.w32(buf + 4, this.peb);
+        this.w32(buf + 8, 1);
+        this.w32(buf + 16, 0x20);
+        return ret(24);
+      case 7: // ProcessDebugPort
+      case 30: // ProcessDebugObjectHandle
+        this.w32(buf, 0);
+        return cls === 30 ? 0xc0000353 : ret(4);
+      case 12: // ProcessDefaultHardErrorMode
+      case 31: // ProcessDebugFlags
+        this.w32(buf, cls === 31 ? 1 : 0);
+        return ret(4);
+      case 26: // ProcessWow64Information
+        this.w32(buf, 0);
+        return ret(4);
+      case 34: // ProcessExecuteFlags
+        this.w32(buf, 0x30); // MEM_EXECUTE_OPTION_PERMANENT | DISABLE_ATL_THUNK_EMULATION... permissive
+        return ret(4);
+      case 36: // ProcessCookie
+        this.w32(buf, 0x12345678);
+        return ret(4);
+      case 37: { // ProcessImageInformation (SECTION_IMAGE_INFORMATION)
+        sectionImageInfo(this, this.exe.info, this.exe.base, buf);
+        return ret(48);
+      }
+      case 27: // ProcessImageFileName
+      case 43: { // ProcessImageFileNameWin32
+        const name = cls === 27 ? '\\Device\\HarddiskVolume1' + this.exePath.slice(2) : this.exePath;
+        if (len < 8 + name.length * 2 + 2) return STATUS.INFO_LENGTH_MISMATCH;
+        this.putUstr(buf, buf + 8, name);
+        return ret(8 + name.length * 2 + 2);
+      }
+      case 20: // ProcessHandleCount
+        this.w32(buf, this.handles.size);
+        return ret(4);
+      case 18: // ProcessPriorityClass
+        this.m.u8[buf] = 0;
+        this.m.u8[buf + 1] = 2;
+        return ret(2);
+      default:
+        this.log(`NtQueryInformationProcess class ${cls} not implemented`);
+        return STATUS.INVALID_INFO_CLASS;
+    }
+  },
+  NtSetInformationProcess() {
+    return STATUS.SUCCESS;
+  },
+  NtQueryInformationThread(a) {
+    const [, cls, buf, len, pret] = [a(0), a(1), a(2), a(3), a(4)];
+    if (cls === 0) {
+      // ThreadBasicInformation
+      if (len < 28) return STATUS.INFO_LENGTH_MISMATCH;
+      this.m.u8.fill(0, buf, buf + 28);
+      this.w32(buf + 4, this.teb);
+      this.w32(buf + 8, 0x20);
+      this.w32(buf + 12, 0x24);
+      this.w32(buf + 16, 1);
+      if (pret) this.w32(pret, 28);
+      return STATUS.SUCCESS;
+    }
+    if (cls === 9) {
+      // ThreadQuerySetWin32StartAddress
+      this.w32(buf, 0);
+      if (pret) this.w32(pret, 4);
+      return STATUS.SUCCESS;
+    }
+    this.log(`NtQueryInformationThread class ${cls} not implemented`);
+    return STATUS.INVALID_INFO_CLASS;
+  },
+  NtSetInformationThread() {
+    return STATUS.SUCCESS;
+  },
+  NtQuerySystemInformation(a) {
+    const [cls, buf, len, pret] = [a(0), a(1), a(2), a(3)];
+    const ret = (n) => (pret && this.w32(pret, n), STATUS.SUCCESS);
+    switch (cls) {
+      case 0: // SystemBasicInformation
+      case 0x3e: { // SystemEmulationBasicInformation
+        if (len < 44) return STATUS.INFO_LENGTH_MISMATCH;
+        const v = [0, 0x1000, 0x40000, 1, 0x40000, 0x10000, 0x10000, this.m.thunkBase - 1, 1, 1];
+        v.forEach((x, i) => this.w32(buf + i * 4, x));
+        this.m.u8[buf + 40] = 1;
+        return ret(44);
+      }
+      case 1: // SystemCpuInformation
+      case 0x3f: {
+        this.m.u8.fill(0, buf, buf + Math.min(len, 32));
+        this.w16(buf, 0); // PROCESSOR_ARCHITECTURE_INTEL
+        this.w16(buf + 2, 6); // level
+        this.w16(buf + 4, 0x0f29);
+        this.w32(buf + 8, 0x1 | 0x8 | 0x40); // feature set
+        return ret(12);
+      }
+      case 3: // SystemTimeOfDayInformation
+        this.m.u8.fill(0, buf, buf + Math.min(len, 48));
+        this.w64(buf, BigInt(Date.now()) * 10000n + 116444736000000000n);
+        this.w64(buf + 8, BigInt(Date.now()) * 10000n + 116444736000000000n);
+        return ret(Math.min(len, 48));
+      case 0x86: // SystemFirmwareTableInformation etc.
+      default:
+        this.log(`NtQuerySystemInformation class ${hex(cls)} not implemented`);
+        return STATUS.INVALID_INFO_CLASS;
+    }
+  },
+  NtQuerySystemInformationEx(a, cpu, base) {
+    return SYSCALLS.NtQuerySystemInformation.call(this, (i) => a([0, 3, 4, 5][i]), cpu, base);
+  },
+  NtQuerySystemTime(a) {
+    this.w64(a(0), BigInt(Date.now()) * 10000n + 116444736000000000n);
+    return STATUS.SUCCESS;
+  },
+  NtQueryPerformanceCounter(a) {
+    this.w64(a(0), BigInt(Math.floor(performance.now() * 10000)));
+    if (a(1)) this.w64(a(1), 10000000n);
+    return STATUS.SUCCESS;
+  },
+  NtQueryTimerResolution(a) {
+    this.w32(a(0), 156250);
+    this.w32(a(1), 5000);
+    this.w32(a(2), 156250);
+    return STATUS.SUCCESS;
+  },
+  NtGetTickCount() {
+    return Math.floor(performance.now()) >>> 0;
+  },
+  NtTerminateProcess(a) {
+    const h = a(0);
+    if (h === 0) return STATUS.SUCCESS; // terminate other threads: none
+    throw new ProcessExit(a(1));
+  },
+  NtTerminateThread(a) {
+    throw new ProcessExit(a(1));
+  },
+  NtContinue(a, cpu) {
+    return continueContext(this, cpu, a(0));
+  },
+  NtContinueEx(a, cpu) {
+    return continueContext(this, cpu, a(0));
+  },
+  NtRaiseException(a) {
+    const rec = a(0);
+    const code = this.u32(rec);
+    const addr = this.u32(rec + 12);
+    const nparams = this.u32(rec + 16);
+    const params = [];
+    for (let i = 0; i < Math.min(nparams, 4); i++) params.push(hex(this.u32(rec + 20 + i * 4)));
+    throw new GuestFault(code, addr, 0, `exception ${hex(code)} raised at ${hex(addr)} params [${params.join(', ')}] (no SEH dispatch yet)`);
+  },
+  NtSetContextThread(a, cpu) {
+    if (a(0) === 0xfffffffe) return continueContext(this, cpu, a(1));
+    return STATUS.NOT_IMPLEMENTED;
+  },
+  NtGetCurrentProcessorNumber() {
+    return 0;
+  },
+  NtAllocateLocallyUniqueId(a) {
+    this.w64(a(0), BigInt(++this.luid || (this.luid = 1000)));
+    return STATUS.SUCCESS;
+  },
+  NtQueryInstallUILanguage(a) {
+    this.w16(a(0), 0x409);
+    return STATUS.SUCCESS;
+  },
+  NtQueryDefaultUILanguage(a) {
+    this.w16(a(0), 0x409);
+    return STATUS.SUCCESS;
+  },
+  NtQueryDefaultLocale(a) {
+    this.w32(a(1), 0x409);
+    return STATUS.SUCCESS;
+  },
+
+  // -- NLS
+  NtInitializeNlsFiles(a) {
+    const r = mapReadOnlyFile(this, 'c:\\windows\\system32\\locale.nls');
+    if (!r) return STATUS.OBJECT_NAME_NOT_FOUND;
+    this.w32(a(0), r.base);
+    this.w32(a(1), 0x409);
+    if (a(2)) this.w64(a(2), r.size);
+    return STATUS.SUCCESS;
+  },
+  NtGetNlsSectionPtr(a) {
+    const [type, id, , pptr, psize] = [a(0), a(1), a(2), a(3), a(4)];
+    const norm = { 1: 'normnfc', 2: 'normnfd', 5: 'normnfkc', 6: 'normnfkd', 13: 'normidna' };
+    const name =
+      type === 9 ? 'sortdefault' : type === 10 ? 'l_intl' : type === 11 ? `c_${String(id).padStart(3, '0')}` : type === 12 ? norm[id] : null;
+    if (!name) return STATUS.INVALID_PARAMETER;
+    const r = mapReadOnlyFile(this, `c:\\windows\\system32\\${name}.nls`);
+    if (!r) return STATUS.OBJECT_NAME_NOT_FOUND;
+    this.w32(pptr, r.base);
+    if (psize) this.w32(psize, r.size);
+    return STATUS.SUCCESS;
+  },
+
+  // -- registry: empty for now
+  NtOpenKey(a) {
+    this.log(`NtOpenKey ${oaName(this, a(2))}`);
+    return STATUS.OBJECT_NAME_NOT_FOUND;
+  },
+  NtOpenKeyEx(a) {
+    this.log(`NtOpenKeyEx ${oaName(this, a(2))}`);
+    return STATUS.OBJECT_NAME_NOT_FOUND;
+  },
+  NtCreateKey(a) {
+    this.log(`NtCreateKey ${oaName(this, a(2))}`);
+    return STATUS.OBJECT_NAME_NOT_FOUND;
+  },
+
+  // -- files
+  NtCreateFile(a) {
+    const [ph, , oa, piosb, , attrs, , disposition] = [a(0), a(1), a(2), a(3), a(4), a(5), a(6), a(7)];
+    void attrs;
+    return openFile(this, ph, oa, piosb, disposition);
+  },
+  NtOpenFile(a) {
+    return openFile(this, a(0), a(2), a(3), 1 /* FILE_OPEN */);
+  },
+  NtQueryAttributesFile(a) {
+    const path = oaPath(this, a(0));
+    const fi = path && fileInfo(this, path);
+    this.log(`NtQueryAttributesFile ${path} -> ${fi ? (fi.dir ? 'dir' : fi.size) : 'missing'}`);
+    if (!fi) return STATUS.OBJECT_NAME_NOT_FOUND;
+    const buf = a(1);
+    writeTimes(this, buf);
+    this.w32(buf + 32, fi.dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
+    return STATUS.SUCCESS;
+  },
+  NtQueryFullAttributesFile(a) {
+    const path = oaPath(this, a(0));
+    const fi = path && fileInfo(this, path);
+    if (!fi) return STATUS.OBJECT_NAME_NOT_FOUND;
+    const buf = a(1);
+    writeTimes(this, buf);
+    this.w64(buf + 32, fi.size);
+    this.w64(buf + 40, fi.size);
+    this.w32(buf + 48, fi.dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
+    return STATUS.SUCCESS;
+  },
+  NtQueryInformationFile(a) {
+    const [h, piosb, buf, len, cls] = [a(0), a(1), a(2), a(3), a(4)];
+    const f = this.object(h);
+    if (!f || f.type !== 'file') return STATUS.INVALID_HANDLE;
+    const size = f.data ? f.data.length : 0;
+    const done = (n) => (iosb(this, piosb, 0, n), STATUS.SUCCESS);
+    switch (cls) {
+      case 4: // FileBasicInformation
+        writeTimes(this, buf);
+        this.w32(buf + 32, f.dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
+        return done(40);
+      case 5: // FileStandardInformation
+        this.w64(buf, size);
+        this.w64(buf + 8, size);
+        this.w32(buf + 16, 1);
+        this.m.u8[buf + 20] = 0;
+        this.m.u8[buf + 21] = f.dir ? 1 : 0;
+        return done(24);
+      case 14: // FilePositionInformation
+        this.w64(buf, f.pos ?? 0);
+        return done(8);
+      case 20: // FileEndOfFileInformation
+        this.w64(buf, size);
+        return done(8);
+      case 34: // FileNetworkOpenInformation
+        writeTimes(this, buf);
+        this.w64(buf + 32, size);
+        this.w64(buf + 40, size);
+        this.w32(buf + 48, f.dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
+        return done(56);
+      case 35: // FileAttributeTagInformation
+        this.w32(buf, f.dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
+        this.w32(buf + 4, 0);
+        return done(8);
+      case 9: { // FileNameInformation
+        const name = (f.path ?? '').slice(2);
+        this.w32(buf, name.length * 2);
+        for (let i = 0; i < name.length && 4 + i * 2 < len; i++) this.w16(buf + 4 + i * 2, name.charCodeAt(i));
+        return done(4 + name.length * 2);
+      }
+      default:
+        this.log(`NtQueryInformationFile class ${cls} not implemented`);
+        return STATUS.INVALID_INFO_CLASS;
+    }
+  },
+  NtQueryVolumeInformationFile(a) {
+    const [, piosb, buf, , cls] = [a(0), a(1), a(2), a(3), a(4)];
+    if (cls === 4) {
+      // FileFsDeviceInformation: FILE_DEVICE_DISK
+      this.w32(buf, 7);
+      this.w32(buf + 4, 0);
+      iosb(this, piosb, 0, 8);
+      return STATUS.SUCCESS;
+    }
+    return STATUS.INVALID_INFO_CLASS;
+  },
+  NtSetInformationFile(a) {
+    const [h, piosb, buf, , cls] = [a(0), a(1), a(2), a(3), a(4)];
+    const f = this.object(h);
+    if (!f) return STATUS.INVALID_HANDLE;
+    if (cls === 14) f.pos = Number(this.u64(buf));
+    iosb(this, piosb, 0, 0);
+    return STATUS.SUCCESS;
+  },
+  NtReadFile(a) {
+    const [h, , , , piosb, buf, len, poff] = [a(0), a(1), a(2), a(3), a(4), a(5), a(6), a(7)];
+    const f = this.object(h);
+    if (!f || f.type !== 'file') return STATUS.INVALID_HANDLE;
+    if (f.std) {
+      iosb(this, piosb, STATUS.END_OF_FILE, 0);
+      return STATUS.END_OF_FILE;
+    }
+    let pos = f.pos ?? 0;
+    if (poff) {
+      const o = this.u64(poff);
+      if (o !== 0xfffffffffffffffen && o !== 0xffffffffffffffffn) pos = Number(o);
+    }
+    const n = Math.max(0, Math.min(len, f.data.length - pos));
+    if (n === 0 && len > 0) {
+      iosb(this, piosb, STATUS.END_OF_FILE, 0);
+      return STATUS.END_OF_FILE;
+    }
+    this.m.u8.set(f.data.subarray(pos, pos + n), buf);
+    f.pos = pos + n;
+    iosb(this, piosb, 0, n);
+    return STATUS.SUCCESS;
+  },
+  NtWriteFile(a) {
+    const [h, , , , piosb, buf, len] = [a(0), a(1), a(2), a(3), a(4), a(5), a(6)];
+    const f = this.object(h);
+    if (!f || f.type !== 'file') return STATUS.INVALID_HANDLE;
+    const bytes = this.m.u8.slice(buf, buf + len);
+    if (f.std === 'stdout') this.stdout(bytes);
+    else if (f.std === 'stderr') this.stderr(bytes);
+    else if (f.data) {
+      const pos = f.pos ?? 0;
+      if (pos + len > f.data.length) {
+        const n = new Uint8Array(pos + len);
+        n.set(f.data);
+        f.data = n;
+        this.files.set(f.path, n);
+      }
+      f.data.set(bytes, pos);
+      f.pos = pos + len;
+    }
+    iosb(this, piosb, 0, len);
+    return STATUS.SUCCESS;
+  },
+  NtFlushBuffersFile(a) {
+    iosb(this, a(1), 0, 0);
+    return STATUS.SUCCESS;
+  },
+  NtDeviceIoControlFile(a) {
+    const code = a(5);
+    this.log(`NtDeviceIoControlFile ${hex(code)} on ${hex(a(0))}`);
+    return STATUS.NOT_SUPPORTED;
+  },
+  NtFsControlFile() {
+    return STATUS.NOT_SUPPORTED;
+  },
+  NtQueryDirectoryFile(a) {
+    const [handle, piosb, buf, len, cls, single, pmask, restart] = [a(0), a(4), a(5), a(6), a(7), a(8) & 0xff, a(9), a(10) & 0xff];
+    const dir = this.object(handle);
+    if (!dir || dir.type !== 'file') return STATUS.INVALID_HANDLE;
+    if (!dir.dir) return STATUS.INVALID_PARAMETER;
+    // FILE_INFORMATION_CLASS -> offset of FileName (and of FileId, if any).
+    const LAYOUT = { 1: [64], 2: [68], 3: [94], 12: [12], 37: [104, 96], 38: [80, 72] };
+    const layout = LAYOUT[cls];
+    if (!layout) return STATUS.INVALID_INFO_CLASS;
+    // The listing is taken on the first call (or a restart), with its mask.
+    if (restart || !dir.listing) {
+      const mask = pmask ? this.ustr(pmask) : '*';
+      const re = new RegExp(`^${mask.toLowerCase().replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')}$`);
+      const prefix = dir.path + '\\';
+      const names = new Map(/^[a-z]:$/.test(dir.path) ? [] : [['.', true], ['..', true]]);
+      for (const k of this.files.keys()) {
+        if (!k.startsWith(prefix)) continue;
+        const rest = k.slice(prefix.length);
+        const i = rest.indexOf('\\');
+        names.set(i < 0 ? rest : rest.slice(0, i), i >= 0);
+      }
+      dir.listing = [...names].filter(([n]) => re.test(n)).map(([name, isDir]) => ({ name, isDir }));
+      dir.listPos = 0;
+      if (!dir.listing.length) {
+        iosb(this, piosb, STATUS.NO_SUCH_FILE, 0);
+        return STATUS.NO_SUCH_FILE;
+      }
+    }
+    if (dir.listPos >= dir.listing.length) {
+      iosb(this, piosb, STATUS.NO_MORE_FILES, 0);
+      return STATUS.NO_MORE_FILES;
+    }
+    let at = 0;
+    let last = -1;
+    while (dir.listPos < dir.listing.length) {
+      const { name, isDir } = dir.listing[dir.listPos];
+      const size = layout[0] + name.length * 2;
+      if (at + size > len) {
+        if (last < 0) return STATUS.BUFFER_OVERFLOW;
+        break;
+      }
+      const e = buf + at;
+      this.m.u8.fill(0, e, e + layout[0]);
+      if (cls === 12) {
+        this.w32(e + 8, name.length * 2);
+      } else {
+        const data = isDir ? null : this.files.get(`${dir.path}\\${name}`);
+        writeTimes(this, e + 8);
+        this.w64(e + 40, data?.length ?? 0);
+        this.w64(e + 48, data ? (data.length + 4095) & ~4095 : 0);
+        this.w32(e + 56, isDir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
+        this.w32(e + 60, name.length * 2);
+        if (layout[1]) this.w64(e + layout[1], dir.listPos + 1);
+      }
+      for (let i = 0; i < name.length; i++) this.w16(e + layout[0] + i * 2, name.charCodeAt(i));
+      if (last >= 0) this.w32(buf + last, at - last);
+      last = at;
+      at = (at + size + 7) & ~7;
+      dir.listPos++;
+      if (single) break;
+    }
+    iosb(this, piosb, 0, last >= 0 ? at : 0);
+    return STATUS.SUCCESS;
+  },
+
+  // -- sections
+  NtCreateSection(a) {
+    const [ph, , oa, psize, prot, attrs, file] = [a(0), a(1), a(2), a(3), a(4), a(5), a(6)];
+    const f = file ? this.object(file) : null;
+    if (file && (!f || f.type !== 'file')) return STATUS.INVALID_HANDLE;
+    // A maximum size of zero (or none) means the whole file.
+    const size = (psize && Number(this.u64(psize))) || (f?.data?.length ?? 0);
+    const sec = { type: 'section', image: !!(attrs & SEC_IMAGE), file: f, size, prot, name: oaName(this, oa) };
+    if (sec.image) {
+      if (!f?.data || f.data[0] !== 0x4d || f.data[1] !== 0x5a) return STATUS.INVALID_IMAGE_FORMAT;
+    }
+    this.w32(ph, this.newHandle(sec));
+    return STATUS.SUCCESS;
+  },
+  NtOpenSection() {
+    return STATUS.OBJECT_NAME_NOT_FOUND;
+  },
+  NtQuerySection(a) {
+    const [h, cls, buf, , pret] = [a(0), a(1), a(2), a(3), a(4)];
+    const s = this.object(h);
+    if (!s || s.type !== 'section') return STATUS.INVALID_HANDLE;
+    if (cls === 1 && s.image) {
+      const info = parsePe(s.file.data);
+      sectionImageInfo(this, info, info.imageBase, buf);
+      if (pret) this.w32(pret, 48);
+      return STATUS.SUCCESS;
+    }
+    if (cls === 0) {
+      // SectionBasicInformation
+      this.w32(buf, 0);
+      this.w32(buf + 4, s.image ? SEC_IMAGE : 0x8000000);
+      this.w64(buf + 8, s.size);
+      if (pret) this.w32(pret, 16);
+      return STATUS.SUCCESS;
+    }
+    return STATUS.INVALID_INFO_CLASS;
+  },
+  NtMapViewOfSection(a) {
+    const [h, , pbase, , , poff, psize, , , prot] = [a(0), a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8), a(9)];
+    const s = this.object(h);
+    if (!s || s.type !== 'section') return STATUS.INVALID_HANDLE;
+    if (s.image) {
+      const r = this.mapImageFile(s.file.path, s.file.data);
+      if (r.status) return r.status;
+      this.w32(pbase, r.base);
+      this.w32(psize, r.size);
+      return STATUS.SUCCESS;
+    }
+    // Data section: copy the file (or zero-fill).
+    const off = poff ? Number(this.u64(poff)) : 0;
+    let size = this.u32(psize) || s.size - off;
+    const want = this.u32(pbase);
+    const base = this.vm.reserve(want, size, { type: MEM_MAPPED, prot });
+    if (!base) return want ? STATUS.CONFLICTING_ADDRESSES : STATUS.NO_MEMORY;
+    this.vm.commit(base, size, prot || PAGE_READONLY);
+    if (s.file?.data) this.m.u8.set(s.file.data.subarray(off, off + size), base);
+    this.w32(pbase, base);
+    this.w32(psize, Math.ceil(size / 0x1000) * 0x1000);
+    return STATUS.SUCCESS;
+  },
+  NtMapViewOfSectionEx(a, cpu, base) {
+    // (handle, process, *base, *offset, *size, alloc_type, protect, params, count)
+    const map = [0, 1, 2, -1, -1, 3, 4, -1, 5, 6];
+    return SYSCALLS.NtMapViewOfSection.call(this, (i) => (map[i] < 0 ? 0 : a(map[i])), cpu, base);
+  },
+  NtUnmapViewOfSection(a) {
+    const r = this.vm.regionAt(a(1));
+    if (!r) return STATUS.NOT_MAPPED_VIEW;
+    this.vm.release(r.base);
+    return STATUS.SUCCESS;
+  },
+  NtAreMappedFilesTheSame(a) {
+    const r1 = this.vm.regionAt(a(0));
+    const r2 = this.vm.regionAt(a(1));
+    return r1 && r2 && r1.name && r1.name === r2.name ? STATUS.SUCCESS : 0xc00002f6;
+  },
+};
+
+function sectionImageInfo(h, info, base, buf) {
+  h.m.u8.fill(0, buf, buf + 48);
+  h.w32(buf + 0, base + info.entryRva);
+  h.w32(buf + 8, info.stackReserve);
+  h.w32(buf + 12, info.stackCommit);
+  h.w32(buf + 16, info.subsystem);
+  h.w16(buf + 20, info.minorSubsystem);
+  h.w16(buf + 22, info.majorSubsystem);
+  h.w16(buf + 24, info.majorOs);
+  h.w16(buf + 26, info.minorOs);
+  h.w16(buf + 28, info.characteristics);
+  h.w16(buf + 30, info.dllCharacteristics);
+  h.w16(buf + 32, info.machine);
+  h.m.u8[buf + 34] = 1; // ImageContainsCode
+  h.m.u8[buf + 35] = 0; // ImageFlags
+  h.w32(buf + 36, info.loaderFlags);
+  h.w32(buf + 40, info.sizeOfImage);
+  h.w32(buf + 44, info.checksum);
+}
+
+/** Maps a data file read-only (NLS tables). Cached per path. */
+function mapReadOnlyFile(h, path) {
+  h.nlsMaps ??= new Map();
+  if (h.nlsMaps.has(path)) return h.nlsMaps.get(path);
+  const data = h.fileAt(path);
+  if (!data) {
+    h.log(`missing file ${path}`);
+    return null;
+  }
+  const size = Math.ceil(data.length / 0x1000) * 0x1000;
+  const base = h.vm.reserve(0, size, { type: MEM_MAPPED, prot: PAGE_READONLY, name: path });
+  h.vm.commit(base, size, PAGE_READONLY);
+  h.m.u8.set(data, base);
+  const r = { base, size: data.length };
+  h.nlsMaps.set(path, r);
+  return r;
+}
+
+function openFile(h, ph, oa, piosb, disposition) {
+  const path = oaPath(h, oa);
+  if (!path) return STATUS.OBJECT_NAME_INVALID;
+  const raw = oaName(h, oa);
+  if (/^\\Device\\ConDrv/i.test(raw) || /\\conin\$|\\conout\$/i.test(raw)) {
+    h.w32(ph, h.newHandle({ type: 'file', std: /in/i.test(raw) ? 'stdin' : 'stdout', path: null }));
+    iosb(h, piosb, 0, 1);
+    return STATUS.SUCCESS;
+  }
+  let fi = fileInfo(h, path);
+  h.log(`open ${path} (disposition ${disposition}) -> ${fi ? 'found' : 'missing'}`);
+  // FILE_SUPERSEDE 0, OPEN 1, CREATE 2, OPEN_IF 3, OVERWRITE 4, OVERWRITE_IF 5
+  if (!fi) {
+    if (disposition === 1 || disposition === 4) {
+      const parent = path.replace(/\\[^\\]*$/, '');
+      return h.isDir(parent) ? STATUS.OBJECT_NAME_NOT_FOUND : STATUS.OBJECT_PATH_NOT_FOUND;
+    }
+    h.files.set(path, new Uint8Array(0));
+    fi = fileInfo(h, path);
+  } else if (disposition === 2) {
+    return STATUS.OBJECT_NAME_COLLISION;
+  } else if (!fi.dir && (disposition === 0 || disposition === 4 || disposition === 5)) {
+    h.files.set(path, new Uint8Array(0));
+    fi = fileInfo(h, path);
+  }
+  const obj = { type: 'file', path, dir: fi.dir, data: fi.dir ? null : h.fileAt(path), pos: 0 };
+  h.w32(ph, h.newHandle(obj));
+  iosb(h, piosb, 0, 1); // FILE_OPENED
+  return STATUS.SUCCESS;
+}

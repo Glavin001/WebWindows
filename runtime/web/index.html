@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebWindows</title>
+<style>
+  :root { --bg: #f6f6f4; --fg: #1d1d1b; --muted: #6b6b66; --panel: #ffffff; --line: #deded8; --accent: #2b59c3; --term-bg: #111312; --term-fg: #e4e6e2; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #161716; --fg: #e8e8e4; --muted: #9a9a94; --panel: #1f201f; --line: #333431; --accent: #7aa2ff; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  main { max-width: 900px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.lead { color: var(--muted); margin: 0 0 20px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  button, select, input { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; }
+  pre { background: var(--term-bg); color: var(--term-fg); padding: 12px; border-radius: 8px; min-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 13px/1.45 ui-monospace, monospace; }
+  .log { color: var(--muted); font-size: 13px; white-space: pre-wrap; }
+  .status { font-size: 13px; color: var(--muted); }
+  #screen { display: block; width: 100%; max-width: 800px; height: auto; aspect-ratio: 4 / 3; margin-bottom: 12px; border-radius: 8px; background: #3a6ea5; cursor: default; outline: none; image-rendering: pixelated; }
+  #screen:focus-visible { box-shadow: 0 0 0 3px var(--accent); }
+  #screen[hidden] { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>WebWindows</h1>
+  <p class="lead">Runs a 32-bit Windows program from a folder on this computer. The program is translated to WebAssembly here in the browser and cached for the next launch; nothing is uploaded. Windowed programs run on Wine and appear below.</p>
+  <div class="row">
+    <button id="pick" class="primary">Choose folder…</button>
+    <input id="fallback" type="file" webkitdirectory hidden>
+    <select id="exe" disabled><option>No program chosen</option></select>
+    <input id="args" placeholder="arguments" size="16">
+    <button id="run" disabled>Run</button>
+    <label class="status"><input id="wine" type="checkbox"> on Wine</label>
+    <label class="status"><input id="nocache" type="checkbox"> no cache</label>
+  </div>
+  <div class="row" id="samples" hidden>
+    <span class="status">Or try one of Wine's programs:</span>
+    <select id="sample"></select>
+    <button id="runsample">Run</button>
+  </div>
+  <div id="status" class="status"></div>
+  <canvas id="screen" width="800" height="600" tabindex="0" hidden aria-label="Windows screen"></canvas>
+  <pre id="out"></pre>
+  <div id="log" class="log"></div>
+</main>
+<script type="module" src="app.mjs"></script>
+</body>
+</html>

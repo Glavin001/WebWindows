@@ -1,0 +1,201 @@
+name: CI
+
+# Pull requests, and main once they merge (not every branch push).
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A new push to a pull request cancels its run that is still going.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Everything that runs on x86 Linux, which is also the source of truth for
+  # instruction behavior: the oracle re-records every case on this CPU.
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+      - name: Install toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 csmith binaryen
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Build
+        run: |
+          cargo build --workspace
+          cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
+      - name: Unit, instruction (layer 1) and snapshot (layer 5) tests
+        run: cargo test --workspace
+      - name: Committed fixtures match this CPU
+        run: cargo run -p wwt-testkit --bin record -- --check
+      - name: Programs (layer 2)
+        run: node tests/programs/check.mjs --jobs 4
+      - name: Csmith (layer 2)
+        run: node tests/programs/check.mjs --csmith 40 --seed ${{ github.run_number }}000 --opt O0,O2 --jobs 4
+      - name: GCC torture (layer 2)
+        run: |
+          sh tools/torture/fetch.sh
+          node tests/programs/check.mjs --torture target/gcc-src/gcc/testsuite/gcc.c-torture/execute --opt O0,O2 --jobs 4
+      - name: Instruction coverage of MinGW output
+        run: cargo run -p wwt-testkit --bin coverage -- target/programs/*.exe
+      - name: Memory spike
+        run: node spikes/memory/run.mjs
+      - name: Browser (headless Chromium)
+        run: |
+          npx --yes playwright@1 install --with-deps chromium
+          npm install --no-save playwright@1
+          node tests/web/browser.mjs
+          node tests/web/browser.mjs tests/fixtures/binaries/jumps-O2.exe "longjmp returned 50 at depth 25"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: programs
+          path: |
+            target/programs/*.exe
+            target/programs/results*.json
+
+  # Milestone 2: programs on Wine's own DLLs, translated (not ported).
+  wine:
+    runs-on: ubuntu-latest
+    # Comments the Vercel preview's link on pull requests.
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      WINE_SRC: ${{ github.workspace }}/../wine-src/wine-11.0
+      WINE_BUILD: ${{ github.workspace }}/../wine-build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+      - name: Install toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 flex bison libfreetype-dev
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/../wine-src
+            ${{ github.workspace }}/../wine-build
+          key: wine-${{ hashFiles('tools/wine/build.sh') }}
+      - name: Build Wine's i386 PE DLLs, programs and conformance tests
+        run: |
+          sh tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost \
+            user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 \
+            rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts \
+            hid kernel32/tests user32/tests gdi32/tests
+      - uses: mymindstorm/setup-emsdk@v14
+      - name: Build
+        run: |
+          cargo build --release -p wwt-cli
+          cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
+          sh native/wine-unix/build.sh
+      # The static site (page, runtime, translator, Wine bundle), deployed
+      # to Vercel as a prebuilt output (Vercel builds nothing): a preview
+      # for pull requests, production for main. Not for forks, which get no
+      # secrets.
+      - name: Deploy the site to Vercel
+        id: vercel
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: team_9BEP6m6pAw2dpH7RJPuYYHK8
+          VERCEL_PROJECT_ID: prj_4EvacVdNNW0IJFbS2MH3tuqOglvq
+        run: |
+          node runtime/node/wine-bundle.mjs
+          sh tools/site/deploy.sh "$([ "$GITHUB_EVENT_NAME" = push ] && echo production || echo preview)" | tee vercel.log
+          url=$(tail -n 1 vercel.log)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Site: $url" >> "$GITHUB_STEP_SUMMARY"
+      - name: Link the preview on the pull request
+        if: steps.vercel.outputs.url && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          URL: ${{ steps.vercel.outputs.url }}
+        with:
+          script: |
+            const marker = '<!-- vercel-preview -->';
+            const body = `${marker}\nPreview of ${context.payload.pull_request.head.sha.slice(0, 7)}: ${process.env.URL}/runtime/web/`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const old = comments.find((c) => c.body.startsWith(marker));
+            if (old) await github.rest.issues.updateComment({ owner, repo, comment_id: old.id, body });
+            else await github.rest.issues.createComment({ owner, repo, issue_number, body });
+      - name: Programs on translated Wine
+        run: node tests/programs/check.mjs --wine --jobs 4
+      - name: Wine's kernel32 tests (layer 3), against the recorded baseline
+        run: |
+          node tests/wine/winetest.mjs --jobs 4 --timeout 60 --baseline tests/wine/baseline/kernel32_test.json \
+            "$WINE_BUILD/dlls/kernel32/tests/i386-windows/kernel32_test.exe"
+      - name: GUI programs on translated Wine (browser display driver, headless)
+        run: node tests/wine/gui.mjs
+      - name: Wine's user32 and gdi32 tests, against the recorded baselines
+        run: |
+          node tests/wine/winetest.mjs --jobs 4 --timeout 120 --baseline tests/wine/baseline/user32_test.json \
+            "$WINE_BUILD/dlls/user32/tests/i386-windows/user32_test.exe"
+          node tests/wine/winetest.mjs --jobs 4 --timeout 120 --baseline tests/wine/baseline/gdi32_test.json \
+            "$WINE_BUILD/dlls/gdi32/tests/i386-windows/gdi32_test.exe"
+      - name: GCC torture on translated Wine
+        run: |
+          sh tools/torture/fetch.sh
+          node tests/programs/check.mjs --wine --torture target/gcc-src/gcc/testsuite/gcc.c-torture/execute --opt O2 --jobs 4
+      - name: Browser on translated Wine (headless Chromium)
+        run: |
+          npx --yes playwright@1 install --with-deps chromium
+          npm install --no-save playwright@1
+          node runtime/node/wine-bundle.mjs
+          node tests/web/browser.mjs tests/programs/hello.exe "Hello from translated x86!" --wine
+          node tests/web/picker.mjs
+          node tests/web/gui.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gui-screens
+          path: target/gui/*.png
+
+  # Runs the same MinGW executables on real Windows and checks they print
+  # what the translated runs printed (validating the Linux reference).
+  windows:
+    needs: linux
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: programs
+          path: programs
+      - name: Compare native Windows runs with translated runs
+        shell: pwsh
+        run: node tests/programs/windows-check.mjs programs
+
+  # Spike: Emscripten's data, heap and stacks above the guest limit.
+  emscripten:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mymindstorm/setup-emsdk@v14
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: spikes/emscripten/build.sh
