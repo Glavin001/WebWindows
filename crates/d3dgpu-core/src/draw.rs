@@ -115,9 +115,9 @@ pub struct Caches {
     vs: FastMap<(u64, VertexKey), Arc<Variant>>,
     ps: FastMap<(u64, PixelKey), Arc<Variant>>,
     layouts: FastMap<Vec<LayoutEntry>, Arc<Layout>>,
-    pipelines: FastMap<PipelineKey, wgpu::RenderPipeline>,
+    pipelines: FastMap<PipelineKey, (u64, wgpu::RenderPipeline)>,
     samplers: FastMap<SamplerDesc, (u64, wgpu::Sampler)>,
-    bind_groups: FastMap<(u64, Vec<(u64, u64)>), wgpu::BindGroup>,
+    bind_groups: FastMap<(u64, Vec<(u64, u64)>), (u64, wgpu::BindGroup)>,
     clear_pipelines: FastMap<ClearKey, wgpu::RenderPipeline>,
     dummies: FastMap<wgpu::TextureViewDimension, Dummy>,
     zero_buffer: wgpu::Buffer,
@@ -129,6 +129,12 @@ pub struct Caches {
 }
 
 const DRIVER_SIZE: u64 = Driver::SIZE as u64;
+
+// Pass cache ids of objects that live as long as the core (created ids
+// count up from 1).
+const G0_ID: u64 = u64::MAX - 1;
+const STREAM_RING_ID: u64 = u64::MAX - 2;
+pub(crate) const ZERO_BUFFER_ID: u64 = u64::MAX - 3;
 
 impl Caches {
     pub fn new(device: &wgpu::Device, uniform_ring: &wgpu::Buffer) -> Caches {
@@ -201,8 +207,6 @@ impl Caches {
         self.next_id += 1;
         self.next_id
     }
-
-    pub fn reset_pass_state(&mut self) {}
 
     fn dummy(
         &mut self,
@@ -980,7 +984,7 @@ impl Core {
             colors,
             depth,
         };
-        let pipeline = self.pipeline(&pkey_full, &vsv, &psv, &layout);
+        let (pipeline_id, pipeline) = self.pipeline(&pkey_full, &vsv, &psv, &layout);
 
         // Bind group 1.
         let mut ids = Vec::with_capacity(bound.len());
@@ -1011,6 +1015,7 @@ impl Core {
                     entries: &entries,
                 });
                 self.stats.bind_groups_created += 1;
+                let g = (self.id(), g);
                 self.caches.bind_groups.insert(bg_key, g.clone());
                 g
             }
@@ -1036,31 +1041,33 @@ impl Core {
 
         // Vertex buffers to bind.
         let epoch = self.epoch;
-        let mut vbufs: Vec<(wgpu::Buffer, u64)> = Vec::new();
+        let mut vbufs: Vec<(wgpu::Buffer, u64, u64)> = Vec::new();
         for (stream, _) in &slots {
             if *stream == u32::MAX {
-                vbufs.push((self.caches.zero_buffer.clone(), 0));
+                vbufs.push((self.caches.zero_buffer.clone(), ZERO_BUFFER_ID, 0));
                 continue;
             }
             if let Some(off) = up_vertex_offset {
-                vbufs.push((self.streams.buffer.clone(), off));
+                vbufs.push((self.streams.buffer.clone(), STREAM_RING_ID, off));
                 continue;
             }
             let s = self.st.streams[*stream as usize];
             match self.objects.get_mut(&s.buffer.0) {
                 Some(Object::Buffer(b)) if (s.offset as u64) < b.gpu.size() => {
                     b.last_use = epoch;
-                    vbufs.push((b.gpu.clone(), s.offset as u64));
+                    vbufs.push((b.gpu.clone(), b.id, s.offset as u64));
                 }
                 _ => return self.skip(format!("stream {stream} has no vertex buffer")),
             }
         }
         let index = match &index_src {
-            Some((IndexBuf::Ring(off, f), n, base)) => Some((self.streams.buffer.clone(), *off, *f, 0, *n, *base)),
+            Some((IndexBuf::Ring(off, f), n, base)) => {
+                Some((self.streams.buffer.clone(), STREAM_RING_ID, *off, *f, 0, *n, *base))
+            }
             Some((IndexBuf::Object(h, f, start), n, base)) => match self.objects.get_mut(&h.0) {
                 Some(Object::Buffer(b)) => {
                     b.last_use = epoch;
-                    Some((b.gpu.clone(), 0, *f, *start, *n, *base))
+                    Some((b.gpu.clone(), b.id, 0, *f, *start, *n, *base))
                 }
                 _ => return self.skip("index buffer vanished"),
             },
@@ -1074,27 +1081,21 @@ impl Core {
         let blend_factor = convert::color(self.st.r(RenderState::BlendFactor));
         let stencil_ref = self.st.r(RenderState::StencilRef) & 0xff;
         let g0 = self.caches.g0.clone();
-        let pass = self.pass.as_mut().unwrap();
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &g0, &[vs_off as u32, ps_off as u32, drv_off as u32]);
-        pass.set_bind_group(1, &group1, &[]);
-        for (i, (b, off)) in vbufs.iter().enumerate() {
-            pass.set_vertex_buffer(i as u32, b.slice(*off..));
+        let (pass, pc) = (self.pass.as_mut().unwrap(), &mut self.pc);
+        pc.set_pipeline(pass, pipeline_id, &pipeline);
+        pc.set_bind_group(pass, 0, G0_ID, &g0, &[vs_off as u32, ps_off as u32, drv_off as u32]);
+        pc.set_bind_group(pass, 1, group1.0, &group1.1, &[]);
+        for (i, (b, id, off)) in vbufs.iter().enumerate() {
+            pc.set_vertex_buffer(pass, i as u32, *id, b, *off);
         }
-        pass.set_viewport(
-            fit.x,
-            fit.y,
-            fit.width,
-            fit.height,
-            vp.min_z.clamp(0.0, 1.0),
-            vp.max_z.clamp(vp.min_z.clamp(0.0, 1.0), 1.0),
-        );
-        pass.set_scissor_rect(scissor.x1 as u32, scissor.y1 as u32, scissor.width(), scissor.height());
-        pass.set_blend_constant(blend_factor);
-        pass.set_stencil_reference(stencil_ref);
+        let min_z = vp.min_z.clamp(0.0, 1.0);
+        pc.set_viewport(pass, [fit.x, fit.y, fit.width, fit.height, min_z, vp.max_z.clamp(min_z, 1.0)]);
+        pc.set_scissor(pass, [scissor.x1 as u32, scissor.y1 as u32, scissor.width(), scissor.height()]);
+        pc.set_blend_constant(pass, blend_factor);
+        pc.set_stencil_reference(pass, stencil_ref);
         match index {
-            Some((buf, off, f, start, n, base)) => {
-                pass.set_index_buffer(buf.slice(off..), f);
+            Some((buf, id, off, f, start, n, base)) => {
+                pc.set_index_buffer(pass, id, &buf, off, f);
                 pass.draw_indexed(start..start + n, base, 0..instances);
             }
             None => pass.draw(vertex_range.0..vertex_range.1, 0..instances),
@@ -1251,7 +1252,13 @@ impl Core {
         Some(DepthKey { format, write, compare, stencil, bias, slope: slope.to_bits() })
     }
 
-    fn pipeline(&mut self, key: &PipelineKey, vs: &Variant, ps: &Variant, layout: &Layout) -> wgpu::RenderPipeline {
+    fn pipeline(
+        &mut self,
+        key: &PipelineKey,
+        vs: &Variant,
+        ps: &Variant,
+        layout: &Layout,
+    ) -> (u64, wgpu::RenderPipeline) {
         if let Some(p) = self.caches.pipelines.get(key) {
             return p.clone();
         }
@@ -1334,6 +1341,7 @@ impl Core {
             cache: None,
         });
         self.stats.pipelines_created += 1;
+        let p = (self.id(), p);
         self.caches.pipelines.insert(key.clone(), p.clone());
         p
     }

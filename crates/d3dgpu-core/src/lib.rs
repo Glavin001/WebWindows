@@ -24,6 +24,7 @@
 mod convert;
 mod d3d11;
 mod draw;
+mod pass_cache;
 mod present;
 mod resources;
 mod state;
@@ -218,6 +219,7 @@ pub struct Core {
     uploads: Ring,
     caches: draw::Caches,
     d11: d3d11::Device11,
+    pc: pass_cache::PassCache,
     blitter: present::Blitter,
     presenters: HashMap<u32, Box<dyn Presenter>>,
     presented: Vec<u32>,
@@ -260,6 +262,7 @@ impl Core {
             uploads,
             caches,
             d11,
+            pc: pass_cache::PassCache::new(),
             blitter,
             presenters: HashMap::new(),
             presented: Vec::new(),
@@ -552,7 +555,9 @@ impl Core {
             mapped_at_creation: false,
         });
         self.stats.buffers_created += 1;
-        self.objects.insert(id.0, Object::Buffer(Buffer { gpu, size, shadow: vec![0; padded as usize], last_use: 0 }));
+        let bid = self.id();
+        let b = Buffer { gpu, id: bid, size, shadow: vec![0; padded as usize], last_use: 0 };
+        self.objects.insert(id.0, Object::Buffer(b));
     }
 
     fn write_buffer(&mut self, id: Handle, offset: u32, bytes: &[u8]) {
@@ -897,7 +902,7 @@ impl Core {
         self.stats.passes += 1;
         self.pass = Some(pass);
         self.pass_targets = Some(targets);
-        self.caches.reset_pass_state();
+        self.pc.reset();
     }
 
     /// Applies a pending load-op clear with an empty pass.
@@ -1039,7 +1044,7 @@ impl Core {
             pass.set_scissor_rect(r.x1 as u32, r.y1 as u32, r.width(), r.height());
             pass.draw(0..3, 0..1);
         }
-        self.caches.reset_pass_state();
+        self.pc.reset();
         self.stats.quad_clears += 1;
     }
 

@@ -11,6 +11,8 @@ use d3dgpu_shader::ShaderModule;
 
 pub struct Buffer {
     pub gpu: wgpu::Buffer,
+    /// Never reused, unlike handles (for the pass cache).
+    pub id: u64,
     pub size: u32,
     /// CPU copy: index rewrites (fans, wireframe) and repacking read it.
     pub shadow: Vec<u8>,

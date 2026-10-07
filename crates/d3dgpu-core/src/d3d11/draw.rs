@@ -5,10 +5,8 @@
 //! shader's resources, 1 for the pixel shader's, 2 for the driver uniforms.
 //! Constant buffers and the driver block are windows of the uniform ring
 //! bound with dynamic offsets, so a draw that only changes constants reuses
-//! its bind groups. Within a pass, commands that would set what is already
-//! set (pipeline, bind group and offsets, vertex and index buffers,
-//! viewport, scissor, blend constant, stencil reference) are skipped: in
-//! the browser every pass command is a call into JavaScript.
+//! its bind groups. Pass commands go through [`crate::pass_cache`], which
+//! skips those that would set what is already set.
 
 use std::sync::Arc;
 
@@ -105,33 +103,6 @@ struct SamplerKey {
     filtering: bool,
 }
 
-/// What a pass has set, to skip redundant commands.
-struct PassCache {
-    pipeline: u64,
-    groups: [(u64, Vec<u32>); 3],
-    vbs: [(u64, u64); 8],
-    ib: (u64, u64),
-    viewport: [u32; 6],
-    scissor: [u32; 4],
-    blend: [u32; 4],
-    stencil: u32,
-}
-
-impl PassCache {
-    fn new() -> PassCache {
-        PassCache {
-            pipeline: u64::MAX,
-            groups: [(u64::MAX, Vec::new()), (u64::MAX, Vec::new()), (u64::MAX, Vec::new())],
-            vbs: [(u64::MAX, 0); 8],
-            ib: (u64::MAX, 0),
-            viewport: [u32::MAX; 6],
-            scissor: [u32::MAX; 4],
-            blend: [u32::MAX; 4],
-            stencil: u32::MAX,
-        }
-    }
-}
-
 type LayoutKey = (u32, Vec<(u32, EntryKind)>);
 type BindGroupKey = (u64, Vec<[u64; 2]>);
 
@@ -151,11 +122,13 @@ pub struct Caches11 {
     zero_buffer: wgpu::Buffer,
     dummies: FastMap<(wgpu::TextureViewDimension, u8, bool), (wgpu::TextureView, u64)>,
     dummy_storage: FastMap<(wgpu::TextureFormat, wgpu::TextureViewDimension), (wgpu::TextureView, u64)>,
-    pc: PassCache,
 }
 
 const DRIVER_SIZE: u64 = d3dgpu_dxbc::wgsl::DRIVER_SIZE;
 const ZERO_SIZE: u64 = 4096;
+// Pass cache ids of the core-lifetime objects (see crate::draw).
+const DRIVER_GROUP_ID: u64 = u64::MAX - 4;
+const ZERO_BUFFER_ID: u64 = u64::MAX - 5;
 
 impl Caches11 {
     pub fn new(device: &wgpu::Device, uniform_ring: &wgpu::Buffer) -> Caches11 {
@@ -206,12 +179,7 @@ impl Caches11 {
             zero_buffer,
             dummies: FastMap::default(),
             dummy_storage: FastMap::default(),
-            pc: PassCache::new(),
         }
-    }
-
-    pub fn reset_pass(&mut self) {
-        self.pc = PassCache::new();
     }
 }
 
@@ -431,7 +399,7 @@ impl Core {
         self.stats.passes += 1;
         self.pass = Some(pass);
         self.d11.pass = Some(targets);
-        self.d11.caches.reset_pass();
+        self.pc.reset();
     }
 
     // ---- Shader variants ----
@@ -1269,72 +1237,26 @@ impl Core {
 
         // Record.
         self.ensure_pass11(targets);
-        let blend_factor = self.d11.st.blend_factor;
+        let blend_factor = self.d11.st.blend_factor.map(|c| c as f64);
         let stencil_ref = self.d11.st.stencil_ref & 0xff;
         let driver = self.d11.caches.driver_group.clone();
-        let pc = &mut self.d11.caches.pc;
-        let pass = self.pass.as_mut().unwrap();
-        if pc.pipeline != pid {
-            pass.set_pipeline(&pipeline);
-            pc.pipeline = pid;
-        }
-        let drv_offsets = [drv_off as u32];
-        for (i, (id, group, offsets)) in [
-            (g0.group.0, &g0.group.1, g0.offsets.as_slice()),
-            (g1.group.0, &g1.group.1, g1.offsets.as_slice()),
-            (u64::MAX - 1, &driver, &drv_offsets[..]),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            if pc.groups[i].0 != id || pc.groups[i].1 != offsets {
-                pass.set_bind_group(i as u32, group, offsets);
-                pc.groups[i].0 = id;
-                pc.groups[i].1.clear();
-                pc.groups[i].1.extend_from_slice(offsets);
-            }
-        }
+        let (pass, pc) = (self.pass.as_mut().unwrap(), &mut self.pc);
+        pc.set_pipeline(pass, pid, &pipeline);
+        pc.set_bind_group(pass, 0, g0.group.0, &g0.group.1, &g0.offsets);
+        pc.set_bind_group(pass, 1, g1.group.0, &g1.group.1, &g1.offsets);
+        pc.set_bind_group(pass, 2, DRIVER_GROUP_ID, &driver, &[drv_off as u32]);
         for (i, (b, gen, off)) in vbufs.iter().enumerate() {
-            let gen = if *gen == 0 { u64::MAX - 1 } else { *gen };
-            if pc.vbs[i] != (gen, *off) {
-                pass.set_vertex_buffer(i as u32, b.slice(*off..));
-                pc.vbs[i] = (gen, *off);
-            }
+            pc.set_vertex_buffer(pass, i as u32, if *gen == 0 { ZERO_BUFFER_ID } else { *gen }, b, *off);
         }
-        let vpk = [
-            fit.x.to_bits(),
-            fit.y.to_bits(),
-            fit.width.to_bits(),
-            fit.height.to_bits(),
-            vp.min_depth.to_bits(),
-            vp.max_depth.to_bits(),
-        ];
-        if pc.viewport != vpk {
-            let min = vp.min_depth.clamp(0.0, 1.0);
-            pass.set_viewport(fit.x, fit.y, fit.width, fit.height, min, vp.max_depth.clamp(min, 1.0));
-            pc.viewport = vpk;
-        }
-        let sk = [scissor.x1 as u32, scissor.y1 as u32, scissor.width(), scissor.height()];
-        if pc.scissor != sk {
-            pass.set_scissor_rect(sk[0], sk[1], sk[2], sk[3]);
-            pc.scissor = sk;
-        }
-        let bk = blend_factor.map(f32::to_bits);
-        if pc.blend != bk {
-            let [r, g, b, a] = blend_factor.map(|c| c as f64);
-            pass.set_blend_constant(wgpu::Color { r, g, b, a });
-            pc.blend = bk;
-        }
-        if pc.stencil != stencil_ref {
-            pass.set_stencil_reference(stencil_ref);
-            pc.stencil = stencil_ref;
-        }
+        let min = vp.min_depth.clamp(0.0, 1.0);
+        pc.set_viewport(pass, [fit.x, fit.y, fit.width, fit.height, min, vp.max_depth.clamp(min, 1.0)]);
+        pc.set_scissor(pass, [scissor.x1 as u32, scissor.y1 as u32, scissor.width(), scissor.height()]);
+        let [r, g, b, a] = blend_factor;
+        pc.set_blend_constant(pass, wgpu::Color { r, g, b, a });
+        pc.set_stencil_reference(pass, stencil_ref);
         match (d, index) {
             (Draw11::Indexed { count, start, base_vertex, instances, start_instance }, Some((buf, gen, off, f))) => {
-                if pc.ib != (gen, off | (f as u64) << 63) {
-                    pass.set_index_buffer(buf.slice(off..), f);
-                    pc.ib = (gen, off | (f as u64) << 63);
-                }
+                pc.set_index_buffer(pass, gen, &buf, off, f);
                 pass.draw_indexed(*start..start + count, *base_vertex, *start_instance..start_instance + instances);
             }
             (Draw11::Vertices { count, start, instances, start_instance }, _) => {
