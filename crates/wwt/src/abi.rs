@@ -144,6 +144,9 @@ pub mod addr {
     /// Returning to this address stops the dispatcher loop (used as the
     /// return address of thread entry points).
     pub const STOP: u32 = 0xFFFF_FFF0;
+    /// Returning to this address also stops the dispatcher loop: the host
+    /// switches threads (the thread resumes later where it left off).
+    pub const YIELD: u32 = 0xFFFF_FFE0;
 }
 
 /// Names of the module imports every translated module expects.
@@ -178,6 +181,7 @@ struct AbiJson {
     flags: std::collections::BTreeMap<&'static str, u32>,
     fault: std::collections::BTreeMap<&'static str, u32>,
     stop_address: u32,
+    yield_address: u32,
     null_limit: u32,
     funcs_section: &'static str,
     meta_section: &'static str,
@@ -250,6 +254,7 @@ pub fn abi_json() -> String {
         flags: fl,
         fault,
         stop_address: addr::STOP,
+        yield_address: addr::YIELD,
         null_limit: addr::NULL_LIMIT,
         funcs_section: FUNCS_SECTION,
         meta_section: META_SECTION,

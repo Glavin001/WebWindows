@@ -238,6 +238,7 @@ const host = new WineHost(machine, {
   debug: process.env.WINEDEBUG ?? '',
 });
 host.boot(`${sys32}\\ntdll.dll`, exeDos);
+await host.startClock();
 const r = host.run();
 if (host.unimplemented.size) {
   stderr(`unimplemented syscalls: ${[...host.unimplemented.keys()].join(', ')}\n`);

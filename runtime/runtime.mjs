@@ -154,13 +154,22 @@ export class Machine {
 
   newCpu() {
     const size = this.abi.cpu.SIZE;
-    if (this.cpuSlots >= 128) throw new Error('too many threads');
-    const cpu = this.cpuArea + size * this.cpuSlots++;
+    this.freeCpus ??= [];
+    let cpu = this.freeCpus.pop();
+    if (cpu === undefined) {
+      if (this.cpuSlots >= 128) throw new Error('too many threads');
+      cpu = this.cpuArea + size * this.cpuSlots++;
+    }
     this.u8.fill(0, cpu, cpu + size);
     // x87 control word: 64-bit precision, round to nearest, all masked.
     this.dv.setUint16(cpu + this.abi.cpu.FPU_CW, 0x037f, true);
     this.dv.setUint32(cpu + this.abi.cpu.MXCSR, 0x1f80, true);
     return cpu;
+  }
+
+  /** Returns a thread's CPU state slot for reuse. */
+  freeCpu(cpu) {
+    this.freeCpus.push(cpu >>> 0);
   }
 
   reg(cpu, i) {

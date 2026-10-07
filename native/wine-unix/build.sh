@@ -121,7 +121,7 @@ emcc $(find "$out/obj" -name '*.o') -o "$out/wine_unix.mjs" -O2 --no-entry --pre
   -sUSE_FREETYPE=1 -sMODULARIZE -sEXPORT_ES6 -sEXPORT_NAME=createWineUnix -sENVIRONMENT=web,worker,node \
   -sIMPORTED_MEMORY -sSHARED_MEMORY -sALLOW_MEMORY_GROWTH=0 \
   -sGLOBAL_BASE=$GLOBAL_BASE -sINITIAL_MEMORY=$MEMORY_SIZE -sSTACK_SIZE=4MB \
-  -sEXPORTED_FUNCTIONS="$exports" -sEXPORTED_RUNTIME_METHODS=FS,HEAPU8,UTF8ToString \
+  -sEXPORTED_FUNCTIONS="$exports" -sEXPORTED_RUNTIME_METHODS=FS,HEAPU8,UTF8ToString,stackSave,stackRestore \
   -sERROR_ON_UNDEFINED_SYMBOLS=1 -Wl,--error-limit=0 2> "$out/link.log" || { cat "$out/link.log"; exit 1; }
 # Two definitions of a name with different signatures only warn, and one of
 # them silently wins: never accept that.

@@ -6,7 +6,7 @@
 import { ProcessExit, hex } from '../runtime.mjs';
 import { parsePe } from './host.mjs';
 import { WIN32U_UNIXLIB } from './unix.mjs';
-import { ntRaiseException, restoreContext, saveContext } from './exceptions.mjs';
+import { ntRaiseException, restoreContext } from './exceptions.mjs';
 
 import L from './layout.json' with { type: 'json' };
 import {
@@ -260,25 +260,6 @@ export const SYSCALLS = {
   NtReleaseSemaphore() {
     return STATUS.SUCCESS;
   },
-  NtWaitForSingleObject() {
-    // One thread: waits on unsignaled objects would deadlock; report success.
-    return STATUS.SUCCESS;
-  },
-  NtWaitForMultipleObjects() {
-    return STATUS.SUCCESS;
-  },
-  NtWaitForKeyedEvent() {
-    return STATUS.SUCCESS;
-  },
-  NtReleaseKeyedEvent() {
-    return STATUS.SUCCESS;
-  },
-  NtDelayExecution() {
-    return STATUS.SUCCESS;
-  },
-  NtYieldExecution() {
-    return STATUS.SUCCESS;
-  },
 
   // -- process, thread, system
   NtQueryInformationProcess(a) {
@@ -334,28 +315,6 @@ export const SYSCALLS = {
   },
   NtSetInformationProcess() {
     return STATUS.SUCCESS;
-  },
-  NtQueryInformationThread(a) {
-    const [, cls, buf, len, pret] = [a(0), a(1), a(2), a(3), a(4)];
-    if (cls === 0) {
-      // ThreadBasicInformation
-      if (len < 28) return STATUS.INFO_LENGTH_MISMATCH;
-      this.m.u8.fill(0, buf, buf + 28);
-      this.w32(buf + 4, this.teb);
-      this.w32(buf + 8, 0x20);
-      this.w32(buf + 12, 0x24);
-      this.w32(buf + 16, 1);
-      if (pret) this.w32(pret, 28);
-      return STATUS.SUCCESS;
-    }
-    if (cls === 9) {
-      // ThreadQuerySetWin32StartAddress
-      this.w32(buf, 0);
-      if (pret) this.w32(pret, 4);
-      return STATUS.SUCCESS;
-    }
-    this.log(`NtQueryInformationThread class ${cls} not implemented`);
-    return STATUS.INVALID_INFO_CLASS;
   },
   NtSetInformationThread() {
     return STATUS.SUCCESS;
@@ -414,11 +373,16 @@ export const SYSCALLS = {
     return Math.floor(performance.now()) >>> 0;
   },
   NtTerminateProcess(a) {
-    const h = a(0);
-    if (h === 0) return STATUS.SUCCESS; // terminate other threads: none
-    throw new ProcessExit(a(1));
-  },
-  NtTerminateThread(a) {
+    if (a(0) === 0) {
+      // Every thread but this one (ExitProcess does this first).
+      for (const t of this.threads.live()) {
+        if (t === this.threads.current) continue;
+        this.unix?.M._wasm_forget_thread(t.teb);
+        if (t.state === 'waiting') t.killed = true;
+        else this.endThread(t, a(1));
+      }
+      return STATUS.SUCCESS;
+    }
     throw new ProcessExit(a(1));
   },
   NtContinue(a, cpu) {
@@ -429,21 +393,6 @@ export const SYSCALLS = {
   },
   NtRaiseException(a, cpu) {
     return ntRaiseException(this, cpu, a(0), a(1), a(2));
-  },
-  NtGetContextThread(a, cpu) {
-    if (a(0) !== 0xfffffffe) return STATUS.NOT_IMPLEMENTED;
-    // The thread as it returns from this call: eip in the system call stub.
-    const ctx = a(1);
-    const want = this.u32(ctx);
-    const esp = this.m.reg(cpu, 4);
-    saveContext(this, cpu, ctx, this.u32(esp));
-    this.w32(ctx + L.CONTEXT.Esp, esp + 4);
-    this.w32(ctx + L.CONTEXT.ContextFlags, want);
-    return STATUS.SUCCESS;
-  },
-  NtSetContextThread(a, cpu) {
-    if (a(0) === 0xfffffffe) return continueContext(this, cpu, a(1));
-    return STATUS.NOT_IMPLEMENTED;
   },
   NtGetCurrentProcessorNumber() {
     return 0;

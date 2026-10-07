@@ -1,0 +1,373 @@
+// Windows threads for translated Wine (Milestone 5).
+//
+// Every Windows thread runs in this one JavaScript thread (the page's
+// worker, or Node's main thread); the scheduler switches between them. A
+// thread's state is all in the shared memory: its registers in its CPU
+// state, its frames on its guest stack. Translated frames can be abandoned
+// at any time (a translated call that does not return to its return address
+// hands the address up to the dispatcher loop), so a thread blocked in a
+// system call made directly from guest code "yields": the system call
+// returns the YIELD address, the translated frames return to the
+// dispatcher loop, and the thread resumes later at its return address.
+//
+// Waits deeper down cannot yield that way: win32u's message waits and
+// waits in a window procedure (a user callback) have Wine's Unix side or
+// the host's own frames below them. Those run the other threads on top of
+// themselves until something changes, then check again. A thread run that
+// way can still yield back, so only threads that block inside such nested
+// waits stack up.
+//
+// Threads switch at system calls: when one blocks, and when one has run for
+// a time slice and others are ready. Programs of the era were written for
+// one processor; code that spins without system calls waiting for another
+// thread is not preempted.
+
+import { hex } from '../runtime.mjs';
+
+/** Thrown to end the current thread (NtTerminateThread on itself). */
+export class ThreadExit extends Error {
+  constructor(status) {
+    super(`thread exited with ${hex(status)}`);
+    this.status = status;
+  }
+}
+
+const STATUS_SUCCESS = 0;
+const STATUS_TIMEOUT = 0x102;
+const STATUS_ALERTED = 0x101;
+const STATUS_NO_YIELD_PERFORMED = 0x40000024;
+const SLICE_MS = 20;
+
+/** Milliseconds until an NT timeout (100 ns units; negative relative, positive absolute, null infinite). */
+export function timeoutDeadline(h, ptr) {
+  if (!ptr) return Infinity;
+  const t = h.m.dv.getBigInt64(ptr, true);
+  if (t === -0x8000000000000000n) return Infinity;
+  if (t <= 0n) return performance.now() + Number(-t) / 10000;
+  // Absolute: 100 ns since 1601.
+  const unixMs = Number(t - 116444736000000000n) / 10000;
+  return performance.now() + (unixMs - Date.now());
+}
+
+export class Thread {
+  constructor(fields) {
+    Object.assign(this, fields);
+    this.state = 'ready'; // ready, running, blocked, waiting (nested), dead
+    this.suspend ??= 0;
+    this.alerted = false;
+    this.nest = 0; // host callbacks (window procedures) running on this thread
+    this.pending = null; // the blocked system call: {ret, esp, check, deadline, timeoutStatus}
+    this.sliceStart = 0;
+  }
+}
+
+export class Scheduler {
+  /** @param {import('./host.mjs').WineHost} h */
+  constructor(h) {
+    this.h = h;
+    this.m = h.m;
+    this.threads = [];
+    this.current = null;
+    this.yieldAddr = h.m.abi.yield_address >>> 0;
+    this.stopAddr = h.m.abi.stop_address >>> 0;
+    this.keyed = new Map(); // keyed events: key -> releases not yet waited for
+    this.realWait = null; // blocks for real (input or time); set by the host
+    this.next = 0;
+  }
+
+  add(t) {
+    this.threads.push(t);
+    return t;
+  }
+
+  live() {
+    return this.threads.filter((t) => t.state !== 'dead');
+  }
+
+  byTid(tid) {
+    return this.threads.find((t) => t.tid === tid && t.state !== 'dead');
+  }
+
+  byTeb(teb) {
+    return this.threads.find((t) => t.teb === teb && t.state !== 'dead');
+  }
+
+  /** Makes `t` current for the host and Wine's Unix side. */
+  switchTo(t) {
+    if (this.current === t) return;
+    this.current = t;
+    this.h.cpu = t.cpu;
+    this.h.teb = t.teb;
+    this.h.unix?.M._wasm_switch_thread(t.teb);
+  }
+
+  runnable(t) {
+    return t.state === 'ready' && t.suspend === 0;
+  }
+
+  /** Runs `t` until it yields, blocks or ends. */
+  runThread(t) {
+    const prev = this.current;
+    const M = this.h.unix?.M;
+    // A thread that ends deep in Wine's Unix side leaves its frames there:
+    // the module's stack pointer comes back to where it was.
+    const sp = M?.stackSave();
+    this.switchTo(t);
+    t.state = 'running';
+    t.sliceStart = performance.now();
+    try {
+      const eip = this.m.run(t.cpu, t.resume);
+      if (eip === this.stopAddr) throw new Error(`thread ${t.tid} returned from its start routine`);
+    } catch (e) {
+      if (!(e instanceof ThreadExit)) throw e;
+      M?.stackRestore(sp);
+      if (t.state !== 'dead') this.h.endThread(t, e.status);
+    } finally {
+      if (prev && prev.state !== 'dead') this.switchTo(prev);
+    }
+  }
+
+  ended(t, status) {
+    t.state = 'dead';
+    t.exitStatus = status;
+    if (this.h.trace) this.h.log(`thread ${hex(t.tid)} ended with ${hex(status)}`);
+  }
+
+  /** Completes a blocked system call: eax = status, back to the caller. */
+  complete(t, status) {
+    const p = t.pending;
+    t.pending = null;
+    this.m.setReg(t.cpu, 0, status >>> 0);
+    this.m.setReg(t.cpu, 4, p.esp + 4);
+    t.resume = p.ret;
+    t.state = 'ready';
+  }
+
+  /** Checks blocked threads; returns whether one became ready. */
+  poll() {
+    let woke = false;
+    const now = performance.now();
+    for (const t of this.threads) {
+      if (t.state !== 'blocked') continue;
+      const prev = this.current;
+      this.switchTo(t);
+      let status;
+      try {
+        status = t.pending.check();
+      } finally {
+        if (prev) this.switchTo(prev);
+      }
+      if (status === undefined && now >= t.pending.deadline) status = t.pending.timeoutStatus;
+      if (status !== undefined) {
+        this.complete(t, status);
+        woke = true;
+      }
+    }
+    return woke;
+  }
+
+  pick(except) {
+    const n = this.threads.length;
+    for (let k = 0; k < n; k++) {
+      const t = this.threads[(this.next + k) % n];
+      if (t !== except && this.runnable(t)) {
+        this.next = (this.next + k + 1) % n;
+        return t;
+      }
+    }
+    return null;
+  }
+
+  /** Milliseconds until the earliest deadline of a blocked thread (-1: none). */
+  untilDeadline() {
+    let d = Infinity;
+    for (const t of this.threads) if (t.state === 'blocked') d = Math.min(d, t.pending.deadline);
+    if (d === Infinity) return -1;
+    return Math.max(0, Math.ceil(d - performance.now()));
+  }
+
+  /** Blocks for real until input arrives or `ms` pass; returns realWait's result. */
+  idle(ms) {
+    const r = this.realWait(ms);
+    if (r > 0) this.h.unix?.M._wasm_process_input();
+    return r;
+  }
+
+  /** The process: runs threads until it exits (ProcessExit propagates). */
+  run() {
+    for (;;) {
+      const t = this.pick(null);
+      if (t) {
+        this.runThread(t);
+        continue;
+      }
+      if (this.poll()) continue;
+      if (!this.live().length) throw new Error('every thread ended without ending the process');
+      const ms = this.untilDeadline();
+      const r = this.idle(ms);
+      if (r < 0 && ms < 0) throw new Error(`deadlock: ${this.describe()}`);
+    }
+  }
+
+  describe() {
+    return this.live()
+      .map((t) => `thread ${hex(t.tid)} ${t.state}${t.suspend ? ' suspended' : ''}${t.pending ? ` in ${t.pending.name}` : ''}`)
+      .join(', ');
+  }
+
+  /** Whether the current thread can yield (its system call came straight from guest code at its base). */
+  canYield() {
+    const t = this.current;
+    return t && t.nest === 0 && t.state === 'running';
+  }
+
+  /**
+   * Blocks the current thread in a system call until `check()` returns a
+   * status or the deadline passes (then `timeoutStatus`). Returns the status
+   * now, or the YIELD address when the thread yielded.
+   */
+  block(name, ret, esp, check, deadline, timeoutStatus = STATUS_TIMEOUT) {
+    let status = check();
+    if (status !== undefined) return { status };
+    if (performance.now() >= deadline) return { status: timeoutStatus };
+    const t = this.current;
+    if (this.canYield()) {
+      t.pending = { name, ret, esp, check, deadline, timeoutStatus };
+      t.state = 'blocked';
+      return { yield: true };
+    }
+    // Nested: run other threads until the condition holds.
+    for (;;) {
+      const left = deadline === Infinity ? -1 : Math.max(0, Math.ceil(deadline - performance.now()));
+      this.waitNested(left);
+      status = check();
+      if (status !== undefined) return { status };
+      if (performance.now() >= deadline) return { status: timeoutStatus };
+    }
+  }
+
+  /**
+   * A wait that cannot yield (Wine's Unix side waiting for a wakeup, or a
+   * wait under a host callback): runs other threads, or blocks for real
+   * when none can run. Returns 1 for input, 0 otherwise, -1 when nothing
+   * can ever happen.
+   */
+  waitNested(ms) {
+    const self = this.current;
+    if (self) self.state = 'waiting';
+    try {
+      let ran = false;
+      for (;;) {
+        const t = this.pick(self);
+        if (!t) break;
+        this.runThread(t);
+        ran = true;
+        // Give the waiter a chance to see what the other thread did.
+        break;
+      }
+      if (!ran && this.poll()) ran = true;
+      if (ran) return 0;
+      const d = this.untilDeadline();
+      const wait = d < 0 ? ms : ms < 0 ? d : Math.min(ms, d);
+      const r = this.idle(wait);
+      if (r < 0 && d >= 0) return 0;
+      return r;
+    } finally {
+      if (self) {
+        if (self.state === 'waiting') self.state = 'running';
+        this.switchTo(self);
+        if (self.killed) throw new ThreadExit(self.exitStatus ?? 0);
+      }
+    }
+  }
+
+  /**
+   * At a system call: whether to let other threads run, because the
+   * current one used up its slice or a sleeping thread's time came (a
+   * timer thread should run on time).
+   */
+  shouldPreempt() {
+    const t = this.current;
+    if (!t) return false;
+    const now = performance.now();
+    let due = now - t.sliceStart >= SLICE_MS;
+    if (!due) {
+      for (const o of this.threads) if (o.state === 'blocked' && o.pending.deadline <= now) due = true;
+    }
+    if (!due) return false;
+    if (this.threads.some((o) => o !== t && this.runnable(o))) return true;
+    this.poll();
+    return this.threads.some((o) => o !== t && this.runnable(o));
+  }
+
+  /** Lets others run: the current thread continues at `ret` later. */
+  yieldAt(ret) {
+    const t = this.current;
+    t.resume = ret;
+    t.state = 'ready';
+  }
+
+  // ---- Waits the host implements itself ----------------------------------------
+
+  /** NtWaitForAlertByThreadId(address, timeout): RtlWaitOnAddress, critical sections, SRW locks. */
+  waitForAlert(name, ret, esp, timeoutPtr) {
+    const t = this.current;
+    const check = () => {
+      if (!t.alerted) return undefined;
+      t.alerted = false;
+      return STATUS_ALERTED;
+    };
+    return this.block(name, ret, esp, check, timeoutDeadline(this.h, timeoutPtr));
+  }
+
+  alert(tid) {
+    const t = this.byTid(tid);
+    if (!t) return 0xc000000b; // STATUS_INVALID_CID
+    t.alerted = true;
+    return STATUS_SUCCESS;
+  }
+
+  /** NtWaitForKeyedEvent / NtReleaseKeyedEvent (RtlRunOnce): a release wakes one waiter on the key. */
+  waitKeyed(name, ret, esp, key, timeoutPtr) {
+    const check = () => {
+      const n = this.keyed.get(key) ?? 0;
+      if (!n) return undefined;
+      if (n === 1) this.keyed.delete(key);
+      else this.keyed.set(key, n - 1);
+      return STATUS_SUCCESS;
+    };
+    return this.block(name, ret, esp, check, timeoutDeadline(this.h, timeoutPtr));
+  }
+
+  releaseKeyed(key) {
+    this.keyed.set(key, (this.keyed.get(key) ?? 0) + 1);
+    return STATUS_SUCCESS;
+  }
+
+  /** NtDelayExecution(alertable, timeout): Sleep. */
+  delay(name, ret, esp, timeoutPtr) {
+    return this.sleepUntil(name, ret, esp, timeoutDeadline(this.h, timeoutPtr));
+  }
+
+  /** NtYieldExecution: lets ready threads run. */
+  yieldExecution(ret, esp) {
+    const others = this.threads.some((o) => o !== this.current && this.runnable(o));
+    if (!others) return { status: STATUS_NO_YIELD_PERFORMED };
+    return this.sleepUntil('NtYieldExecution', ret, esp, performance.now());
+  }
+
+  sleepUntil(name, ret, esp, deadline) {
+    const others = this.threads.some((o) => o !== this.current && this.runnable(o));
+    // Sleep(0) with nothing else to run returns at once.
+    if (deadline <= performance.now() && !others) return { status: STATUS_SUCCESS };
+    // Others get a turn even for a zero timeout: the first check fails.
+    let first = true;
+    const check = () => {
+      if (first) return (first = false), undefined;
+      return performance.now() >= deadline ? STATUS_SUCCESS : undefined;
+    };
+    return this.block(name, ret, esp, check, Math.max(deadline, performance.now() + 0.001), STATUS_SUCCESS);
+  }
+}
+
+export { STATUS_TIMEOUT };

@@ -12,7 +12,7 @@ build up to it.
 | Part | Status |
 | --- | --- |
 | Exceptions | Done (below) |
-| Threads | In progress |
+| Threads | Done (below) |
 | Timers | To do |
 | Audio (`winmm`, DirectSound on an `AudioWorklet`) | To do |
 | DirectDraw (Wine's `ddraw` on `wined3d` with 3D off) | To do |
@@ -76,3 +76,65 @@ still fails there:
 Faults no longer stop a program, so kernel32's tests that crashed now report
 "Unhandled page fault" through Wine's own handler; no unit did worse, and
 `profile` now finishes.
+
+## Threads
+
+Windows threads run in the one JavaScript thread that runs the program
+(the page's worker, or Node's main thread), switched by a scheduler in
+`runtime/wine/threads.mjs`. This differs from the plan's worker per thread:
+
+* A thread's state is all in the shared memory (its registers in its CPU
+  state, its frames on its guest stack), and translated frames can be
+  abandoned at any time, the way exceptions and `longjmp` leave them. A
+  thread that blocks in a system call made straight from guest code
+  *yields*: the system call returns a yield address, the translated frames
+  return to the dispatcher loop, and the scheduler runs another thread.
+  The blocked one resumes at its return address once its wait is
+  satisfied.
+* Waits that cannot unwind (win32u's message waits, which wait inside
+  Wine's Unix side, and waits inside a window procedure, which run under the
+  host's callback) run the other threads on top of themselves until
+  something changes, then check again. A thread run that way can still
+  yield back to them.
+* Threads switch when one blocks, and at system calls once a thread has run
+  for 20 ms while others are ready. Code that spins without system calls,
+  waiting for another thread, is not preempted.
+* Programs of the era were written for one processor, so running one
+  thread at a time costs them little, and nothing has to be shared between
+  workers: the host's state, Wine's Unix side (whose C code is not
+  thread-safe) and the function table all stay in one place.
+
+What each piece does:
+
+* **Thread creation** (`NtCreateThreadEx`): the host builds the TEB, stack,
+  CPU state and initial context as Wine's Unix side does; the in-process
+  wineserver gets a thread through `new_thread` and `init_thread`
+  (`native/wine-unix/inproc/client.c`), each thread with its own wait pipe.
+  The scheduler tells Wine's Unix side which thread is current
+  (`NtCurrentTeb()` and the thread server requests come from).
+* **Waits** on server objects (events, mutexes, semaphores, threads) are
+  polled through Wine's own `NtWaitFor*` with a zero timeout, and block in
+  the scheduler. `NtWaitForAlertByThreadId` and `NtAlertThreadByThreadId`
+  (critical sections, SRW locks, condition variables and `WaitOnAddress` in
+  Wine's ntdll), keyed events (`RtlRunOnce`), `Sleep` and
+  `NtYieldExecution` are the scheduler's own.
+* **Exit**: `NtTerminateThread` on itself tells the server, which wakes
+  threads waiting on it, and frees the thread's TEB, stack and CPU state.
+  Suspend and resume go through the server and the scheduler.
+* **The clock**: Wine reads the tick count and the interrupt and system time
+  from `KUSER_SHARED_DATA` without a system call. The host never updated
+  them; a small worker (`runtime/wine/ticker.mjs`) now writes them every
+  millisecond, as wineserver does, so `GetTickCount` moves while a program
+  runs.
+
+Test: `tests/wine/win32/threads.c` (four threads with a critical section and
+interlocked counter, exit codes, thread-local storage, a producer and
+consumer on two semaphores, a suspended start, events with and without
+timeouts, a mutex between two threads, and waiting for the first of three
+sleeping threads).
+
+Not done: asynchronous procedure calls (alertable waits return without
+running them), the contexts of threads blocked in a system call, and
+threads that block inside nested waits while another thread waits for them
+(for example, a worker thread sending a message to a window whose thread is
+itself waiting inside a window procedure).

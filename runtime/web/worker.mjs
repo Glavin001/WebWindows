@@ -168,6 +168,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
     unix,
   });
   host.boot(`${sys32}\\ntdll.dll`, exeDos);
+  await host.startClock();
   log(`Wine process ready in ${(performance.now() - t0).toFixed(0)} ms; running`);
   const tr = performance.now();
   const r = host.run();
