@@ -107,6 +107,13 @@ impl<'a> ModuleGen<'a> {
         }
     }
 
+    /// Disables direct calls between the module's functions (for modules
+    /// whose functions share entry addresses, like instruction tests).
+    pub fn without_direct_calls(mut self) -> Self {
+        self.func_index.clear();
+        self
+    }
+
     fn helper_func_index(&self, h: Helper) -> u32 {
         NUM_FUNC_IMPORTS + self.helpers.iter().position(|x| *x == h).unwrap() as u32
     }

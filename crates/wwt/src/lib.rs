@@ -15,6 +15,7 @@ pub mod abi;
 pub mod codegen;
 pub mod discover;
 pub mod flags;
+pub mod fpu;
 mod fpu_helpers;
 pub mod ir;
 pub mod kernel;

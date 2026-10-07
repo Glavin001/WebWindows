@@ -232,7 +232,10 @@ impl Discovery {
         let mut va = start;
         loop {
             let Some(inst) = self.insts.get(&va) else {
-                return (out, None);
+                // Falling through into bytes that were not decoded (outside
+                // the region): leave the function there; decoding is retried
+                // when execution actually reaches them.
+                return (out, if va == start { None } else { Some(va) });
             };
             out.push(*inst);
             let next = inst.next_ip32();

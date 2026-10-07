@@ -134,6 +134,11 @@ pub fn lift_function(
         if b != entry && disc.functions.contains(&b) {
             continue;
         }
+        // Addresses with no decoded code (outside the region being
+        // translated) are left through the dispatcher.
+        if b != entry && !disc.insts.contains_key(&b) {
+            continue;
+        }
         if order.len() >= cfg.max_blocks {
             extra.push(b);
             continue;
@@ -292,6 +297,7 @@ impl<'a> Lifter<'a> {
         self.un(UnOp::I32Eqz, v)
     }
 
+    #[allow(dead_code)]
     fn not1(&mut self, v: V) -> V {
         self.bini(BinOp::I32Xor, v, 1)
     }
@@ -689,7 +695,7 @@ impl<'a> Lifter<'a> {
             return self.lift_fpu(i);
         }
         match m {
-            M::Nop | M::Pause | M::Lfence | M::Mfence | M::Sfence | M::Prefetchnta
+            M::Nop | M::Reservednop | M::Pause | M::Lfence | M::Mfence | M::Sfence | M::Prefetchnta
             | M::Prefetcht0 | M::Prefetcht1 | M::Prefetcht2 | M::Prefetchw | M::Endbr32 => {}
             M::Mov => self.lift_mov(i),
             M::Movzx | M::Movsx => {
@@ -1956,7 +1962,15 @@ impl<'a> Lifter<'a> {
                 let eq = self.bin(BinOp::I32Eq, old, acc);
                 let nv = self.select(eq, src, old);
                 self.write(d, nv, w);
-                old
+                // On success the accumulator keeps its value, which may just
+                // have been written if the destination is the accumulator.
+                let acc_now = self.read_reg(acc_reg);
+                let na = self.select(eq, acc_now, old);
+                self.write_reg(acc_reg, na);
+                let r = self.bin(BinOp::I32Sub, acc, old);
+                let r = self.mask(r, w);
+                self.set_flags(fl::SUB, w, r, acc, Some(old), None);
+                return;
             }
         };
         let r = self.bin(BinOp::I32Sub, acc, old);

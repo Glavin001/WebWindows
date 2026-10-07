@@ -256,3 +256,26 @@ pub fn translate_discovered(
         ir: funcs,
     })
 }
+
+/// Translates a single code snippet at `base` (used by the instruction test
+/// suite): everything outside the snippet is an exit.
+pub fn translate_snippet(code: &[u8], base: u32, cfg: &Config) -> (Function, Vec<(u32, String)>) {
+    let src = crate::discover::FlatCode {
+        base,
+        bytes: code.to_vec(),
+    };
+    let mut d = Discovery::new();
+    d.add_function_seed(base, SeedKind::Profile);
+    d.explore(&src);
+    let lifted = lift_function(&src, &d, base, &cfg.lift);
+    let mut f = lifted.func;
+    opt::optimize(&mut f, cfg.opt_level);
+    (f, lifted.unsupported)
+}
+
+/// Builds a module from already-optimized functions without direct calls
+/// between them (their entries may coincide).
+pub fn build_module(funcs: &[Function], cfg: &Config) -> Vec<u8> {
+    let gen = ModuleGen::new(&cfg.codegen, funcs).without_direct_calls();
+    gen.build(funcs, "{}")
+}
