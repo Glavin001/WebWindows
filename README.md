@@ -144,10 +144,9 @@ tools/oracle        native x86 oracle for instruction tests
 tools/wine          builds Wine's i386 PE DLLs, programs, tests and fonts
 tools/wine-layout   generates Wine's structure layouts for the runtime
 tools/torture       fetches GCC's torture tests
-tools/bench         CoreMark: native vs. translated (shims and Wine)
+tools/bench         CoreMark tiers incl. Emscripten, profiler, per-function comparison, A/B
 tools/site          assembles the static site and deploys it to Vercel
 tests/              fixtures, test programs, Csmith runtime, browser test
 spikes/             M1 spikes: memory size, Emscripten above the guest limit
 docs/               the plan (plan.md), each milestone's status, performance guide
-tools/bench         CoreMark tiers, profiler, per-function comparison, A/B
 ```
