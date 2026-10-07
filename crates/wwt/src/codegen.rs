@@ -27,6 +27,12 @@ use crate::reducible;
 pub struct CodegenConfig {
     pub mem_checks: bool,
     pub smc_checks: bool,
+    /// The guest limit the module will run under, when the host knows it at
+    /// translation time: checks then compare against a constant, which
+    /// frees a register in V8's code. `None` reads the `guest_limit` import,
+    /// so the module runs under any limit. Recorded in the module metadata;
+    /// the runtime refuses a module made for another limit.
+    pub guest_limit: Option<u32>,
 }
 
 impl Default for CodegenConfig {
@@ -34,6 +40,7 @@ impl Default for CodegenConfig {
         CodegenConfig {
             mem_checks: true,
             smc_checks: true,
+            guest_limit: None,
         }
     }
 }
@@ -1075,7 +1082,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.facts_local
             .iter()
             .chain(self.facts_tree.iter())
-            .any(|&(fv, fo)| fv == v && (fo.wrapping_sub(off) as i32).unsigned_abs() <= CHECK_WINDOW)
+            .any(|&(fv, fo)| {
+                fv == v && (fo.wrapping_sub(off) as i32).unsigned_abs() <= CHECK_WINDOW
+            })
     }
 
     /// Records that the address `v + off` passed a check.
@@ -1089,6 +1098,15 @@ impl<'g, 'a> FnGen<'g, 'a> {
         }
     }
 
+    /// Pushes the largest valid `address - NULL_LIMIT` for an access of up
+    /// to 16 bytes.
+    fn guest_check_value(&mut self) {
+        match self.m.cfg.guest_limit {
+            Some(l) => self.emit(W::I32Const(l.wrapping_sub(NULL_LIMIT + 16) as i32)),
+            None => self.emit(W::GlobalGet(G_GUEST_CHECK)),
+        }
+    }
+
     /// Emits an address check for `size` bytes at local `addr` + `off`.
     fn check_addr(&mut self, addr: u32, off: u32, dirty: StateMask, eip: u32) {
         self.emit(W::LocalGet(addr));
@@ -1099,7 +1117,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(W::LocalTee(self.tmp_i32b));
         self.emit(W::I32Const(NULL_LIMIT as i32));
         self.emit(W::I32Sub);
-        self.emit(W::GlobalGet(G_GUEST_CHECK));
+        self.guest_check_value();
         self.emit(W::I32GtU);
         self.emit(W::If(BlockType::Empty));
         self.raise(dirty & FAULT_SYNC, fault::ACCESS_VIOLATION, eip);
@@ -1455,7 +1473,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(W::I32Add);
         self.emit(W::I32Const(NULL_LIMIT as i32));
         self.emit(W::I32Sub);
-        self.emit(W::GlobalGet(G_GUEST_CHECK));
+        self.guest_check_value();
         self.emit(W::I32GtU);
         self.emit(W::I32Or);
         self.emit(W::If(BlockType::Empty));

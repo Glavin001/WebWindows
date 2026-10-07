@@ -204,6 +204,13 @@ export class Machine {
     if (meta && meta.abi_version !== undefined && meta.abi_version !== this.abi.version) {
       throw new Error(`${name}: ABI version ${meta.abi_version}, runtime expects ${this.abi.version}`);
     }
+    // Translated with the guest limit as a constant in its memory checks.
+    if (meta && meta.guest_limit !== undefined && meta.guest_limit !== this.guestLimit) {
+      throw new Error(
+        `${name}: translated for a guest limit of ${meta.guest_limit >>> 20} MB, this machine has ` +
+          `${this.guestLimit >>> 20} MB (translate with --guest-limit-mb ${this.guestLimit >>> 20})`,
+      );
+    }
     const base = this.table.length;
     this.table.grow(addrs.length);
     const env = {

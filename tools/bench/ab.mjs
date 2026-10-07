@@ -73,7 +73,7 @@ for (const v of variants) {
     else args.push(tok);
   }
   v.wasm = join(out, `${v.name.replace(/[^\w.-]/g, '_')}.wasm`);
-  execFileSync(wwt, ['translate', exe, '-o', v.wasm, ...args], { env, stdio: ['ignore', 'ignore', 'inherit'] });
+  execFileSync(wwt, ['translate', exe, '-o', v.wasm, '--guest-limit-mb', '1024', ...args], { env, stdio: ['ignore', 'ignore', 'inherit'] });
   v.scores = [];
 }
 

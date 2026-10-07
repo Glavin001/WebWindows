@@ -19,6 +19,7 @@ The tools live in `tools/bench/`:
 | `coremark.mjs` | Builds every tier, checks the checksums agree, benchmarks, prints the table (`--variants` attributes the cost of the memory checks) |
 | `profile.mjs` | Self time per function for the Emscripten and translated builds side by side (or any Node command) |
 | `inspect.mjs` | One function from both builds: instruction counts by kind, plus the x86, IR and both WebAssembly listings |
+| `ab.mjs` | A/B test of translator variants: interleaved rounds, medians, ratio to the first variant |
 
 ## Results
 
@@ -28,16 +29,22 @@ within one `coremark.mjs` run.
 
 | Build | Iterations/s | vs. native | vs. Emscripten |
 | --- | --- | --- | --- |
-| Native, `gcc -m32 -O2` | ~19,500–21,900 | 100% | — |
-| Emscripten `-O2`, Node | ~21,300–22,700 | ~97–116% | 100% |
-| `wwt`, M1 shims, Node: before this work | ~7,700 | ~35% | ~36% |
-| … with irreducible loops made reducible | ~8,300–9,000 | ~40% | ~40% |
-| … and the store map with inline invalidation | ~9,400–10,000 | ~45% | ~44% |
-| … no memory or code-write checks at all (`--variants`, for reference) | ~12,000 | ~55–60% | ~53% |
+| Native, `gcc -m32 -O2` | ~21,600 | 100% | — |
+| Native, `clang -m32 -O2` (LLVM 18) | ~18,700 | ~90% | — |
+| Emscripten `-O2`, Node (CRC rewrite off, see below) | ~20,500 | ~95% | 100% |
+| `wwt`, M1 shims, Node: before this work | ~7,700 | ~35% | ~37% |
+| … with irreducible loops made reducible | ~8,300–9,000 | ~40% | ~42% |
+| … and the store map with inline invalidation | ~9,400–10,000 | ~45% | ~47% |
+| … and fewer load checks, narrower operations, constant guest limit | **~10,500** | **~49%** | **~51%** |
+| Same, headless Chromium (translated in the page) | ~10,500–11,100 | ~50% | ~53% |
+| For reference: no code-write checks | ~11,800 | ~55% | ~57% |
+| For reference: no memory or code-write checks | ~12,600 | ~58% | ~61% |
 
-Translated Wine runs compute-bound code at the same speed as the M1 shims
-(its DLLs are only on the path for system calls; see
-[milestone-2.md](milestone-2.md#speed-coremark)).
+Translated Wine ran compute-bound code at the same speed as the M1 shims
+in M2 (its DLLs are only on the path for system calls; see
+[milestone-2.md](milestone-2.md#speed-coremark)). It was not re-measured
+here: Wine's DLLs were not built on this container. `coremark.mjs` runs the
+Wine tier when they are (`tools/wine/build.sh`).
 
 ### What changed and why
 
@@ -50,7 +57,7 @@ Translated Wine runs compute-bound code at the same speed as the M1 shims
   that dispatches to the entry that was meant, and the rest of the
   function is structured as usual (LLVM's WebAssemblyFixIrreducibleControlFlow
   scheme).
-* **Store checks** (`wwt::abi::store_map`). Each guest store used to do a
+* **Store checks** (`wwt::abi::store_map`, ABI 3). Each guest store used to do a
   bounds check and then a code-page check from a bitmap that called the
   host on a hit. Calls on cold paths are expensive even when not taken: V8
   doesn't know the branch is unlikely, so values live across it get
@@ -60,6 +67,42 @@ Translated Wine runs compute-bound code at the same speed as the M1 shims
   the guest limit go down a slow path that does the precise check. So do
   pages with translated code, where the translated code invalidates the
   page's lookup entry itself, with no call to the host.
+* **Fewer load checks.** A load within 4 KB of an address that already
+  passed a check, from the same unchanged base, skips its check. The only
+  difference is that such a load, if it lands within 4 KB of the null
+  region or the guest limit, reads memory instead of faulting.
+* **Narrower operations** (`opt::narrow`). `movsx` from memory becomes one
+  signed load, and `imul` (lifted as a 64-bit product for its flags)
+  becomes a 32-bit multiply once the flags are dead.
+* **Guest limit as a constant.** Hosts that know the guest limit when they
+  translate pass it (`wwt translate --guest-limit-mb`, or bits 16–31 of the
+  in-browser translator's flags). Memory checks then compare against an
+  immediate instead of a global, which frees a register in V8's code
+  (about 4%). The module records the limit, and the runtime refuses it
+  under another one. Without the option, modules read the limit at run
+  time as before.
+
+### What didn't help (measured with `ab.mjs`)
+
+* Running Binaryen's `wasm-opt` over the output (`wwt translate
+  --wasm-opt`): V8 already does the local cleanups it would.
+* Treating flags, or `ecx`/`edx`, as dead at `ret` and at calls: no
+  measurable change, and it would break hand-written assembly that passes
+  values that way.
+* Dropping the register write-back on fault paths entirely: no measurable
+  change once the code-write call was gone. Fault paths end in
+  `unreachable`, and V8 keeps them out of the way.
+* Making the store map's address a constant as well: under 1%.
+
+### Emscripten's CRC rewrite
+
+Recent LLVM recognizes CoreMark's bit-at-a-time CRC loops and replaces them
+with a 256-entry table lookup. GCC doesn't, and neither did LLVM 18. That's
+an algorithmic change, not WebAssembly being faster: Emscripten's `crcu32`
+has no loop at all. It's worth 7–14% to Emscripten on CoreMark (and is why
+Emscripten could beat native GCC). `coremark.mjs` turns it off
+(`-mllvm --loop-idiom-crc-strategy=disable`) so the WebAssembly ceiling
+runs the same algorithm as the `.exe`; `--emcc-crc` turns it back on.
 
 ## 0. Prerequisites
 
@@ -117,7 +160,18 @@ node tools/bench/profile.mjs                  # Emscripten, then wwt
 node tools/bench/profile.mjs --tier wwt --top 40
 node tools/bench/profile.mjs --translate "--no-mem-checks --no-smc-checks"
 node tools/bench/profile.mjs -- node runtime/node/run.mjs tests/programs/bench/bench.exe
+
+# Machine-code level, with Linux perf and V8's jitdump:
+node tools/bench/profile.mjs --perf --tier wwt
+node tools/bench/profile.mjs --tier wwt --annotate matrix_mul_matrix@
 ```
+
+`--annotate` lists the hottest x86-64 instructions V8 generated for the
+matching functions. Look for spills (`mov %r11,-0x58(%rbp)` inside a loop),
+reloads of values that should stay in registers, and checks
+(`lea -0x10000(%reg)`; `cmp $limit`). `perf` comes from `linux-tools`
+(`$PERF` points at it if it's not on `PATH`). In a VM without hardware
+counters it samples `cpu-clock`, which is enough.
 
 Translated modules carry a WebAssembly name section, so profiles (and the
 browser's DevTools) show translated functions as `symbol@address` when the
@@ -140,7 +194,22 @@ single entries. Multiply each share by the run time per iteration to compare
 absolute time: at 21,000 it/s an iteration takes 48 µs, at 9,500 it/s
 105 µs.
 
-## 3. Compare the code of one hot function
+## 3. A/B test an idea
+
+```sh
+node tools/bench/ab.mjs base= nosmc=--no-smc-checks
+node tools/bench/ab.mjs --rounds 9 head=@old.wasm now=
+node tools/bench/ab.mjs base= "try=MY_EXPERIMENT=1"     # env vars reach the translator
+```
+
+Each variant is translated once. Then every variant runs a fixed-iteration
+CoreMark in turn, round after round, so drift on a shared machine affects
+them all equally. The script reports medians and the change against the
+first variant. On the development container, single runs vary by 5–10%.
+With 7–9 rounds, a 3% difference is visible. A variant whose CRCs come out
+wrong is reported as failed.
+
+## 4. Compare the code of one hot function
 
 ```sh
 node tools/bench/inspect.mjs core_state_transition crcu32
@@ -161,7 +230,8 @@ our WebAssembly and Emscripten's WebAssembly to `target/bench/inspect/`.
 | Loads and stores at `esp+N` that Emscripten keeps in locals | x86 register spills and pushes. Fix: promote stack slots to locals |
 | Stores of registers to the CPU struct before calls, loads after | Register write-back at calls. Fix: direct calls with a known ABI |
 | `(x & 0xff) & 0xff`, `(x & 0xffff0000) \| …` | 8- and 16-bit register writes. V8 folds most of these (`--wasm-opt` doesn't help) |
-| `i32.sub 65536; global.get 2; i32.gt_u; if … fault` | Guest-limit check on loads. Fix: merge checks with the same base |
+| Stack spills in V8's code for a loop (see `--annotate`) | Register pressure: x86 registers, the CPU pointer, temporaries |
+| `i32.sub 65536; global.get 2` (or `i32.const`); `i32.gt_u; if … fault` | Guest-limit check. Fix: an available-checks dataflow across blocks, hoisting out of loops |
 | `global.get 3; i32.add; i32.load8_u; if` | Store-map check |
 | A `call` inside a rarely taken `if` | Forces spills around it; keep calls off hot paths (fault paths end in `unreachable`, which V8 treats as cold) |
 | `call_indirect` through the two-level lookup | Indirect calls and jumps. Fix: cache them or inline the lookup |
@@ -169,6 +239,22 @@ our WebAssembly and Emscripten's WebAssembly to `target/bench/inspect/`.
 
 Count instructions, memory operations and calls in both listings. Most of
 the gap comes from a few rows of this checklist.
+
+## Next steps
+
+In rough order of expected gain:
+
+1. **Stack slots as locals.** GCC's x86 code keeps locals and spilled
+   registers at `esp+N`. When a function's frame doesn't escape, those
+   slots can live in WebAssembly locals, as they do in Emscripten's code.
+2. **Calls with known callees.** A direct call writes back every dirty
+   register and reloads them afterwards. Per-function summaries of the
+   registers read and written would cut that to what the callee uses. A
+   fault inside the callee would then return through its callers, each
+   writing back its own registers.
+3. **Load checks across blocks and out of loops.** An available-checks
+   dataflow instead of the per-block and dominator-tree facts used now,
+   then range checks hoisted out of counted loops.
 
 ## Goal
 

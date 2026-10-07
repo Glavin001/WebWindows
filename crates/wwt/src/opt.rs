@@ -7,6 +7,8 @@
 //!   identities.
 //! * [`dce`]: whole-function liveness and dead-code elimination, which is
 //!   what removes flag computations nobody reads.
+//! * [`narrow`]: signed narrow loads and 32-bit multiplies where x86
+//!   semantics were spelled out with extensions and 64-bit products.
 //!
 //! [`analyze`] computes the facts code generation needs: which state vregs
 //! are dirty (differ from the CPU struct) at each point and which are live.
@@ -766,6 +768,87 @@ pub fn fold_address_offsets(f: &mut Function) {
     }
 }
 
+/// Peepholes that do the same work with narrower WebAssembly:
+///
+/// * an 8- or 16-bit load whose only use is a sign extension (`movsx`)
+///   becomes a signed load;
+/// * the low half of a 64-bit product of two extended 32-bit values
+///   (`imul`, which computes the full product for its flags) becomes a
+///   32-bit multiply; the 64-bit one dies if the flags are unused.
+///
+/// Relies on temporaries having a single definition, like [`simplify`].
+pub fn narrow(f: &mut Function) {
+    let n = f.vtypes.len();
+    let mut uses = vec![0u32; n];
+    let mut def: Vec<Option<(usize, usize)>> = vec![None; n];
+    for (bi, b) in f.blocks.iter().enumerate() {
+        for (k, inst) in b.insts.iter().enumerate() {
+            for u in inst.op.uses() {
+                uses[u as usize] += 1;
+            }
+            if let Some(d) = inst.dst {
+                if d >= NUM_STATE {
+                    def[d as usize] = Some((bi, k));
+                }
+            }
+        }
+        for u in b.term.uses() {
+            uses[u as usize] += 1;
+        }
+    }
+    let op_of = |f: &Function, v: V| -> Option<Op> {
+        def.get(v as usize)
+            .copied()
+            .flatten()
+            .map(|(b, k)| f.blocks[b].insts[k].op.clone())
+    };
+    let mut signed_loads = vec![];
+    for bi in 0..f.blocks.len() {
+        for k in 0..f.blocks[bi].insts.len() {
+            let new = match f.blocks[bi].insts[k].op {
+                Op::Un(ext @ (UnOp::I32Extend8S | UnOp::I32Extend16S), t)
+                    if t >= NUM_STATE
+                        && uses[t as usize] == 1
+                        && f.vtypes[t as usize] == Ty::I32 =>
+                {
+                    let size = if ext == UnOp::I32Extend8S { 1 } else { 2 };
+                    match op_of(f, t) {
+                        Some(Op::Load { mem, .. })
+                            if mem.size == size && !mem.signed && !mem.atomic =>
+                        {
+                            signed_loads.push(def[t as usize].unwrap());
+                            Some(Op::Copy(t))
+                        }
+                        _ => None,
+                    }
+                }
+                Op::Un(UnOp::I32WrapI64, x) => match op_of(f, x) {
+                    Some(Op::Bin(BinOp::I64Mul, a, b)) => {
+                        let ext = |v: V| match op_of(f, v) {
+                            Some(Op::Un(UnOp::I64ExtendI32S | UnOp::I64ExtendI32U, s)) => Some(s),
+                            _ => None,
+                        };
+                        match (ext(a), ext(b)) {
+                            (Some(a), Some(b)) => Some(Op::Bin(BinOp::I32Mul, a, b)),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(op) = new {
+                f.blocks[bi].insts[k].op = op;
+            }
+        }
+    }
+    for (b, k) in signed_loads {
+        if let Op::Load { mem, .. } = &mut f.blocks[b].insts[k].op {
+            mem.signed = true;
+        }
+    }
+}
+
 /// Runs the standard pipeline.
 pub fn optimize(f: &mut Function, level: u32) {
     lower_flags(f);
@@ -777,6 +860,7 @@ pub fn optimize(f: &mut Function, level: u32) {
     dce(f);
     simplify(f);
     fold_address_offsets(f);
+    narrow(f);
     dce(f);
 }
 

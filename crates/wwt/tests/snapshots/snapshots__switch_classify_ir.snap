@@ -94,8 +94,8 @@ function 0x404400:
     v144 = const 0xffffffe0
     v145 = I32Add ebp, v144
     store4.trusted [v145], v137
-    v147 = load1 [ebx]
-    v148 = I32Extend8S v147
+    v147 = load1s [ebx]
+    v148 = v147
     eax = v148
     v2848 = I32Eqz v148
     br v2848 ? b2 : b3

@@ -50,7 +50,8 @@ export async function runExe(exePath, argv, opts = {}) {
     const dir = mkdtempSync(join(tmpdir(), 'wwt-'));
     wasmPath = join(dir, basename(exePath) + '.wasm');
     const extra = opts.translateArgs ?? [];
-    execFileSync(wwt(), ['translate', exePath, '-o', wasmPath, ...extra], {
+    const limit = ['--guest-limit-mb', String(opts.guestLimitMB ?? 1024)];
+    execFileSync(wwt(), ['translate', exePath, '-o', wasmPath, ...limit, ...extra], {
       stdio: ['ignore', 'ignore', opts.quiet ? 'ignore' : 'inherit'],
     });
   }

@@ -20,13 +20,19 @@ fn guest_checks(code: &[u8]) -> usize {
 #[test]
 fn nearby_loads_share_a_check() {
     // mov eax, [ecx]; add eax, [ecx+4]; add eax, [ecx+8]; ret
-    assert_eq!(guest_checks(&[0x8b, 0x01, 0x03, 0x41, 0x04, 0x03, 0x41, 0x08, 0xc3]), 1);
+    assert_eq!(
+        guest_checks(&[0x8b, 0x01, 0x03, 0x41, 0x04, 0x03, 0x41, 0x08, 0xc3]),
+        1
+    );
 }
 
 #[test]
 fn redefined_base_is_checked_again() {
     // mov eax, [ecx]; mov ecx, [edx]; add eax, [ecx+4]; ret
-    assert_eq!(guest_checks(&[0x8b, 0x01, 0x8b, 0x0a, 0x03, 0x41, 0x04, 0xc3]), 3);
+    assert_eq!(
+        guest_checks(&[0x8b, 0x01, 0x8b, 0x0a, 0x03, 0x41, 0x04, 0xc3]),
+        3
+    );
 }
 
 #[test]

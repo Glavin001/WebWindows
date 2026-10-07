@@ -35,6 +35,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const wineBuild = process.env.WINE_BUILD ?? '/opt/wine-build';
 const wineSrc = process.env.WINE_SRC ?? '/opt/wine-src/wine-11.0';
 const cacheDir = join(root, 'target/wine-cache');
+// Wine's address space; translations compile it into their memory checks.
+const GUEST_LIMIT = 0x8000_0000;
 
 function wwt() {
   return ['target/release/wwt', 'target/debug/wwt']
@@ -56,7 +58,9 @@ function translate(path, bytes) {
     // rename, so a reader never sees a partial file.
     const tmp = join(cacheDir, `${hash}.${process.pid}`);
     writeFileSync(`${tmp}.bin`, bytes);
-    execFileSync(wwt(), ['translate', `${tmp}.bin`, '-o', `${tmp}.wasm`], { stdio: ['ignore', 'ignore', 'inherit'] });
+    execFileSync(wwt(), ['translate', `${tmp}.bin`, '-o', `${tmp}.wasm`, '--guest-limit-mb', String(GUEST_LIMIT >>> 20)], {
+      stdio: ['ignore', 'ignore', 'inherit'],
+    });
     renameSync(`${tmp}.wasm`, out);
     rmSync(`${tmp}.bin`);
   }
@@ -161,7 +165,7 @@ const layout = useUnix ? JSON.parse(readFileSync(join(unixDir, 'wine_unix.json')
 const machine = new Machine({
   abi,
   kernel,
-  guestLimit: 0x8000_0000,
+  guestLimit: GUEST_LIMIT,
   ...(layout && { nativeSize: layout.nativeSize, extraSize: layout.extraSize }),
   log: trace ? (s) => stderr(`[machine] ${s}\n`) : undefined,
 });

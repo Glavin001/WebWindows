@@ -148,7 +148,7 @@ async function runOne(p, opt) {
     return { status: 'skip', detail: 'needs a C99 runtime (msvcrt.dll is not one)' };
   }
   const wasm = b.exe + '.wasm';
-  const tr = await sh(wwt, ['translate', b.exe, '-o', wasm]);
+  const tr = await sh(wwt, ['translate', b.exe, '-o', wasm, '--guest-limit-mb', '1024']);
   if (tr.status !== 0) return { status: 'fail', detail: 'translate: ' + tr.stderr.slice(-800) };
   const t0 = performance.now();
   // With --wine the program runs on translated Wine DLLs (Milestone 2)

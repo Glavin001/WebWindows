@@ -94,6 +94,9 @@ pub struct ImageMeta {
 #[derive(Serialize)]
 struct Meta<'a> {
     abi_version: u32,
+    /// Set when checks were compiled against this guest limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    guest_limit: Option<u32>,
     image: Option<&'a ImageMeta>,
     report: &'a Report,
 }
@@ -318,6 +321,7 @@ pub fn translate_discovered(
     let entries: Vec<u32> = funcs.iter().map(|f| f.entry).collect();
     let meta_json = serde_json::to_string(&Meta {
         abi_version: abi::ABI_VERSION,
+        guest_limit: cfg.codegen.guest_limit,
         image: meta,
         report: &report,
     })?;

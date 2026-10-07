@@ -39,6 +39,12 @@ struct TranslateOpts {
     /// Profile file with one hex address per line (written by the runtime).
     #[arg(long)]
     profile: Option<PathBuf>,
+    /// Guest limit (MB) the module will run under: memory checks compare
+    /// against a constant, which is faster, and the runtime refuses the
+    /// module under any other limit. Without it, the module reads the limit
+    /// at run time.
+    #[arg(long)]
+    guest_limit_mb: Option<u32>,
 }
 
 impl TranslateOpts {
@@ -50,6 +56,7 @@ impl TranslateOpts {
         c.lift.smc_checks = !self.no_smc_checks;
         c.codegen.smc_checks = !self.no_smc_checks;
         c.lift.strict_ordering = self.strict_ordering;
+        c.codegen.guest_limit = self.guest_limit_mb.map(|mb| mb << 20);
         c
     }
 

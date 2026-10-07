@@ -160,7 +160,7 @@ if (command) {
   if (tier === 'wwt' || tier === 'both') {
     const exe = join(bench, 'coremark.exe');
     const wasm = join(bench, 'coremark.prof.wasm');
-    execFileSync(join(root, 'target/release/wwt'), ['translate', exe, '-o', wasm, ...translate], { stdio: 'ignore' });
+    execFileSync(join(root, 'target/release/wwt'), ['translate', exe, '-o', wasm, '--guest-limit-mb', '1024', ...translate], { stdio: 'ignore' });
     run('wwt, M1 shims', [join(root, 'runtime/node/run.mjs'), '--wasm', wasm, exe]);
   }
 }

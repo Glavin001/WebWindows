@@ -24,6 +24,10 @@ async function sha256(bytes) {
 
 // ---- Cache in the origin private file system --------------------------------
 
+// Wine's address space (the bundle is translated for it, see
+// runtime/node/wine-bundle.mjs).
+const WINE_GUEST_LIMIT = 0x8000_0000;
+
 async function cacheDir() {
   try {
     const root = await navigator.storage.getDirectory();
@@ -97,7 +101,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
   files.set(exeDos, exe);
   const translateTimed = (path, bytes) => {
     const t = performance.now();
-    const w = ft.translatePe(bytes);
+    const w = ft.translatePe(bytes, { guestLimit: WINE_GUEST_LIMIT });
     log(`translated ${path} in ${(performance.now() - t).toFixed(0)} ms`);
     return w;
   };
@@ -123,7 +127,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
   const machine = new Machine({
     abi,
     kernel: ft.kernel(),
-    guestLimit: 0x8000_0000,
+    guestLimit: WINE_GUEST_LIMIT,
     ...(layout && { nativeSize: layout.nativeSize, extraSize: layout.extraSize }),
     log,
   });
@@ -182,7 +186,7 @@ onmessage = async (e) => {
     const ft = await FastTranslator.load(await (await fetch(translatorUrl)).arrayBuffer());
     const abi = ft.abi();
     const exe = new Uint8Array(exeBytes);
-    const key = `${await sha256(exe)}-abi${abi.version}`;
+    const key = `${await sha256(exe)}-abi${abi.version}-g${guestLimitMB}`;
     const dir = noCache ? null : await cacheDir();
     if (wine) {
       const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, display });
@@ -197,7 +201,7 @@ onmessage = async (e) => {
     let translated = false;
     if (!wasm) {
       const t = performance.now();
-      wasm = ft.translatePe(exe, { profile });
+      wasm = ft.translatePe(exe, { profile, guestLimit: guestLimitMB << 20 });
       if (!wasm.length) throw new Error('translation failed');
       translated = true;
       log(`translated ${exeName} in ${(performance.now() - t).toFixed(0)} ms (${(wasm.length / 1024).toFixed(0)} KB${profile.length ? `, ${profile.length} profiled entries` : ''})`);

@@ -63,7 +63,10 @@ for (const d of [...DLLS, ...(withUnix ? GUI_DLLS : [])]) {
     }
   }
   writeFileSync(join(out, `${d}.dll`), bytes);
-  execFileSync(wwt, ['translate', join(out, `${d}.dll`), '-o', join(out, `${d}.dll.wasm`)], { stdio: ['ignore', 'ignore', 'inherit'] });
+  // The browser runs Wine with a 2 GB guest (runtime/web/worker.mjs).
+  execFileSync(wwt, ['translate', join(out, `${d}.dll`), '-o', join(out, `${d}.dll.wasm`), '--guest-limit-mb', '2048'], {
+    stdio: ['ignore', 'ignore', 'inherit'],
+  });
   manifest.dlls[`${d}.dll`] = { pe: `${d}.dll`, wasm: `${d}.dll.wasm` };
 }
 for (const n of NLS) {

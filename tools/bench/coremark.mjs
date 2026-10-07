@@ -176,14 +176,19 @@ function run(tier, file, wasm) {
     ok: /Correct operation validated/.test(text) || (/^\[0\]crcfinal/m.test(text) && !/ERROR! \w+ crc/.test(text)),
     score: score ? Number(score[1]) : null,
     sums,
-    error: r.status !== 0 ? (r.stderr ?? '').trim().split('\n').slice(-3).join('\n') : null,
+    error:
+      r.status !== 0 || r.signal
+        ? `exit ${r.status ?? r.signal}: ${(r.stderr ?? '').trim().split('\n').slice(-3).join('\n')}`
+        : null,
+    // Why CoreMark did not validate the run (e.g. it ran under 10 s).
+    complaint: text.split('\n').filter((l) => /ERROR|Errors detected/.test(l)).join(' ') || null,
   };
 }
 
 /** Translates the .exe ahead of time so translation is not part of the run. */
 function translate(exe, extra, name, quiet = false) {
   const wasm = join(out, `${name}.wasm`);
-  execFileSync(wwt, ['translate', exe, '-o', wasm, ...extra], { stdio: ['ignore', quiet ? 'ignore' : 'inherit', quiet ? 'ignore' : 'inherit'] });
+  execFileSync(wwt, ['translate', exe, '-o', wasm, '--guest-limit-mb', '1024', ...extra], { stdio: ['ignore', quiet ? 'ignore' : 'inherit', quiet ? 'ignore' : 'inherit'] });
   return wasm;
 }
 
@@ -221,10 +226,17 @@ if (opts.check || opts.checkOnly) {
 const rows = [];
 const bench = (label, tier, file, wasm) => {
   const scores = [];
-  for (let i = 0; i < opts.runs; i++) {
+  for (let i = 0, retried = false; i < opts.runs; i++) {
     const r = run(tier, file, wasm);
     if (!r.ok || r.score === null) {
-      console.error(`${label}: run failed${r.error ? `\n${r.error}` : ''}`);
+      console.error(`${label}: run failed: ${r.error ?? r.complaint ?? 'no result printed'}`);
+      // One retry: CoreMark rejects a run that finished in under 10 s,
+      // which machine load changing after its calibration can cause.
+      if (!retried) {
+        retried = true;
+        i--;
+        continue;
+      }
       break;
     }
     scores.push(r.score);

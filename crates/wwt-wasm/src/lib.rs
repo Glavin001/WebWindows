@@ -17,6 +17,15 @@ use wwt::discover::FlatCode;
 const FLAG_NO_MEM_CHECKS: u32 = 1;
 const FLAG_NO_SMC_CHECKS: u32 = 2;
 
+/// Bits 16-31 of `flags`: the guest limit in MB the module will run under
+/// (see `CodegenConfig::guest_limit`), or 0 to read it at run time.
+fn guest_limit(flags: u32) -> Option<u32> {
+    match flags >> 16 {
+        0 => None,
+        mb => Some(mb << 20),
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn wwt_alloc(len: usize) -> *mut u8 {
     let mut v = Vec::<u8>::with_capacity(len.max(1));
@@ -73,6 +82,7 @@ pub unsafe extern "C" fn wwt_translate(
     cfg.codegen.mem_checks = mc;
     cfg.lift.smc_checks = sc;
     cfg.codegen.smc_checks = sc;
+    cfg.codegen.guest_limit = guest_limit(flags);
     let src = FlatCode { base, bytes: code };
     match wwt::translate::translate_region_with_known(&src, &entries, &known, &cfg) {
         Ok(t) => result(t.wasm),
@@ -112,6 +122,7 @@ pub unsafe extern "C" fn wwt_translate_pe(
     cfg.codegen.mem_checks = mc;
     cfg.lift.smc_checks = sc;
     cfg.codegen.smc_checks = sc;
+    cfg.codegen.guest_limit = guest_limit(flags);
     let Ok(pe) = wwt::pe::PeFile::parse(data) else {
         return result(vec![]);
     };
