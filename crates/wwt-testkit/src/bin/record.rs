@@ -6,7 +6,9 @@
 //! instead of writing them (used by CI on x86 runners).
 
 use anyhow::{bail, Result};
+use std::collections::BTreeSet;
 use wwt_testkit::case::{read_fixtures, write_fixtures, Fixture};
+use wwt_testkit::compare::compare;
 use wwt_testkit::gen::{cases_for, extra_cases, forms, Group, Rng};
 use wwt_testkit::{oracle, suite};
 
@@ -49,17 +51,27 @@ fn main() -> Result<()> {
             .map(|(case, out)| Fixture { case, out })
             .collect();
         if check {
+            // Compared like the translator's results: undefined flags and
+            // results may legitimately differ between CPU models.
             let old = read_fixtures(&path)?;
-            let bad = old
-                .iter()
-                .zip(&fixtures)
-                .filter(|(a, b)| a.out != b.out)
-                .count();
+            let mut bad = 0;
+            let mut shown = BTreeSet::new();
+            for (a, b) in old.iter().zip(&fixtures) {
+                let diffs = compare(&a.case, &a.out, &b.out);
+                if diffs.is_empty() {
+                    continue;
+                }
+                bad += 1;
+                if shown.insert(a.case.form.clone()) && shown.len() <= 40 {
+                    eprintln!("  {} ({}): {}", a.case.form, a.case.code, diffs.join("; "));
+                }
+            }
             if bad > 0 {
                 bail!(
-                    "{}: {bad} of {} cases differ on this CPU",
+                    "{}: {bad} of {} cases differ on this CPU ({} forms)",
                     g.name(),
-                    old.len()
+                    old.len(),
+                    shown.len()
                 );
             }
             eprintln!("{}: {} cases match this CPU", g.name(), old.len());
