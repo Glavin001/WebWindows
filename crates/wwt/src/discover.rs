@@ -20,30 +20,30 @@ use crate::pe::Image;
 /// memory at run time.
 pub trait CodeSource {
     /// Bytes starting at `va`, as many as are available.
-    fn bytes(&self, va: u32) -> &[u8];
+    fn bytes(&self, va: u64) -> &[u8];
     /// Whether `va` is plausibly executable code.
-    fn is_code(&self, va: u32) -> bool;
-    fn read_u32(&self, va: u32) -> Option<u32> {
+    fn is_code(&self, va: u64) -> bool;
+    fn read_u32(&self, va: u64) -> Option<u32> {
         let b = self.bytes(va);
         (b.len() >= 4).then(|| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
-    fn read_u64(&self, va: u32) -> Option<u64> {
+    fn read_u64(&self, va: u64) -> Option<u64> {
         let b = self.bytes(va);
         (b.len() >= 8).then(|| u64::from_le_bytes(b[..8].try_into().unwrap()))
     }
     /// Whether a value stored at `va` can be assumed to stay constant, so a
     /// jump table there can be trusted (read-only data or code).
-    fn is_readonly(&self, va: u32) -> bool;
+    fn is_readonly(&self, va: u64) -> bool;
 }
 
 impl CodeSource for Image {
-    fn bytes(&self, va: u32) -> &[u8] {
+    fn bytes(&self, va: u64) -> &[u8] {
         self.bytes_from(va)
     }
-    fn is_code(&self, va: u32) -> bool {
+    fn is_code(&self, va: u64) -> bool {
         Image::is_code(self, va)
     }
-    fn is_readonly(&self, va: u32) -> bool {
+    fn is_readonly(&self, va: u64) -> bool {
         self.section_of(va).is_some_and(|s| !s.is_writable())
     }
 }
@@ -51,21 +51,21 @@ impl CodeSource for Image {
 /// A flat region of memory with every byte treated as code, used for
 /// snippets in tests and for run-time (fast mode) translation.
 pub struct FlatCode {
-    pub base: u32,
+    pub base: u64,
     pub bytes: Vec<u8>,
 }
 
 impl CodeSource for FlatCode {
-    fn bytes(&self, va: u32) -> &[u8] {
+    fn bytes(&self, va: u64) -> &[u8] {
         if va < self.base || (va - self.base) as usize >= self.bytes.len() {
             return &[];
         }
         &self.bytes[(va - self.base) as usize..]
     }
-    fn is_code(&self, va: u32) -> bool {
+    fn is_code(&self, va: u64) -> bool {
         va >= self.base && ((va - self.base) as usize) < self.bytes.len()
     }
-    fn is_readonly(&self, _va: u32) -> bool {
+    fn is_readonly(&self, _va: u64) -> bool {
         true
     }
 }
@@ -73,9 +73,9 @@ impl CodeSource for FlatCode {
 #[derive(Debug, Clone)]
 pub struct JumpTable {
     /// Address of the first table entry.
-    pub base: u32,
+    pub base: u64,
     /// Targets in table order.
-    pub targets: Vec<u32>,
+    pub targets: Vec<u64>,
     /// Bytes per entry: 4, or 8 for x86-64 tables of absolute addresses.
     /// The jump's table load reads entry `(load address - base) / size`.
     pub entry_size: u32,
@@ -85,20 +85,20 @@ pub struct JumpTable {
 pub struct Discovery {
     /// 32-bit or 64-bit code (selects the decoder).
     pub mode: Mode,
-    pub insts: HashMap<u32, Instruction>,
+    pub insts: HashMap<u64, Instruction>,
     /// Addresses where a basic block must start.
-    pub leaders: BTreeSet<u32>,
+    pub leaders: BTreeSet<u64>,
     /// Function entry points.
-    pub functions: BTreeSet<u32>,
+    pub functions: BTreeSet<u64>,
     /// Jump tables keyed by the address of the indirect `jmp`.
-    pub jump_tables: HashMap<u32, JumpTable>,
+    pub jump_tables: HashMap<u64, JumpTable>,
     /// Addresses where decoding failed.
-    pub invalid: BTreeSet<u32>,
+    pub invalid: BTreeSet<u64>,
     /// Where each seed came from, for reporting.
-    pub seed_kinds: BTreeMap<u32, SeedKind>,
+    pub seed_kinds: BTreeMap<u64, SeedKind>,
     /// Function entries translated elsewhere (fast mode): treated as
     /// functions but not decoded or translated again.
-    pub external: BTreeSet<u32>,
+    pub external: BTreeSet<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -114,17 +114,17 @@ pub enum SeedKind {
     Pdata,
 }
 
-pub fn decode_one(src: &dyn CodeSource, va: u32) -> Option<Instruction> {
+pub fn decode_one(src: &dyn CodeSource, va: u64) -> Option<Instruction> {
     decode_one_in(src, va, Mode::X86)
 }
 
-pub fn decode_one_in(src: &dyn CodeSource, va: u32, mode: Mode) -> Option<Instruction> {
+pub fn decode_one_in(src: &dyn CodeSource, va: u64, mode: Mode) -> Option<Instruction> {
     let bytes = src.bytes(va);
     if bytes.is_empty() {
         return None;
     }
     let n = bytes.len().min(15);
-    let mut d = Decoder::with_ip(mode.bitness(), &bytes[..n], va as u64, DecoderOptions::NONE);
+    let mut d = Decoder::with_ip(mode.bitness(), &bytes[..n], va, DecoderOptions::NONE);
     let i = d.decode();
     (i.code() != Code::INVALID).then_some(i)
 }
@@ -158,7 +158,7 @@ impl Discovery {
         }
     }
 
-    pub fn add_function_seed(&mut self, va: u32, kind: SeedKind) {
+    pub fn add_function_seed(&mut self, va: u64, kind: SeedKind) {
         self.functions.insert(va);
         self.leaders.insert(va);
         self.seed_kinds.entry(va).or_insert(kind);
@@ -167,8 +167,8 @@ impl Discovery {
     /// Explores everything reachable from the current functions and leaders.
     /// `region` restricts decoding to `[start, end)` when given.
     pub fn explore(&mut self, src: &dyn CodeSource) {
-        let mut work: VecDeque<u32> = self.leaders.iter().copied().collect();
-        let mut done: BTreeSet<u32> = BTreeSet::new();
+        let mut work: VecDeque<u64> = self.leaders.iter().copied().collect();
+        let mut done: BTreeSet<u64> = BTreeSet::new();
         while let Some(start) = work.pop_front() {
             if !done.insert(start) || self.external.contains(&start) {
                 continue;
@@ -192,8 +192,8 @@ impl Discovery {
                         }
                     },
                 };
-                let next = inst.next_ip32();
-                let mut push = |d: &mut Discovery, t: u32, func: bool| {
+                let next = inst.next_ip();
+                let mut push = |d: &mut Discovery, t: u64, func: bool| {
                     if func {
                         d.functions.insert(t);
                         d.seed_kinds.entry(t).or_insert(SeedKind::Call);
@@ -257,7 +257,7 @@ impl Discovery {
     /// control-flow instruction, a leader or undecodable bytes. Returns the
     /// instructions and, when the block ran into a leader or ended in an
     /// instruction that falls through, the fall-through address.
-    pub fn block(&self, start: u32) -> (Vec<Instruction>, Option<u32>) {
+    pub fn block(&self, start: u64) -> (Vec<Instruction>, Option<u64>) {
         let mut out = vec![];
         let mut va = start;
         loop {
@@ -268,7 +268,7 @@ impl Discovery {
                 return (out, if va == start { None } else { Some(va) });
             };
             out.push(*inst);
-            let next = inst.next_ip32();
+            let next = inst.next_ip();
             if ends_block(inst) {
                 return (out, (!no_fallthrough(inst)).then_some(next));
             }
@@ -280,10 +280,10 @@ impl Discovery {
     }
 
     /// Finds the instruction that ends just before `va` in linear order.
-    fn prev_inst(&self, va: u32) -> Option<Instruction> {
-        (1..=15u32).find_map(|back| {
+    fn prev_inst(&self, va: u64) -> Option<Instruction> {
+        (1..=15u64).find_map(|back| {
             let a = va.checked_sub(back)?;
-            self.insts.get(&a).filter(|i| i.next_ip32() == va).copied()
+            self.insts.get(&a).filter(|i| i.next_ip() == va).copied()
         })
     }
 }
@@ -407,7 +407,7 @@ fn sym_operand(insts: &[Instruction], idx: usize, i: &Instruction, n: u32, depth
 fn find_jump_table(
     d: &Discovery,
     src: &dyn CodeSource,
-    jmp_va: u32,
+    jmp_va: u64,
     jmp: &Instruction,
 ) -> Option<JumpTable> {
     // Collect the block's instructions leading up to the jump, walking back
@@ -423,7 +423,7 @@ fn find_jump_table(
             break;
         }
         insts.push(p);
-        va = p.ip32();
+        va = p.ip();
     }
     insts.reverse();
     let jidx = insts.len() - 1;
@@ -436,17 +436,19 @@ fn find_jump_table(
     if rest.len() != 1 || !matches!(&rest[0], Sym::Mul(_, 4)) {
         return None;
     }
+    let base = base as u64;
     if !src.is_readonly(base) && !src.is_code(base) {
         return None;
     }
     let bound = find_bound(&insts);
-    let limit = bound.unwrap_or(1024).min(4096);
+    let limit = bound.unwrap_or(1024).min(4096) as u64;
     let mut targets = vec![];
     let jmp_section_code = src.is_code(jmp_va);
     for k in 0..limit {
         let Some(t) = src.read_u32(base + k * 4) else {
             break;
         };
+        let t = t as u64;
         if !src.is_code(t) || !jmp_section_code {
             break;
         }
@@ -469,7 +471,7 @@ fn find_jump_table(
 
 /// The instructions of the block before `jmp_va` (walking back through
 /// fall-through predecessors), ending with the jump.
-fn block_before(d: &Discovery, jmp_va: u32, jmp: &Instruction) -> Vec<Instruction> {
+fn block_before(d: &Discovery, jmp_va: u64, jmp: &Instruction) -> Vec<Instruction> {
     let mut insts = vec![*jmp];
     let mut va = jmp_va;
     while insts.len() < 12 {
@@ -481,7 +483,7 @@ fn block_before(d: &Discovery, jmp_va: u32, jmp: &Instruction) -> Vec<Instructio
             break;
         }
         insts.push(p);
-        va = p.ip32();
+        va = p.ip();
     }
     insts.reverse();
     insts
@@ -524,13 +526,13 @@ fn const_reg(insts: &[Instruction], idx: usize, r: Register) -> Option<u64> {
 fn find_jump_table64(
     d: &Discovery,
     src: &dyn CodeSource,
-    jmp_va: u32,
+    jmp_va: u64,
     jmp: &Instruction,
 ) -> Option<JumpTable> {
     let insts = block_before(d, jmp_va, jmp);
     let jidx = insts.len() - 1;
     let bound = find_bound(&insts);
-    let limit = bound.unwrap_or(1024).min(4096);
+    let limit = bound.unwrap_or(1024).min(4096) as u64;
     let jmp_section_code = src.is_code(jmp_va);
     if !jmp_section_code {
         return None;
@@ -544,10 +546,6 @@ fn find_jump_table64(
             return None;
         }
         let base = jmp.memory_displacement64();
-        if base >> 32 != 0 {
-            return None;
-        }
-        let base = base as u32;
         if !src.is_readonly(base) && !src.is_code(base) {
             return None;
         }
@@ -555,13 +553,13 @@ fn find_jump_table64(
             let Some(t) = src.read_u64(base + k * 8) else {
                 break;
             };
-            if t >> 32 != 0 || !src.is_code(t as u32) {
+            if !src.is_code(t) {
                 break;
             }
             if bound.is_none() && k > 0 && d.functions.contains(&(base + k * 8)) {
                 break;
             }
-            targets.push(t as u32);
+            targets.push(t);
         }
         return (!targets.is_empty()).then_some(JumpTable {
             base,
@@ -599,10 +597,6 @@ fn find_jump_table64(
             continue;
         };
         let base = x.wrapping_add(load.memory_displacement64());
-        if base >> 32 != 0 || x >> 32 != 0 {
-            return None;
-        }
-        let base = base as u32;
         if !src.is_readonly(base) && !src.is_code(base) {
             return None;
         }
@@ -610,7 +604,8 @@ fn find_jump_table64(
             let Some(e) = src.read_u32(base + k * 4) else {
                 break;
             };
-            let t = (x as u32).wrapping_add(e);
+            // GCC's entries are signed offsets from the table.
+            let t = x.wrapping_add(e as i32 as i64 as u64);
             if !src.is_code(t) {
                 break;
             }
@@ -652,7 +647,7 @@ fn find_bound(insts: &[Instruction]) -> Option<u32> {
 /// Scans a data range for 32-bit values that point at valid instruction
 /// starts in code, returning plausible code pointers (vtables, callback
 /// tables). Each candidate is confirmed by decoding a few instructions.
-pub fn scan_data_for_code_pointers(src: &dyn CodeSource, start: u32, end: u32) -> Vec<u32> {
+pub fn scan_data_for_code_pointers(src: &dyn CodeSource, start: u64, end: u64) -> Vec<u64> {
     scan_data_for_code_pointers_in(src, start, end, Mode::X86)
 }
 
@@ -660,20 +655,17 @@ pub fn scan_data_for_code_pointers(src: &dyn CodeSource, start: u32, end: u32) -
 /// values at 8-byte alignment.
 pub fn scan_data_for_code_pointers_in(
     src: &dyn CodeSource,
-    start: u32,
-    end: u32,
+    start: u64,
+    end: u64,
     mode: Mode,
-) -> Vec<u32> {
+) -> Vec<u64> {
     let mut out = vec![];
     if mode == Mode::X64 {
         let mut va = (start + 7) & !7;
         while va + 8 <= end {
             if let Some(v) = src.read_u64(va) {
-                if v >> 32 == 0
-                    && src.is_code(v as u32)
-                    && plausible_function_start(src, v as u32, mode)
-                {
-                    out.push(v as u32);
+                if src.is_code(v) && plausible_function_start(src, v, mode) {
+                    out.push(v);
                 }
             }
             va += 8;
@@ -685,6 +677,7 @@ pub fn scan_data_for_code_pointers_in(
     let mut va = start;
     while va + 4 <= end {
         if let Some(v) = src.read_u32(va) {
+            let v = v as u64;
             if src.is_code(v) && plausible_function_start(src, v, mode) {
                 out.push(v);
             }
@@ -696,7 +689,7 @@ pub fn scan_data_for_code_pointers_in(
     out
 }
 
-fn plausible_function_start(src: &dyn CodeSource, va: u32, mode: Mode) -> bool {
+fn plausible_function_start(src: &dyn CodeSource, va: u64, mode: Mode) -> bool {
     let mut a = va;
     for _ in 0..4 {
         let Some(i) = decode_one_in(src, a, mode) else {
@@ -716,7 +709,7 @@ fn plausible_function_start(src: &dyn CodeSource, va: u32, mode: Mode) -> bool {
         if ends_block(&i) {
             return true;
         }
-        a = i.next_ip32();
+        a = i.next_ip();
     }
     true
 }

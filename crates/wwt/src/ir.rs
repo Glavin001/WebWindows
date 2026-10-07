@@ -850,12 +850,12 @@ pub struct Inst {
     pub dst: Option<V>,
     pub op: Op,
     /// Address of the x86 instruction this came from.
-    pub eip: u32,
+    pub eip: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CallTarget {
-    Direct(u32),
+    Direct(u64),
     Indirect(V),
 }
 
@@ -879,11 +879,11 @@ pub enum Term {
     /// `cont` when the callee returns to `ret`, otherwise leaves the function.
     Call {
         target: CallTarget,
-        ret: u32,
+        ret: u64,
         cont: BlockId,
     },
     /// Leave the function, continuing at a known address.
-    Exit(u32),
+    Exit(u64),
     /// x86 `ret`: leave the function, returning the popped address to the
     /// caller, which continues inline when it matches the expected address.
     Ret(V),
@@ -892,7 +892,7 @@ pub enum Term {
     /// Raise a fault at `eip`.
     Fault {
         code: u32,
-        eip: u32,
+        eip: u64,
     },
     /// Placeholder during construction.
     None,
@@ -983,7 +983,7 @@ impl Term {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
     /// x86 address this block starts at (for diagnostics and maps).
-    pub addr: u32,
+    pub addr: u64,
     pub insts: Vec<Inst>,
     pub term: Term,
 }
@@ -991,7 +991,7 @@ pub struct Block {
 #[derive(Debug, Clone)]
 pub struct Function {
     /// x86 address of the entry point.
-    pub entry: u32,
+    pub entry: u64,
     pub mode: Mode,
     /// The CPU pointer and native addresses are i64 (64-bit memory).
     pub mem64: bool,
@@ -1002,11 +1002,11 @@ pub struct Function {
 }
 
 impl Function {
-    pub fn new(entry: u32) -> Function {
+    pub fn new(entry: u64) -> Function {
         Function::new_in(entry, Mode::X86, false)
     }
 
-    pub fn new_in(entry: u32, mode: Mode, mem64: bool) -> Function {
+    pub fn new_in(entry: u64, mode: Mode, mem64: bool) -> Function {
         let mut vtypes = vec![Ty::I32; NUM_STATE as usize];
         for i in 0..8 {
             vtypes[(XMM0 + i) as usize] = Ty::V128;
@@ -1045,7 +1045,7 @@ impl Function {
         self.vtypes.len() as V - 1
     }
 
-    pub fn new_block(&mut self, addr: u32) -> BlockId {
+    pub fn new_block(&mut self, addr: u64) -> BlockId {
         self.blocks.push(Block {
             addr,
             insts: vec![],

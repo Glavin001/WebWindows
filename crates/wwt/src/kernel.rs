@@ -2,7 +2,7 @@
 //! loop and the function placed in table slot 0, which handles addresses
 //! with no translation (host API thunks and code not yet translated).
 
-use crate::abi::{addr, cpu};
+use crate::abi::{addr, cpu, cpu64};
 
 pub fn kernel_wat() -> String {
     kernel_wat_for(false)
@@ -13,6 +13,62 @@ pub fn kernel_wat() -> String {
 /// lookup table holds 8-byte pointers. x86 code addresses stay 32-bit.
 pub fn kernel64_wat() -> String {
     kernel_wat_for(true)
+}
+
+/// The kernel for x86-64 code on a 64-bit memory, whose code addresses are
+/// 64-bit: functions return an i64, eip lives in `cpu64::RIP`, and the
+/// lookup clamps the page number to `code_pages` (the first-level table's
+/// last entry points at an empty second-level table).
+pub fn kernel_code64_wat() -> String {
+    format!(
+        r#"(module
+  (type $fn (func (param i64) (result i64)))
+  (import "env" "memory" (memory i64 1 {max_pages} shared))
+  (import "env" "table" (table 1 funcref))
+  (import "env" "lookup_l1" (global $l1 i64))
+  (import "env" "code_pages" (global $pages i64))
+  (import "env" "thunk_base" (global $tb i64))
+  (import "env" "thunk_size" (global $ts i64))
+  (import "env" "host_call" (func $host_call (param i64 i64) (result i64)))
+  (import "env" "miss" (func $miss (param i64 i64) (result i32)))
+
+  (func $lookup (export "lookup") (param $t i64) (result i32)
+    (local $p i64)
+    (local.set $p (i64.shr_u (local.get $t) (i64.const 12)))
+    (i32.load
+      (i64.add
+        (i64.load (i64.add (global.get $l1)
+                           (i64.shl (select (local.get $p) (global.get $pages)
+                                            (i64.lt_u (local.get $p) (global.get $pages)))
+                                    (i64.const 3))))
+        (i64.shl (i64.and (local.get $t) (i64.const 0xfff)) (i64.const 2)))))
+
+  (func $miss_entry (export "miss_entry") (type $fn) (param $cpu i64) (result i64)
+    (local $t i64)
+    (local.set $t (i64.load offset={rip} (local.get $cpu)))
+    (if (i64.lt_u (i64.sub (local.get $t) (global.get $tb)) (global.get $ts))
+      (then (return (call $host_call (local.get $cpu) (local.get $t)))))
+    (return_call_indirect (type $fn) (local.get $cpu)
+      (call $miss (local.get $cpu) (local.get $t))))
+
+  (func (export "run") (param $cpu i64) (param $eip i64) (result i64)
+    (loop $next
+      (if (i64.eq (local.get $eip) (i64.const {stop}))
+        (then (return (local.get $eip))))
+      (i64.store offset={rip} (local.get $cpu) (local.get $eip))
+      (local.set $eip
+        (call_indirect (type $fn) (local.get $cpu) (call $lookup (local.get $eip))))
+      (br $next))
+    unreachable)
+)"#,
+        rip = cpu64::RIP,
+        stop = addr::STOP64,
+        max_pages = crate::codegen::MAX_PAGES_64,
+    )
+}
+
+pub fn kernel_code64_wasm() -> Vec<u8> {
+    wat::parse_str(kernel_code64_wat()).expect("kernel WAT is valid")
 }
 
 pub fn kernel_wat_for(mem64: bool) -> String {

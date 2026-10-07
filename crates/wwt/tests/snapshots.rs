@@ -14,7 +14,7 @@ fn translate(name: &str) -> wwt::Translation {
     wwt::translate_pe(&pe, &wwt::Config::default(), &[]).unwrap()
 }
 
-fn ir_of(t: &wwt::Translation, entry: u32) -> String {
+fn ir_of(t: &wwt::Translation, entry: u64) -> String {
     t.ir.iter()
         .find(|f| f.entry == entry)
         .expect("function")

@@ -49,6 +49,17 @@ function findTranslatorWasm() {
   return null;
 }
 
+/**
+ * The default guest region: 8 GB for 64-bit programs on a 64-bit memory,
+ * whose images load at their preferred bases (0x1_4000_0000 for an .exe);
+ * 3 GB on a 32-bit one, where those images fold to 1-2 GB
+ * (0x1_4000_0000 -> 0x4000_0000); 1 GB for 32-bit programs.
+ */
+export function defaultGuestLimitMB(arch, mem64) {
+  if (arch !== 'x64') return 1024;
+  return mem64 ? 8192 : 3072;
+}
+
 export async function runExe(exePath, argv, opts = {}) {
   const wwt = () => findWwt(opts.wwt);
   const arch = peArch(readFileSync(exePath));
@@ -60,6 +71,8 @@ export async function runExe(exePath, argv, opts = {}) {
     );
   }
   const m64 = mem64 ? ['--mem64'] : [];
+  // x86-64 code on a 64-bit memory has 64-bit code addresses.
+  const code64 = mem64 && arch === 'x64';
   let wasmPath = opts.wasm;
   if (!wasmPath) {
     const dir = mkdtempSync(join(tmpdir(), 'wwt-'));
@@ -71,7 +84,7 @@ export async function runExe(exePath, argv, opts = {}) {
   }
   const abi = JSON.parse(execFileSync(wwt(), ['abi']).toString());
   const kdir = mkdtempSync(join(tmpdir(), 'wwt-k-'));
-  execFileSync(wwt(), ['kernel', '-o', join(kdir, 'kernel.wasm'), ...m64]);
+  execFileSync(wwt(), ['kernel', '-o', join(kdir, 'kernel.wasm'), ...m64, ...(code64 ? ['--code64'] : [])]);
   const kernel = readFileSync(join(kdir, 'kernel.wasm'));
 
   const out = [];
@@ -80,9 +93,7 @@ export async function runExe(exePath, argv, opts = {}) {
     kernel,
     arch,
     mem64,
-    // 64-bit images fold to 1-2 GB (0x1_4000_0000 -> 0x4000_0000), so their
-    // guest region defaults larger.
-    guestLimit: (opts.guestLimitMB ?? (arch === 'x64' ? 3072 : 1024)) * 1024 * 1024,
+    guestLimit: (opts.guestLimitMB ?? defaultGuestLimitMB(arch, mem64)) * 1024 * 1024,
     log: opts.verbose ? (s) => stderr(s + '\n') : undefined,
   });
   await machine.init();

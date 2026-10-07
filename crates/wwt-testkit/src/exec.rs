@@ -118,6 +118,8 @@ impl Executor {
         };
         let cfg = &cfg.clone().with_mode(mode);
         let mem64 = cfg.codegen.mem64;
+        // x86-64 code on a 64-bit memory has 64-bit code addresses.
+        let code64 = x64 && mem64;
         let nat = Native::new(mem64);
         let cpu_base = nat.cpu;
         // Translate each case; unsupported ones are reported, not run.
@@ -125,7 +127,8 @@ impl Executor {
         let mut slot = vec![None; cases.len()];
         let mut results: Vec<Option<Run>> = (0..cases.len()).map(|_| None).collect();
         for (i, c) in cases.iter().enumerate() {
-            let (f, unsupported) = wwt::translate::translate_snippet(&c.code_bytes(), INS, cfg);
+            let (f, unsupported) =
+                wwt::translate::translate_snippet(&c.code_bytes(), INS as u64, cfg);
             if let Some((_, why)) = unsupported.first() {
                 results[i] = Some(Run::Unsupported(why.clone()));
                 continue;
@@ -156,7 +159,11 @@ impl Executor {
         // with a 64-bit memory.
         let miss = {
             let mem = memory.clone();
-            if mem64 {
+            if code64 {
+                Func::wrap(&mut store, move |cpu_ptr: i64| -> i64 {
+                    r64(&mem, cpu_ptr as u32 + cpu64::RIP) as i64
+                })
+            } else if mem64 {
                 Func::wrap(&mut store, move |cpu_ptr: i64| -> i32 {
                     r32(&mem, cpu_ptr as u32 + cpu::EIP) as i32
                 })
@@ -171,7 +178,19 @@ impl Executor {
             caller.data_mut().fault = Some((code as u32, eip as u32, info as u32));
             Err(anyhow!("guest fault"))
         };
-        let fault_fn = if mem64 {
+        let fault_fn = if code64 {
+            Func::wrap(
+                &mut store,
+                move |caller: Caller<'_, State>,
+                      _cpu: i64,
+                      code: i32,
+                      eip: i64,
+                      info: i64|
+                      -> Result<()> {
+                    on_fault(caller, code, eip as i32, info as i32)
+                },
+            )
+        } else if mem64 {
             Func::wrap(
                 &mut store,
                 move |caller: Caller<'_, State>,
@@ -227,6 +246,7 @@ impl Executor {
                     "lookup_l1" => g(&mut store, nat.l1, mem64)?.into(),
                     "guest_limit" => g(&mut store, NATIVE_BASE - 0x10000 - 16, mem64)?.into(),
                     "code_bitmap" => g(&mut store, nat.code_bitmap, mem64)?.into(),
+                    "code_pages" => g(&mut store, (1 << 20) - 1, true)?.into(),
                     "fault" => fault_fn.into(),
                     "code_write" => code_write.into(),
                     "math" => math.into(),
@@ -266,7 +286,11 @@ impl Executor {
                 .get(&mut store, 1 + k as u64)
                 .and_then(|r| r.as_func().flatten().copied())
                 .ok_or_else(|| anyhow!("missing table entry"))?;
-            let r = if mem64 {
+            let r = if code64 {
+                func.typed::<i64, i64>(&store)?
+                    .call(&mut store, cpu_base as i64)
+                    .map(|n| n as i32)
+            } else if mem64 {
                 func.typed::<i64, i32>(&store)?
                     .call(&mut store, cpu_base as i64)
             } else {

@@ -17,9 +17,11 @@
 //
 // With --arch x64 the .exe is built with x86_64-w64-mingw32-gcc and the
 // reference with the native x86-64 gcc. Linux is LP64 and Windows LLP64, so
-// a program whose output depends on sizeof(long) would differ; the
-// hand-written programs and Csmith's fixed-width types do not, and torture
-// tests check themselves.
+// a program whose output depends on sizeof(long) would differ. The
+// hand-written programs do not, and torture tests check themselves; Csmith
+// programs do (an `L` constant is 64-bit on Linux, 32-bit on Windows, which
+// changes how `x > -8L` converts an unsigned x), so their reference is built
+// with gcc -m32, whose ILP32 has Windows' 32-bit long.
 //
 // Torture tests check themselves (abort or exit 0). One that MinGW cannot
 // build, or that fails natively (target-specific or extended-precision
@@ -138,14 +140,14 @@ for (let i = 0; i < csmith; i++) {
   const src = join(work, `csmith-${s}.c`);
   const r = await sh('csmith', ['--seed', String(s), '--max-funcs', '6', '--max-block-depth', '4', '-o', src]);
   if (r.status !== 0) throw new Error(`csmith failed: ${r.stderr}`);
-  programs.push({ name: `csmith-${s}`, src, cflags: ['-I', csmithInc, '-w'] });
+  programs.push({ name: `csmith-${s}`, src, cflags: ['-I', csmithInc, '-w'], ilp32: true });
 }
 
 async function build(p, opt) {
   const base = join(torture ? join(work, 'torture') : work, `${p.name}-${opt}`);
   // The reference runs x87 code at double precision, which is what the
   // translator implements by default (registers are f64).
-  const m32 = arch === 'x64' ? [] : ['-m32'];
+  const m32 = arch === 'x64' && !p.ilp32 ? [] : ['-m32'];
   const nat = await sh('gcc', [...m32, `-${opt}`, ...p.cflags, '-o', base + '.native', p.src, join(here, 'pc53.c'), '-lm']);
   if (nat.status !== 0) return { error: 'native build: ' + nat.stderr.slice(0, 500) };
   // The Windows build gets the same precision setting: MinGW's start-up

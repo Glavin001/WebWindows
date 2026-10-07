@@ -71,6 +71,9 @@ pub mod cpu64 {
     pub const GS_BASE: u32 = 680;
     /// xmm8..xmm15 (16 bytes each); xmm0..7 stay at [`super::cpu::XMM`].
     pub const XMM8: u32 = 688;
+    /// The instruction pointer of 64-bit code (8 bytes); [`super::cpu::EIP`]
+    /// is unused in this layout.
+    pub const RIP: u32 = 816;
     pub const SIZE: u32 = 832;
 
     pub const fn gpr(i: u32) -> u32 {
@@ -161,6 +164,9 @@ pub mod addr {
     /// Returning to this address stops the dispatcher loop (used as the
     /// return address of thread entry points).
     pub const STOP: u32 = 0xFFFF_FFF0;
+    /// The stop address of 64-bit code, beyond any guest address (and exact
+    /// as a JavaScript number).
+    pub const STOP64: u64 = 1 << 52;
 }
 
 /// Names of the module imports every translated module expects.
@@ -172,6 +178,10 @@ pub mod imports {
     pub const LOOKUP_L1: &str = "lookup_l1";
     pub const GUEST_LIMIT: &str = "guest_limit";
     pub const CODE_BITMAP: &str = "code_bitmap";
+    /// 64-bit code only: the number of 4 KB pages the first-level lookup
+    /// table covers. Targets at or above go through its last entry, which
+    /// points at an empty second-level table.
+    pub const CODE_PAGES: &str = "code_pages";
     pub const FAULT: &str = "fault";
     pub const CODE_WRITE: &str = "code_write";
     pub const MATH: &str = "math";
@@ -180,10 +190,13 @@ pub mod imports {
 /// Custom section listing the x86 address of each translated function, in
 /// table order: a little-endian u32 count followed by that many u32s.
 pub const FUNCS_SECTION: &str = "wwt.funcs";
+/// The same for 64-bit code (x86-64 on a 64-bit memory): a u32 count
+/// followed by that many u64 addresses.
+pub const FUNCS64_SECTION: &str = "wwt.funcs64";
 /// Custom section with JSON metadata about the translation.
 pub const META_SECTION: &str = "wwt.meta";
 /// Bumped whenever generated code changes incompatibly, to invalidate caches.
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 
 #[derive(Serialize)]
 struct AbiJson {
@@ -193,8 +206,10 @@ struct AbiJson {
     flags: std::collections::BTreeMap<&'static str, u32>,
     fault: std::collections::BTreeMap<&'static str, u32>,
     stop_address: u32,
+    stop_address64: u64,
     null_limit: u32,
     funcs_section: &'static str,
+    funcs64_section: &'static str,
     meta_section: &'static str,
 }
 
@@ -238,6 +253,7 @@ pub fn abi_json() -> String {
         ("FS_BASE", cpu64::FS_BASE),
         ("GS_BASE", cpu64::GS_BASE),
         ("XMM8", cpu64::XMM8),
+        ("RIP", cpu64::RIP),
         ("SIZE", cpu64::SIZE),
     ]
     .into_iter()
@@ -276,8 +292,10 @@ pub fn abi_json() -> String {
         flags: fl,
         fault,
         stop_address: addr::STOP,
+        stop_address64: addr::STOP64,
         null_limit: addr::NULL_LIMIT,
         funcs_section: FUNCS_SECTION,
+        funcs64_section: FUNCS64_SECTION,
         meta_section: META_SECTION,
     })
     .unwrap()

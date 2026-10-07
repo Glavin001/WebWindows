@@ -43,7 +43,8 @@ struct TranslateOpts {
     #[arg(long)]
     mem64: bool,
     /// Load (and translate) the image at this base (hex) instead of its
-    /// preferred one. 64-bit images preferred above 4 GB move below it.
+    /// preferred one. Without `--mem64`, 64-bit images preferred above 4 GB
+    /// move below it.
     #[arg(long)]
     base: Option<String>,
 }
@@ -69,7 +70,7 @@ impl TranslateOpts {
         Ok(pe)
     }
 
-    fn seeds(&self) -> Result<Vec<u32>> {
+    fn seeds(&self) -> Result<Vec<u64>> {
         let mut out = vec![];
         for s in &self.seed {
             out.push(parse_hex(s)?);
@@ -135,6 +136,10 @@ enum Cmd {
         /// The kernel for a 64-bit (memory64) memory.
         #[arg(long)]
         mem64: bool,
+        /// The kernel for x86-64 code on a 64-bit memory (64-bit code
+        /// addresses; implies --mem64).
+        #[arg(long)]
+        code64: bool,
     },
     /// Print the runtime ABI (CPU struct layout and constants) as JSON.
     Abi,
@@ -149,9 +154,9 @@ enum Cmd {
     },
 }
 
-fn parse_hex(s: &str) -> Result<u32> {
+fn parse_hex(s: &str) -> Result<u64> {
     let t = s.trim().trim_start_matches("0x").trim_start_matches("0X");
-    u32::from_str_radix(t, 16).with_context(|| format!("bad hex address {s:?}"))
+    u64::from_str_radix(t, 16).with_context(|| format!("bad hex address {s:?}"))
 }
 
 fn load(file: &Path) -> Result<PeFile> {
@@ -196,7 +201,7 @@ fn main() -> Result<()> {
                     "  {}!{} @ iat {:#x}",
                     i.dll,
                     i.name,
-                    pe.image_base + i.iat_rva
+                    pe.image_base + i.iat_rva as u64
                 );
             }
             if !pe.exports.is_empty() {
@@ -262,7 +267,7 @@ fn main() -> Result<()> {
             let img = pe.image()?;
             let d = wwt::translate::discover_pe(&pe, &img, &[], &Config::default());
             let want = func.map(|f| parse_hex(&f)).transpose()?;
-            let mut addrs: Vec<u32> = d.insts.keys().copied().collect();
+            let mut addrs: Vec<u64> = d.insts.keys().copied().collect();
             addrs.sort_unstable();
             let mut fmt = iced_x86::IntelFormatter::new();
             use iced_x86::Formatter;
@@ -282,9 +287,11 @@ fn main() -> Result<()> {
                 println!("    {a:08x}  {s}");
             }
         }
-        Cmd::Kernel { out, mem64 } => std::fs::write(
+        Cmd::Kernel { out, mem64, code64 } => std::fs::write(
             out,
-            if mem64 {
+            if code64 {
+                wwt::kernel::kernel_code64_wasm()
+            } else if mem64 {
                 wwt::kernel::kernel64_wasm()
             } else {
                 wwt::kernel::kernel_wasm()
@@ -332,7 +339,9 @@ fn pack(file: &Path, out: &Path, opts: &TranslateOpts) -> Result<()> {
         .into_owned();
     std::fs::write(out.join(format!("{name}.wasm")), &t.wasm)?;
     std::fs::copy(file, out.join(&name))?;
-    let kernel = if opts.mem64 {
+    let kernel = if opts.mem64 && pe.mode == wwt::ir::Mode::X64 {
+        wwt::kernel::kernel_code64_wasm()
+    } else if opts.mem64 {
         wwt::kernel::kernel64_wasm()
     } else {
         wwt::kernel::kernel_wasm()

@@ -78,9 +78,9 @@ pub struct Lifted {
     pub func: Function,
     /// Addresses the function exits to that are not known function entries
     /// (split points). The translator turns them into entries.
-    pub extra_entries: Vec<u32>,
+    pub extra_entries: Vec<u64>,
     /// Instructions that could not be lifted: (address, text).
-    pub unsupported: Vec<(u32, String)>,
+    pub unsupported: Vec<(u64, String)>,
 }
 
 /// Where an operand lives.
@@ -102,15 +102,15 @@ struct Lifter<'a> {
     src: &'a dyn CodeSource,
     disc: &'a Discovery,
     /// IR block for each x86 block start in the function.
-    blocks: &'a HashMap<u32, BlockId>,
-    entry: u32,
-    eip: u32,
-    next: u32,
+    blocks: &'a HashMap<u64, BlockId>,
+    entry: u64,
+    eip: u64,
+    next: u64,
     /// For each GPR, the address vreg it was last loaded from in the current
     /// x86 block (used to lower jump tables reached through a register).
     loaded_from: [Option<V>; 16],
-    unsupported: Vec<(u32, String)>,
-    extra_entries: Vec<u32>,
+    unsupported: Vec<(u64, String)>,
+    extra_entries: Vec<u64>,
 }
 
 fn width_mask(w: u32) -> u32 {
@@ -141,12 +141,12 @@ fn gpr_slot(v: V) -> usize {
     }
 }
 
-/// The target of a near branch (code addresses are 32-bit).
-pub(crate) fn branch_target(i: &Instruction, n: u32) -> Option<u32> {
+/// The target of a near branch.
+pub(crate) fn branch_target(i: &Instruction, n: u32) -> Option<u64> {
     match i.op_kind(n) {
-        OpKind::NearBranch32 => Some(i.near_branch32()),
-        OpKind::NearBranch64 => Some(i.near_branch64() as u32),
-        OpKind::NearBranch16 => Some(i.near_branch16() as u32),
+        OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64 => {
+            Some(i.near_branch_target())
+        }
         _ => None,
     }
 }
@@ -181,14 +181,14 @@ fn cc_of(c: ConditionCode) -> Cc {
 pub fn lift_function(
     src: &dyn CodeSource,
     disc: &Discovery,
-    entry: u32,
+    entry: u64,
     cfg: &LiftConfig,
 ) -> Lifted {
     // Collect the function's x86 blocks: everything reachable from the entry
     // through jumps, branches and call continuations, without entering
     // other functions.
-    let mut order: Vec<u32> = vec![];
-    let mut seen: BTreeMap<u32, ()> = BTreeMap::new();
+    let mut order: Vec<u64> = vec![];
+    let mut seen: BTreeMap<u64, ()> = BTreeMap::new();
     let mut work = VecDeque::from([entry]);
     let mut extra = vec![];
     while let Some(b) = work.pop_front() {
@@ -248,7 +248,7 @@ pub fn lift_function(
 }
 
 /// Intra-procedural successors of an x86 block.
-fn x86_successors(src: &dyn CodeSource, disc: &Discovery, start: u32) -> Vec<u32> {
+fn x86_successors(src: &dyn CodeSource, disc: &Discovery, start: u64) -> Vec<u64> {
     let _ = src;
     let (insts, fall) = disc.block(start);
     let mut out = vec![];
@@ -261,12 +261,12 @@ fn x86_successors(src: &dyn CodeSource, disc: &Discovery, start: u32) -> Vec<u32
                 }
             }
             FC::Call => {
-                if branch_target(last, 0) == Some(last.next_ip32()) {
+                if branch_target(last, 0) == Some(last.next_ip()) {
                     // get-PC idiom: falls through below.
                 }
             }
             FC::IndirectBranch => {
-                if let Some(jt) = disc.jump_tables.get(&last.ip32()) {
+                if let Some(jt) = disc.jump_tables.get(&last.ip()) {
                     out.extend(jt.targets.iter().copied());
                 }
             }
@@ -507,21 +507,6 @@ impl<'a> Lifter<'a> {
         }
     }
 
-    /// The x86 code address in an i64 (indirect targets in 64-bit code).
-    /// Code lives below 4 GB; a target above it continues at the null
-    /// page, which faults when the dispatcher reaches it.
-    fn code_addr(&mut self, v: V) -> V {
-        if self.f.ty(v) != Ty::I64 {
-            return v;
-        }
-        let k = self.c64(32);
-        let hi = self.bin(BinOp::I64ShrU, v, k);
-        let bad = self.un(UnOp::I64Eqz, hi);
-        let lo = self.un(UnOp::I32WrapI64, v);
-        let z = self.c32(0);
-        self.select(bad, lo, z)
-    }
-
     // ---- Registers -------------------------------------------------------
 
     fn read_reg(&mut self, r: Register) -> V {
@@ -647,12 +632,7 @@ impl<'a> Lifter<'a> {
         if base == Register::RIP || base == Register::EIP {
             // iced resolves RIP-relative operands to the absolute address.
             let a = self.c64(disp);
-            let space = if disp >> 32 == 0 {
-                self.static_space(disp as u32)
-            } else {
-                Space::Guest
-            };
-            return (a, space);
+            return (a, self.static_space(disp));
         }
         // The 0x67 prefix selects 32-bit address arithmetic.
         let addr32 = (base != Register::None && base.size() == 4)
@@ -696,8 +676,8 @@ impl<'a> Lifter<'a> {
             && matches!(base, Register::RSP | Register::RBP)
         {
             Space::Trusted
-        } else if base == Register::None && index == Register::None && disp >> 32 == 0 {
-            self.static_space(disp as u32)
+        } else if base == Register::None && index == Register::None {
+            self.static_space(disp)
         } else {
             Space::Guest
         };
@@ -750,7 +730,7 @@ impl<'a> Lifter<'a> {
                 {
                     Space::Trusted
                 } else if base == Register::None && index == Register::None {
-                    self.static_space(disp)
+                    self.static_space(disp as u64)
                 } else {
                     Space::Guest
                 }
@@ -761,8 +741,8 @@ impl<'a> Lifter<'a> {
 
     /// Space for a constant address: trusted when it lies in the image's
     /// data, checked otherwise.
-    fn static_space(&self, addr: u32) -> Space {
-        if addr >= crate::abi::addr::NULL_LIMIT
+    fn static_space(&self, addr: u64) -> Space {
+        if addr >= crate::abi::addr::NULL_LIMIT as u64
             && !self.src.bytes(addr).is_empty()
             && !self.src.is_code(addr)
         {
@@ -987,7 +967,7 @@ impl<'a> Lifter<'a> {
 
     // ---- Control flow ----------------------------------------------------
 
-    fn block_for(&self, addr: u32) -> Option<BlockId> {
+    fn block_for(&self, addr: u64) -> Option<BlockId> {
         if addr == self.entry {
             return Some(0);
         }
@@ -999,7 +979,7 @@ impl<'a> Lifter<'a> {
 
     /// A block that continues at `addr`: the function's own block when the
     /// address belongs to it, otherwise a block that leaves the function.
-    fn target_block(&mut self, addr: u32) -> BlockId {
+    fn target_block(&mut self, addr: u64) -> BlockId {
         if let Some(b) = self.block_for(addr) {
             return b;
         }
@@ -1036,7 +1016,7 @@ impl<'a> Lifter<'a> {
 
     // ---- Blocks ----------------------------------------------------------
 
-    fn lift_block(&mut self, start: u32) {
+    fn lift_block(&mut self, start: u64) {
         self.cur = self.blocks[&start];
         self.loaded_from = [None; 16];
         let (insts, fall) = self.disc.block(start);
@@ -1049,8 +1029,8 @@ impl<'a> Lifter<'a> {
             return;
         }
         for i in &insts {
-            self.eip = i.ip32();
-            self.next = i.next_ip32();
+            self.eip = i.ip();
+            self.next = i.next_ip();
             if !self.lift_inst(i) {
                 // The instruction ended the block (control flow or fault).
                 return;
@@ -1065,7 +1045,7 @@ impl<'a> Lifter<'a> {
                 let last = insts.last().unwrap();
                 self.terminate(Term::Fault {
                     code: fault::ILLEGAL_INSTRUCTION,
-                    eip: last.next_ip32(),
+                    eip: last.next_ip(),
                 });
             }
         }
@@ -1523,7 +1503,6 @@ impl<'a> Lifter<'a> {
                     let s = self.aopi(BinOp::I32Add, ESP, n);
                     self.set_gpr(ESP, s);
                 }
-                let t = self.code_addr(t);
                 self.terminate(Term::Ret(t));
                 return false;
             }
@@ -3361,7 +3340,7 @@ impl<'a> Lifter<'a> {
 
     // ---- Branches and calls ----------------------------------------------
 
-    fn branch(&mut self, cond: V, taken: u32, fall: u32) {
+    fn branch(&mut self, cond: V, taken: u64, fall: u64) {
         if taken == fall {
             // A conditional jump to the next instruction.
             let t = self.target_block(taken);
@@ -3393,14 +3372,17 @@ impl<'a> Lifter<'a> {
                         (self.read_reg(r), self.loaded_from[idx])
                     }
                 };
-                let target = self.code_addr(target);
                 match (self.disc.jump_tables.get(&self.eip), from_addr) {
                     (Some(jt), Some(addr)) => {
                         let jt = jt.clone();
                         // index = (addr - base) / 4, valid when aligned and
                         // in range; otherwise leave through the dispatcher.
-                        let addr = self.r32(addr);
-                        let off = self.bini(BinOp::I32Sub, addr, jt.base);
+                        let off = if self.x64() {
+                            let o = self.aopi(BinOp::I32Sub, addr, jt.base);
+                            self.r32(o)
+                        } else {
+                            self.bini(BinOp::I32Sub, addr, jt.base as u32)
+                        };
                         let es = jt.entry_size;
                         let low = self.bini(BinOp::I32And, off, es - 1);
                         let ix = self.bini(BinOp::I32ShrU, off, es.trailing_zeros());
@@ -3429,7 +3411,7 @@ impl<'a> Lifter<'a> {
         match i.op0_kind() {
             OpKind::NearBranch32 | OpKind::NearBranch64 => {
                 let t = branch_target(i, 0).unwrap();
-                let r = self.ac(ret as u64);
+                let r = self.ac(ret);
                 self.push_val(r, ws);
                 if t == ret {
                     // get-PC idiom.
@@ -3448,8 +3430,7 @@ impl<'a> Lifter<'a> {
                 // Read the target before pushing (call [esp] reads the old
                 // stack top).
                 let target = self.read_op(i, 0);
-                let target = self.code_addr(target);
-                let r = self.ac(ret as u64);
+                let r = self.ac(ret);
                 self.push_val(r, ws);
                 let cont = self.target_block(ret);
                 self.terminate(Term::Call {

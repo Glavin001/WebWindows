@@ -5,11 +5,14 @@
 //! * `wwt_alloc(len) -> ptr` / `wwt_free(ptr, len)`
 //! * `wwt_translate(code, code_len, base, entries, n_entries, known,
 //!   n_known, opt_level, flags) -> ptr` — returns a buffer `[len: u32][module bytes]`; free it
-//!   with `wwt_free(ptr, len + 4)`.
+//!   with `wwt_free(ptr, len + 4)`. `base` is a u64 and `entries`/`known`
+//!   are arrays of u64 addresses.
 //! * `wwt_translate_pe(file, len, profile, n_profile, opt_level, flags) ->
-//!   ptr` — ahead-of-time translation of a whole .exe/.dll.
+//!   ptr` — ahead-of-time translation of a whole .exe/.dll (`profile` is
+//!   an array of u64 addresses).
 //! * `wwt_kernel() -> ptr` — the runtime kernel module, same format;
-//!   `wwt_kernel64()` for a 64-bit (memory64) memory.
+//!   `wwt_kernel64()` for a 64-bit (memory64) memory and
+//!   `wwt_kernel_code64()` for x86-64 code on one (64-bit code addresses).
 //! * `wwt_abi() -> ptr` — the ABI JSON, same format.
 
 use wwt::discover::FlatCode;
@@ -68,10 +71,10 @@ fn result(bytes: Vec<u8>) -> *mut u8 {
 pub unsafe extern "C" fn wwt_translate(
     code: *const u8,
     code_len: usize,
-    base: u32,
-    entries: *const u32,
+    base: u64,
+    entries: *const u64,
     n_entries: usize,
-    known: *const u32,
+    known: *const u64,
     n_known: usize,
     opt_level: u32,
     flags: u32,
@@ -108,7 +111,7 @@ pub unsafe extern "C" fn wwt_translate(
 pub unsafe extern "C" fn wwt_translate_pe(
     file: *const u8,
     file_len: usize,
-    profile: *const u32,
+    profile: *const u64,
     n_profile: usize,
     opt_level: u32,
     flags: u32,
@@ -144,6 +147,11 @@ pub extern "C" fn wwt_kernel() -> *mut u8 {
 #[no_mangle]
 pub extern "C" fn wwt_kernel64() -> *mut u8 {
     result(wwt::kernel::kernel64_wasm())
+}
+
+#[no_mangle]
+pub extern "C" fn wwt_kernel_code64() -> *mut u8 {
+    result(wwt::kernel::kernel_code64_wasm())
 }
 
 #[no_mangle]

@@ -6,11 +6,11 @@
 //! [`PeFile::load_image`] lays the file out as it would appear in memory at its
 //! base (applying relocations when that is not the preferred base).
 //!
-//! Translated x86 code addresses are 32-bit, so a 64-bit image whose
-//! preferred base is above 4 GB (0x1_4000_0000 for executables, Wine's DLLs
-//! at 0x1_7000_0000 and up) is loaded below it: [`PeFile::image_base`] is the
-//! base the translation and the runtime use, [`PeFile::preferred_base`] the
-//! one in the file.
+//! [`PeFile::image_base`] is the base the translation and the runtime use,
+//! [`PeFile::preferred_base`] the one in the file. They differ when an image
+//! is moved: a 64-bit image preferred above 4 GB (0x1_4000_0000 for
+//! executables) can be folded below it ([`PeFile::fold_below_4gb`]) to run
+//! on a 32-bit WebAssembly memory.
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -104,13 +104,13 @@ pub struct Export {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TlsInfo {
-    pub raw_data_start: u32,
-    pub raw_data_end: u32,
-    pub index_address: u32,
-    pub callbacks_address: u32,
+    pub raw_data_start: u64,
+    pub raw_data_end: u64,
+    pub index_address: u64,
+    pub callbacks_address: u64,
     pub zero_fill: u32,
-    /// Callback virtual addresses (relative to the preferred image base).
-    pub callbacks: Vec<u32>,
+    /// Callback virtual addresses (at the image base).
+    pub callbacks: Vec<u64>,
 }
 
 /// A parsed PE32 or PE32+ file.
@@ -121,10 +121,9 @@ pub struct PeFile {
     /// x86 (PE32, i386) or x86-64 (PE32+, AMD64).
     pub mode: crate::ir::Mode,
     pub characteristics: u16,
-    /// The base the image is translated and loaded at: the preferred base,
-    /// or for a 64-bit image preferred above 4 GB, a base below it (see
-    /// [`PeFile::low_base`]).
-    pub image_base: u32,
+    /// The base the image is translated and loaded at: the preferred base
+    /// unless the image was moved ([`PeFile::rebase`]).
+    pub image_base: u64,
     /// The base in the file's optional header.
     pub preferred_base: u64,
     pub entry_rva: u32,
@@ -254,11 +253,7 @@ impl PeFile {
             });
         }
 
-        let image_base = if preferred_base >> 32 == 0 {
-            preferred_base as u32
-        } else {
-            PeFile::low_base(preferred_base)
-        };
+        let image_base = preferred_base;
         let mut pe = PeFile {
             data,
             machine,
@@ -310,13 +305,6 @@ impl PeFile {
         {
             pe.relocations = Some(vec![]);
         }
-        if wide && pe.image_base as u64 != pe.preferred_base {
-            ensure!(
-                pe.relocations.is_some(),
-                "64-bit image preferred at {:#x} (above 4 GB) has no relocations to move it below",
-                pe.preferred_base
-            );
-        }
         if dirs[DIR_TLS].0 != 0 {
             pe.tls = Some(pe.parse_tls(dirs[DIR_TLS].0).context("tls")?);
         }
@@ -341,15 +329,29 @@ impl PeFile {
         }
     }
 
-    /// Moves the image to `base` (the base its translation and loading use).
-    pub fn rebase(&mut self, base: u32) -> Result<()> {
+    /// Moves an image preferred above 4 GB below it ([`PeFile::low_base`]),
+    /// for a 32-bit WebAssembly memory. Images already below stay.
+    pub fn fold_below_4gb(&mut self) -> Result<()> {
+        if self.image_base >> 32 == 0 {
+            return Ok(());
+        }
         ensure!(
-            base as u64 == self.preferred_base || self.relocations.is_some(),
+            self.relocations.is_some(),
+            "64-bit image at {:#x} (above 4 GB) has no relocations to move it below",
+            self.image_base
+        );
+        self.rebase(PeFile::low_base(self.image_base) as u64)
+    }
+
+    /// Moves the image to `base` (the base its translation and loading use).
+    pub fn rebase(&mut self, base: u64) -> Result<()> {
+        ensure!(
+            base == self.preferred_base || self.relocations.is_some(),
             "image cannot be rebased: no relocations"
         );
         let old = self.image_base;
         if let Some(tls) = &mut self.tls {
-            let fix = |v: u32| {
+            let fix = |v: u64| {
                 if v == 0 {
                     0
                 } else {
@@ -392,12 +394,12 @@ impl PeFile {
     }
 
     /// Converts a VA at the preferred base to the translation base.
-    fn rebased(&self, va: u64) -> u32 {
+    fn rebased(&self, va: u64) -> u64 {
         if va == 0 {
             return 0;
         }
         va.wrapping_sub(self.preferred_base)
-            .wrapping_add(self.image_base as u64) as u32
+            .wrapping_add(self.image_base)
     }
 
     /// `.pdata`: 12-byte RUNTIME_FUNCTION entries (begin, end, unwind info).
@@ -580,7 +582,7 @@ impl PeFile {
     /// The TLS directory, with addresses at [`PeFile::image_base`].
     fn parse_tls(&self, dir_rva: u32) -> Result<TlsInfo> {
         let ps = self.ptr_size();
-        let va = |k: u32| -> Result<u32> { Ok(self.rebased(self.va_at_rva(dir_rva + k * ps)?)) };
+        let va = |k: u32| -> Result<u64> { Ok(self.rebased(self.va_at_rva(dir_rva + k * ps)?)) };
         let mut tls = TlsInfo {
             raw_data_start: va(0)?,
             raw_data_end: va(1)?,
@@ -590,7 +592,7 @@ impl PeFile {
             callbacks: vec![],
         };
         if tls.callbacks_address != 0 {
-            let mut rva = tls.callbacks_address.wrapping_sub(self.image_base);
+            let mut rva = tls.callbacks_address.wrapping_sub(self.image_base) as u32;
             loop {
                 let cb = self.va_at_rva(rva)?;
                 if cb == 0 {
@@ -607,14 +609,14 @@ impl PeFile {
         self.sections.iter().find(|s| s.contains_rva(rva))
     }
 
-    pub fn entry_point(&self) -> Option<u32> {
-        (self.entry_rva != 0).then_some(self.image_base + self.entry_rva)
+    pub fn entry_point(&self) -> Option<u64> {
+        (self.entry_rva != 0).then_some(self.image_base + self.entry_rva as u64)
     }
 
     /// Lays the file out in memory as the Windows loader would, without
     /// resolving imports. Returns `size_of_image` bytes for loading at `base`;
     /// relocations are applied when `base` differs from the preferred base.
-    pub fn load_image(&self, base: u32) -> Result<Vec<u8>> {
+    pub fn load_image(&self, base: u64) -> Result<Vec<u8>> {
         let mut img = vec![0u8; self.size_of_image as usize];
         let hdr = (self.size_of_headers as usize)
             .min(self.data.len())
@@ -629,12 +631,12 @@ impl PeFile {
                 .min(img.len().saturating_sub(dst));
             img[dst..dst + n].copy_from_slice(&self.data[src..src + n]);
         }
-        if base as u64 != self.preferred_base {
+        if base != self.preferred_base {
             let relocs = self
                 .relocations
                 .as_ref()
                 .ok_or_else(|| anyhow!("image cannot be rebased: no relocations"))?;
-            let delta = (base as u64).wrapping_sub(self.preferred_base);
+            let delta = base.wrapping_sub(self.preferred_base);
             for (k, &r) in relocs.iter().enumerate() {
                 let r = r as usize;
                 if self.reloc_types.get(k) == Some(&REL_DIR64) {
@@ -668,40 +670,40 @@ impl PeFile {
 /// An image laid out in memory, used by code discovery and decoding.
 #[derive(Debug, Clone)]
 pub struct Image {
-    pub base: u32,
+    pub base: u64,
     pub bytes: Vec<u8>,
     pub sections: Vec<Section>,
 }
 
 impl Image {
-    pub fn contains(&self, va: u32) -> bool {
-        va >= self.base && ((va - self.base) as usize) < self.bytes.len()
+    pub fn contains(&self, va: u64) -> bool {
+        va >= self.base && va - self.base < self.bytes.len() as u64
     }
-    pub fn is_code(&self, va: u32) -> bool {
+    pub fn is_code(&self, va: u64) -> bool {
         if !self.contains(va) {
             return false;
         }
-        let rva = va - self.base;
+        let rva = (va - self.base) as u32;
         self.sections
             .iter()
             .any(|s| s.is_executable() && s.contains_rva(rva))
     }
     /// Bytes from `va` to the end of its section (or image).
-    pub fn bytes_from(&self, va: u32) -> &[u8] {
+    pub fn bytes_from(&self, va: u64) -> &[u8] {
         if !self.contains(va) {
             return &[];
         }
         &self.bytes[(va - self.base) as usize..]
     }
-    pub fn read_u32(&self, va: u32) -> Option<u32> {
+    pub fn read_u32(&self, va: u64) -> Option<u32> {
         let b = self.bytes_from(va);
         (b.len() >= 4).then(|| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
-    pub fn section_of(&self, va: u32) -> Option<&Section> {
+    pub fn section_of(&self, va: u64) -> Option<&Section> {
         if !self.contains(va) {
             return None;
         }
-        let rva = va - self.base;
+        let rva = (va - self.base) as u32;
         self.sections.iter().find(|s| s.contains_rva(rva))
     }
 }

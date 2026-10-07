@@ -198,9 +198,11 @@ onmessage = async (e) => {
     const mem64 = arch === 'x64' && hasMemory64();
     if (arch === 'x64') log(mem64 ? '64-bit program: 64-bit WebAssembly memory' : '64-bit program: this browser has no 64-bit WebAssembly memory; running it below 4 GB');
     const mkey = `${key}${mem64 ? '-m64' : ''}`;
-    // The profile lists code found at run time on earlier launches.
-    const profileBytes = await cacheRead(dir, `${key}.profile`);
-    const profile = profileBytes ? [...new Uint32Array(profileBytes.buffer)] : [];
+    // The profile lists code found at run time on earlier launches (as
+    // float64s: 64-bit code addresses are above 4 GB). Images load at other
+    // bases on the two memories, so each has its own.
+    const profileBytes = await cacheRead(dir, `${mkey}.profile`);
+    const profile = profileBytes ? [...new Float64Array(profileBytes.buffer)] : [];
     let wasm = await cacheRead(dir, `${mkey}.wasm`);
     let translated = false;
     if (!wasm) {
@@ -214,10 +216,12 @@ onmessage = async (e) => {
       log(`loaded cached translation of ${exeName} (${(wasm.length / 1024).toFixed(0)} KB)`);
     }
 
-    // 64-bit images load at 1 GB and up (preferred bases above 4 GB fold
-    // below it), so their guest region is at least 2 GB.
-    const limitMB = arch === 'x64' ? Math.max(guestLimitMB, 2048) : guestLimitMB;
-    const machine = new Machine({ abi, kernel: ft.kernel({ mem64 }), arch, mem64, guestLimit: limitMB * 1024 * 1024, log });
+    // 64-bit images load at their preferred bases (0x1_4000_0000 for an
+    // .exe) on a 64-bit memory, so its guest region is 8 GB; on a 32-bit one
+    // they fold to 1 GB and up, and the region is at least 2 GB.
+    const limitMB = arch === 'x64' ? Math.max(guestLimitMB, mem64 ? 8192 : 2048) : guestLimitMB;
+    const code64 = arch === 'x64' && mem64;
+    const machine = new Machine({ abi, kernel: ft.kernel({ mem64, code64 }), arch, mem64, guestLimit: limitMB * 1024 * 1024, log });
     await machine.init();
     enableFastMode(machine, ft, { log });
     const mod = await machine.loadModule(wasm, exeName);
@@ -243,7 +247,7 @@ onmessage = async (e) => {
     // Fold code found at run time into the next ahead-of-time pass.
     if (machine.profile.size) {
       const all = new Set([...profile, ...machine.profile]);
-      await cacheWrite(dir, `${key}.profile`, new Uint8Array(Uint32Array.from(all).buffer));
+      await cacheWrite(dir, `${mkey}.profile`, new Uint8Array(Float64Array.from(all).buffer));
       if (dir && all.size > profile.length) {
         try {
           await dir.removeEntry(`${mkey}.wasm`);

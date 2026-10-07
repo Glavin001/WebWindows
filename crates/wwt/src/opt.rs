@@ -144,7 +144,7 @@ pub fn lower_flags(f: &mut Function) {
     }
 }
 
-fn emit_expr(f: &mut Function, out: &mut Vec<Inst>, e: &E, eip: u32) -> V {
+fn emit_expr(f: &mut Function, out: &mut Vec<Inst>, e: &E, eip: u64) -> V {
     let push = |f: &mut Function, op: Op, out: &mut Vec<Inst>| {
         let ty = match &op {
             Op::Bin(b, _, _) => b.result_ty(),

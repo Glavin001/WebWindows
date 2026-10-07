@@ -27,19 +27,28 @@ until it ships memory64. 32-bit code on a 64-bit memory is the benchmark
 lane for the memory64 cost, and would let 32-bit programs share a 64-bit
 process later (a single WoW64 stack, as upstream Wine and Hangover do).
 
-**Code addresses stay 32-bit.** Every image is loaded below 4 GB: a 64-bit
-image preferred above it (`0x1_4000_0000` for executables, `0x1_7000_0000`
-and up for Wine's DLLs) is moved by its relocations, with the high bits of
-the base dropped (`0x1_4000_0000` loads at `0x4000_0000`). Windows itself
-rebases x86-64 images under ASLR, and MinGW and MSVC (since about 2010) link
-them relocatable; images with no relocation directory that are not marked
-as stripped have nothing to fix (x86-64 code is RIP-relative) and move
-freely. Keeping code below 4 GB keeps the translator's 32-bit code
-addresses, its two-level lookup table and the dispatcher unchanged; indirect
-jumps, calls and returns check that the target's high 32 bits are zero.
-Data addresses are full 64-bit values. A fixed-base image above 4 GB is
-refused for now (VS2005/2008-era executables built without
-`/DYNAMICBASE`); widening code addresses is the fallback.
+**64-bit programs run at their own addresses.** On a 64-bit memory, x86-64
+code addresses are 64-bit end to end: translated functions return an i64
+next address, eip lives in an 8-byte `RIP` slot of the x86-64 CPU struct,
+the module's function list (`wwt.funcs64`) holds u64 entries, and the
+lookup's first level has one entry per 4 KB page of the guest region
+(clamped to a last entry, pointing at an empty second level, for anything
+above it). Images load at their preferred bases (`0x1_4000_0000` for a
+MinGW or MSVC executable, `0x1_7000_0000` and up for Wine's DLLs), in an
+8 GB guest region by default, with the stack, heap and TEB wherever the
+process puts them; data addresses were already full 64-bit values. This is
+what the 64-bit Wine needs: its DLLs and its `ntdll` loader assume the real
+x86-64 address space.
+
+On a 32-bit memory (the fallback for browsers without memory64) code
+addresses stay 32-bit: an image preferred above 4 GB is moved below it by
+its relocations, with the high bits of the base dropped (`0x1_4000_0000`
+loads at `0x4000_0000`), and indirect jumps, calls and returns send a target
+with high bits set to the dispatcher, which faults. Windows itself rebases
+x86-64 images under ASLR, and MinGW and MSVC (since about 2010) link them
+relocatable; images with no relocation directory that are not marked as
+stripped have nothing to fix (x86-64 code is RIP-relative) and move freely.
+A fixed-base image above 4 GB runs only on a 64-bit memory.
 
 ## What changed
 
@@ -56,7 +65,7 @@ refused for now (VS2005/2008-era executables built without
 * **CPU struct:** `abi::cpu64` keeps every field of the 32-bit struct that
   does not widen at the same offset (EIP, flag kind, x87, MMX, xmm0–7,
   MXCSR, fault information) and adds the 64-bit registers, lazy operands,
-  FS/GS bases and xmm8–15 after it (832 bytes).
+  FS/GS bases, xmm8–15 and RIP after it (832 bytes).
 * **Lifter:** 64-bit operand sizes, REX byte registers, RIP-relative
   operands folded to constants (trusted when they point into image data),
   8-byte stack slots, `cdqe`/`cqo`/`movsxd`/`jrcxz`/`cmpxchg16b`/
@@ -74,15 +83,21 @@ refused for now (VS2005/2008-era executables built without
   MSVC's image-base-relative and GCC/Clang's table-relative entries);
   8-byte pointer scans; `call [rip+slot]` for the setjmp return-site rule.
 * **PE32+:** 8-byte import thunks with the bit-63 ordinal flag, DIR64
-  relocations, TLS64, the exception directory, and the move below 4 GB
-  (`PeFile::image_base` is where the image loads, `preferred_base` the
-  file's). Module metadata records the mode and both bases.
+  relocations, TLS64, the exception directory, and, for a 32-bit memory,
+  the move below 4 GB (`PeFile::image_base` is where the image loads,
+  `preferred_base` the file's). Module metadata records the mode and both
+  bases. Code addresses are u64 throughout the translator (instructions,
+  blocks, discovery maps, call targets, reports).
 * **Code generation and kernel:** with 64-bit memory the memory import is
   memory64, the CPU pointer, `lookup_l1`, `guest_limit` and `code_bitmap`
   are i64, the first-level lookup table holds 8-byte pointers, and narrower
-  addresses are zero-extended. With 32-bit memory, x86-64 addresses are
-  checked in i64 against the guest limit and then wrapped. 32-bit output is
-  unchanged: the generated-WebAssembly snapshots match byte for byte.
+  addresses are zero-extended. x86-64 code on it also has 64-bit code
+  addresses (`(cpu) -> i64` functions, the `code_pages` global, a third
+  kernel, `wwt kernel --code64`); faults then report a 64-bit eip and
+  address. With 32-bit memory, x86-64 addresses are checked in i64 against
+  the guest limit and then wrapped. 32-bit output is unchanged: the
+  generated-WebAssembly snapshots match byte for byte apart from the ABI
+  version (3) in the metadata.
 * **Runtime:** `Machine({ arch: 'x64', mem64 })`: x86-64 register access,
   `callGuest` in the Windows x64 convention, 64-bit memory with the
   standard JavaScript API (`address: 'i64'`) or Node 22's flagged one
@@ -92,11 +107,19 @@ refused for now (VS2005/2008-era executables built without
   The M1 Win32 shims serve both architectures: x86-64 calls see their
   register arguments spilled to the home space, so every API reads 8-byte
   stack slots, and the TEB (at `gs:0`), PEB, `struct lconv`, msvcrt's
-  `FILE` and `jmp_buf` take their 64-bit layouts. x86-64 programs default
-  to a 3 GB guest region (images fold to 1–2 GB).
+  `FILE`, `jmp_buf` and `MEMORY_BASIC_INFORMATION` take their 64-bit
+  layouts. Guest and native memory are read through `DataView` (and the
+  `r32`/`w32` helpers) rather than `u32[a >>> 2]`, so everything works
+  above 4 GB; an x86-64 API argument reads as a whole address when it is
+  one (below the guest limit) and as its low 32 bits otherwise. x86-64
+  programs default to an 8 GB guest region on a 64-bit memory and 3 GB on a
+  32-bit one (images fold to 1–2 GB).
 * **CLI and in-browser translator:** `wwt translate --mem64`,
-  `wwt translate --base <hex>`, `wwt kernel --mem64`; `wwt_translate` flags
-  for x86-64 and 64-bit memory, `wwt_kernel64`.
+  `wwt translate --base <hex>`, `wwt kernel --mem64` and `--code64`;
+  `wwt_translate` flags for x86-64 and 64-bit memory, `wwt_kernel64`,
+  `wwt_kernel_code64`, and u64 addresses in its C ABI (base, entries,
+  known functions, profile). The browser keeps a profile per memory model,
+  as float64s.
 
 ## Test results
 
@@ -129,43 +152,55 @@ CPU's re-recording differs (failed 32-bit `cmpxchg` destinations,
 
 **Layer 2 — programs** (`tests/programs/check.mjs --arch x64`): built with
 `x86_64-w64-mingw32-gcc` at -O0 to -Os, the reference built with the native
-x86-64 gcc. (Linux is LP64 and Windows LLP64; these programs and Csmith's
-fixed-width types do not depend on `sizeof(long)`, and torture tests check
-themselves.)
+x86-64 gcc. (Linux is LP64 and Windows LLP64. The hand-written programs do
+not depend on `sizeof(long)` and torture tests check themselves; Csmith
+programs do, through `L` constants such as `x > -8L` with an unsigned `x`,
+so their reference is built with `gcc -m32`, whose `long` is 32-bit as on
+Windows.) On a 64-bit memory the programs run at their preferred base,
+`0x1_4000_0000`.
 
 | Suite | Memory | Result |
 | --- | --- | --- |
 | 7 hand-written programs × 5 levels (jump tables, `setjmp`/`longjmp`, x87 and SSE floats, 64-bit integers, strings, varargs, `qsort` callbacks) | 32-bit | 35/35 pass |
-| same | 64-bit | 35/35 pass |
+| same | 64-bit (at `0x1_4000_0000`) | 35/35 pass |
 | 32-bit programs (regression) | 32-bit | 35/35 pass |
 | 32-bit programs | 64-bit | 35/35 pass |
 | Csmith, 100 programs × -O0/-O2 | 32-bit | 186 pass, 0 fail, 14 skipped (native run timed out) |
+| Csmith, 40 more × -O0/-O2 (seeds 7000–7039) | 64-bit | 74 pass, 0 fail, 6 skipped |
 
 **Browser:** `tests/web/browser.mjs` runs x86-64 programs in headless
 Chromium like 32-bit ones: `jumps-O2.exe` (MinGW CRT, `setjmp`/`longjmp`)
 is translated in the page, 16 addresses missed ahead of time are
 translated at run time and saved to the profile, the second launch
-re-translates with them and the third loads the cached module.
+re-translates with them and the third loads the cached module. With
+memory64 (Chromium) the program runs at `0x1_4000_0000` in an 8 GB guest
+region.
 
 **Layer 5 — snapshots:** unchanged for 32-bit code apart from the
 numbering of temporaries in the IR snapshots (they start at v56 now that
-there are 56 state vregs) and three new metadata fields.
+there are 56 state vregs), three new metadata fields and the ABI version
+(3).
 
 ## Measurements
 
 CoreMark (`tools/bench/mem64.sh`, -O2, Node 24.21 / V8 13.6, x86-64 Linux
-development machine), score (higher is better). All six runs pass
+development machine), score (higher is better). All runs pass
 CoreMark's own validation. The machine was shared with other jobs, so
 runs vary by several percent; the second run had a test build going.
 
-| | Run 1 | Run 2 |
-| --- | --- | --- |
-| Native x86 (`gcc -m32`) | 25,010 | 25,226 |
-| Native x86-64 | — | 26,928 |
-| x86 code, 32-bit memory | 9,286 | 9,994 |
-| x86 code, 64-bit memory | 9,029 (−3%) | 8,633 (−14%) |
-| x86-64 code, 32-bit memory | — | 8,119 |
-| x86-64 code, 64-bit memory | — | 8,548 |
+| | Run 1 | Run 2 | Run 3 |
+| --- | --- | --- | --- |
+| Native x86 (`gcc -m32`) | 25,010 | 25,226 | 25,756 |
+| Native x86-64 | — | 26,928 | 27,579 |
+| x86 code, 32-bit memory | 9,286 | 9,994 | 9,703 |
+| x86 code, 64-bit memory | 9,029 (−3%) | 8,633 (−14%) | 8,488 (−13%) |
+| x86-64 code, 32-bit memory | — | 8,119 | 8,069 |
+| x86-64 code, 64-bit memory | — | 8,548 | 8,313 |
+
+Run 3 is after code addresses became 64-bit: x86-64 code on a 64-bit
+memory then runs at `0x1_4000_0000` with i64 return addresses and an i64
+lookup (Run 2 ran it below 4 GB with 32-bit ones). The difference is within
+this machine's run-to-run noise.
 
 What this says so far: in V8 the memory64 cost on this benchmark is well
 under the 10–100% the plan feared (V8 traps out-of-bounds memory64
@@ -202,4 +237,5 @@ Translated and native x86-64 runs of that build produce identical CRCs.)
   lock-based emulation before Milestone 5's threads.
 * **AVX:** not lifted; `cpuid` does not report it. 256-bit operations
   would split into pairs of 128-bit ones.
-* **Fixed-base images above 4 GB** are refused (see above).
+* **Fixed-base images above 4 GB** are refused on a 32-bit memory (see
+  above).

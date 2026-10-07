@@ -74,7 +74,7 @@ pub struct Report {
     pub wasm_bytes: usize,
     pub seeds: std::collections::BTreeMap<String, usize>,
     /// Instructions the lifter could not translate: (address, text).
-    pub unsupported: Vec<(u32, String)>,
+    pub unsupported: Vec<(u64, String)>,
     /// Indirect jumps recognized as jump tables.
     pub jump_tables: usize,
 }
@@ -82,7 +82,7 @@ pub struct Report {
 pub struct Translation {
     pub wasm: Vec<u8>,
     /// Translated function entry points, in table order.
-    pub entries: Vec<u32>,
+    pub entries: Vec<u64>,
     pub report: Report,
     /// The IR of each function after optimization (for inspection).
     pub ir: Vec<Function>,
@@ -96,12 +96,12 @@ pub struct ImageMeta {
     pub mode: Mode,
     pub machine: u16,
     /// The base the translation was made for (where the image must load).
-    pub image_base: u32,
+    pub image_base: u64,
     /// The base in the file (differs for 64-bit images moved below 4 GB).
     pub preferred_base: u64,
     pub size_of_image: u32,
     pub size_of_headers: u32,
-    pub entry: Option<u32>,
+    pub entry: Option<u64>,
     pub is_dll: bool,
     pub subsystem: u16,
     pub stack_reserve: u32,
@@ -145,7 +145,7 @@ pub fn image_meta(pe: &PeFile) -> ImageMeta {
 
 /// Discovers code in a PE image from all static seeds plus `profile` (code
 /// found at run time on earlier launches).
-pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Config) -> Discovery {
+pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u64], cfg: &Config) -> Discovery {
     let mut d = Discovery::new_in(pe.mode);
     if let Some(e) = pe.entry_point() {
         d.add_function_seed(e, SeedKind::Entry);
@@ -153,14 +153,14 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Con
     // x86-64: every function that calls or allocates stack has a `.pdata`
     // entry.
     for &rva in &pe.pdata {
-        let va = pe.image_base + rva;
+        let va = pe.image_base + rva as u64;
         if img.is_code(va) {
             d.add_function_seed(va, SeedKind::Pdata);
         }
     }
     for ex in &pe.exports {
         if let ExportTarget::Rva(rva) = ex.target {
-            let va = pe.image_base + rva;
+            let va = pe.image_base + rva as u64;
             if img.is_code(va) {
                 d.add_function_seed(va, SeedKind::Export);
             }
@@ -182,16 +182,14 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Con
     // Code pointers in data: relocation targets (always present in DLLs),
     // otherwise a scan of data sections. Addresses already known as
     // instruction starts are reached some other way (jump tables, calls).
-    let mut candidates: BTreeSet<(u32, SeedKind)> = BTreeSet::new();
+    let mut candidates: BTreeSet<(u64, SeedKind)> = BTreeSet::new();
     if let Some(relocs) = &pe.relocations {
         for (k, &r) in relocs.iter().enumerate() {
-            let site = pe.image_base + r;
+            let site = pe.image_base + r as u64;
             let v = if pe.reloc_types.get(k) == Some(&crate::pe::REL_DIR64) {
                 img.read_u64(site)
-                    .filter(|v| v >> 32 == 0)
-                    .map(|v| v as u32)
             } else {
-                img.read_u32(site)
+                img.read_u32(site).map(|v| v as u64)
             };
             if let Some(v) = v {
                 // Skip values inside code that are operands of instructions in
@@ -209,8 +207,8 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Con
             if s.is_executable() || s.characteristics & 0xC0 == 0x80 {
                 continue;
             }
-            let start = pe.image_base + s.virtual_address;
-            let end = start + s.raw_size.min(s.mem_size());
+            let start = pe.image_base + s.virtual_address as u64;
+            let end = start + s.raw_size.min(s.mem_size()) as u64;
             for v in scan_data_for_code_pointers_in(img, start, end, pe.mode) {
                 candidates.insert((v, SeedKind::DataScan));
             }
@@ -224,14 +222,14 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Con
     d.explore(img);
     // setjmp returns a second time through longjmp, after its caller's
     // frame has moved on: its return sites must be entry points.
-    let setjmp_slots: Vec<u32> = pe
+    let setjmp_slots: Vec<u64> = pe
         .imports
         .iter()
         .filter(|i| {
             let n = i.name.to_string().to_ascii_lowercase();
             n.contains("setjmp")
         })
-        .map(|i| pe.image_base + i.iat_rva)
+        .map(|i| pe.image_base + i.iat_rva as u64)
         .collect();
     if !setjmp_slots.is_empty() {
         use iced_x86::{FlowControl, OpKind, Register};
@@ -240,17 +238,16 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Con
             i.op0_kind() == OpKind::Memory
                 && matches!(i.memory_base(), Register::None | Register::RIP)
                 && i.memory_index() == Register::None
-                && i.memory_displacement64() >> 32 == 0
-                && setjmp_slots.contains(&(i.memory_displacement64() as u32))
+                && setjmp_slots.contains(&i.memory_displacement64())
         };
         // Import stubs: `jmp [slot]` (how MinGW calls undeclared imports).
-        let stubs: Vec<u32> = d
+        let stubs: Vec<u64> = d
             .insts
             .values()
             .filter(|i| i.flow_control() == FlowControl::IndirectBranch && via_slot(i))
-            .map(|i| i.ip32())
+            .map(|i| i.ip())
             .collect();
-        let returns: Vec<u32> = d
+        let returns: Vec<u64> = d
             .insts
             .values()
             .filter(|i| {
@@ -258,7 +255,7 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Con
                     || (i.flow_control() == FlowControl::Call
                         && crate::lift::branch_target(i, 0).is_some_and(|t| stubs.contains(&t)))
             })
-            .map(|i| i.next_ip32())
+            .map(|i| i.next_ip())
             .collect();
         for r in returns {
             d.add_function_seed(r, SeedKind::Call);
@@ -268,11 +265,16 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Con
     d
 }
 
-/// Translates a PE file ahead of time.
 /// Translates a PE file ahead of time. The mode (x86 or x86-64) comes from
-/// the file.
-pub fn translate_pe(pe: &PeFile, cfg: &Config, profile: &[u32]) -> Result<Translation> {
+/// the file. A 64-bit image preferred above 4 GB is folded below it when the
+/// target is a 32-bit memory.
+pub fn translate_pe(pe: &PeFile, cfg: &Config, profile: &[u64]) -> Result<Translation> {
     let cfg = &cfg.clone().with_mode(pe.mode);
+    if !cfg.codegen.mem64 && pe.image_base >> 32 != 0 {
+        let mut low = pe.clone();
+        low.fold_below_4gb()?;
+        return translate_pe(&low, cfg, profile);
+    }
     let img = pe.image()?;
     let mut d = discover_pe(pe, &img, profile, cfg);
     let meta = image_meta(pe);
@@ -282,7 +284,7 @@ pub fn translate_pe(pe: &PeFile, cfg: &Config, profile: &[u32]) -> Result<Transl
 /// Fast mode: translates code reachable from `entries` in `src`.
 pub fn translate_region(
     src: &dyn CodeSource,
-    entries: &[u32],
+    entries: &[u64],
     cfg: &Config,
 ) -> Result<Translation> {
     translate_region_with_known(src, entries, &[], cfg)
@@ -292,8 +294,8 @@ pub fn translate_region(
 /// which are called through the lookup rather than translated again.
 pub fn translate_region_with_known(
     src: &dyn CodeSource,
-    entries: &[u32],
-    known: &[u32],
+    entries: &[u64],
+    known: &[u64],
     cfg: &Config,
 ) -> Result<Translation> {
     let mut d = Discovery::new_in(cfg.mode());
@@ -324,9 +326,9 @@ pub fn translate_discovered(
     report.jump_tables = d.jump_tables.len();
     report.x86_instructions = d.insts.len();
     let mut funcs: Vec<Function> = vec![];
-    let mut done: BTreeSet<u32> = BTreeSet::new();
+    let mut done: BTreeSet<u64> = BTreeSet::new();
     loop {
-        let todo: Vec<u32> = d
+        let todo: Vec<u64> = d
             .functions
             .iter()
             .copied()
@@ -357,7 +359,7 @@ pub fn translate_discovered(
     report.functions = funcs.len();
     report.unsupported.sort();
     report.unsupported.dedup();
-    let entries: Vec<u32> = funcs.iter().map(|f| f.entry).collect();
+    let entries: Vec<u64> = funcs.iter().map(|f| f.entry).collect();
     let meta_json = serde_json::to_string(&Meta {
         abi_version: abi::ABI_VERSION,
         image: meta,
@@ -376,7 +378,7 @@ pub fn translate_discovered(
 
 /// Translates a single code snippet at `base` (used by the instruction test
 /// suite): everything outside the snippet is an exit.
-pub fn translate_snippet(code: &[u8], base: u32, cfg: &Config) -> (Function, Vec<(u32, String)>) {
+pub fn translate_snippet(code: &[u8], base: u64, cfg: &Config) -> (Function, Vec<(u64, String)>) {
     let src = crate::discover::FlatCode {
         base,
         bytes: code.to_vec(),

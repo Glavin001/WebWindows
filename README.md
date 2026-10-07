@@ -20,7 +20,8 @@ known limitations.
 32-bit one ([the plan](docs/plan.md#64-bit-programs)): the translator, the
 runtime and the instruction and program tests handle x86-64 code, on a 32-bit
 or a 64-bit (memory64) WebAssembly memory, and 64-bit console programs run
-on the Milestone 1 shims. Wine's 64-bit side comes next. See
+on the Milestone 1 shims at their own 64-bit addresses (`0x1_4000_0000` for
+an .exe). Wine's 64-bit side comes next. See
 [docs/milestone-9.md](docs/milestone-9.md).
 
 ## Quick start
@@ -38,8 +39,8 @@ cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
 node runtime/node/run.mjs tests/programs/hello.exe
 
 # 64-bit programs (needs gcc-mingw-w64-x86-64) are detected from the PE
-# header and run on a 64-bit (memory64) WebAssembly memory (--mem32 for a
-# 32-bit one):
+# header and run at their preferred base on a 64-bit (memory64) WebAssembly
+# memory (--mem32 moves them below 4 GB in a 32-bit one):
 x86_64-w64-mingw32-gcc -O2 -nostdlib -o hello64.exe tests/programs/hello.c -lkernel32 -Wl,-e,start
 node runtime/node/run.mjs hello64.exe
 

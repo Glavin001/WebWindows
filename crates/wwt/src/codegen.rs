@@ -3,7 +3,8 @@
 //! One WebAssembly function per x86 function, with type `(cpu: i32) -> i32`:
 //! the result is the x86 address to continue at. With 64-bit memory
 //! ([`CodegenConfig::mem64`]) the CPU pointer, native addresses and the
-//! runtime-table globals are i64; x86 code addresses stay 32-bit either way. Branches and loops are
+//! runtime-table globals are i64, and x86-64 code addresses are i64 too
+//! (`(cpu) -> i64`, see [`ModuleGen::code64`]). Branches and loops are
 //! rebuilt as structured control flow from the dominator tree (Ramsey,
 //! "Beyond Relooper", 2022); irreducible graphs fall back to a dispatch loop.
 //! Calls between functions in the module are direct; everything else goes
@@ -18,7 +19,7 @@ use wasm_encoder::{
     RefType, TableType, TypeSection, ValType,
 };
 
-use crate::abi::{self, addr::NULL_LIMIT, cpu, fault, imports};
+use crate::abi::{self, addr::NULL_LIMIT, cpu, cpu64, fault, imports};
 use crate::flags::{self, E};
 use crate::ir::*;
 use crate::opt::{self, Analysis, StateMask, ALL_STATE, FAULT_SYNC};
@@ -64,6 +65,8 @@ const G_TABLE_BASE: u32 = 0;
 const G_LOOKUP_L1: u32 = 1;
 const G_GUEST_CHECK: u32 = 2;
 const G_CODE_BITMAP: u32 = 3;
+/// 64-bit code only.
+const G_CODE_PAGES: u32 = 4;
 
 fn val_type(t: Ty) -> ValType {
     match t {
@@ -87,7 +90,12 @@ fn memarg(offset: u32, align_log2: u32) -> MemArg {
 pub struct ModuleGen<'a> {
     pub cfg: &'a CodegenConfig,
     /// x86 entry address -> index among translated functions.
-    func_index: HashMap<u32, u32>,
+    func_index: HashMap<u64, u32>,
+    /// Code addresses are 64-bit (x86-64 code on a 64-bit memory): functions
+    /// return an i64, eip lives in [`cpu64::RIP`] and the lookup covers
+    /// [`imports::CODE_PAGES`] pages. Otherwise code addresses are 32-bit
+    /// (x86-64 images then sit below 4 GB).
+    pub code64: bool,
     helpers: Vec<Helper>,
     helper_types: Vec<(Vec<Ty>, Ty)>,
 }
@@ -114,9 +122,11 @@ impl<'a> ModuleGen<'a> {
                 }
             }
         }
+        let code64 = cfg.mem64 && funcs.first().is_some_and(|f| f.mode == Mode::X64);
         ModuleGen {
             cfg,
             func_index,
+            code64,
             helpers,
             helper_types: vec![],
         }
@@ -137,7 +147,7 @@ impl<'a> ModuleGen<'a> {
         NUM_FUNC_IMPORTS + self.helpers.len() as u32 + i
     }
 
-    pub fn direct_target(&self, addr: u32) -> Option<u32> {
+    pub fn direct_target(&self, addr: u64) -> Option<u32> {
         self.func_index
             .get(&addr)
             .map(|&i| self.translated_func_index(i))
@@ -152,23 +162,36 @@ impl<'a> ModuleGen<'a> {
         }
     }
 
+    /// Type of x86 code addresses.
+    fn code_type(&self) -> ValType {
+        if self.code64 {
+            ValType::I64
+        } else {
+            ValType::I32
+        }
+    }
+
     /// Generates the module bytes.
     pub fn build(mut self, funcs: &[Function], meta_json: &str) -> Vec<u8> {
         let mut module = Module::new();
         let at = self.addr_type();
+        let ct = self.code_type();
         for f in funcs {
             assert_eq!(
                 f.mem64, self.cfg.mem64,
                 "function and module memory width differ"
             );
+            assert_eq!(
+                f.mode == Mode::X64 && f.mem64,
+                self.code64,
+                "function and module code width differ"
+            );
         }
 
         // Types.
         let mut types = TypeSection::new();
-        types.ty().function([at], [ValType::I32]);
-        types
-            .ty()
-            .function([at, ValType::I32, ValType::I32, ValType::I32], []);
+        types.ty().function([at], [ct]);
+        types.ty().function([at, ValType::I32, ct, ct], []);
         types.ty().function([at, at], []);
         types
             .ty()
@@ -226,12 +249,16 @@ impl<'a> ModuleGen<'a> {
                 shared: false,
             },
         );
-        for name in [
+        let mut globals = vec![
             imports::TABLE_BASE,
             imports::LOOKUP_L1,
             imports::GUEST_LIMIT,
             imports::CODE_BITMAP,
-        ] {
+        ];
+        if self.code64 {
+            globals.push(imports::CODE_PAGES);
+        }
+        for name in globals {
             imp.import(
                 imports::MODULE,
                 name,
@@ -287,13 +314,21 @@ impl<'a> ModuleGen<'a> {
         module.section(&code);
 
         // Function address map and metadata.
-        let mut map = Vec::with_capacity(4 + funcs.len() * 4);
+        let mut map = Vec::with_capacity(4 + funcs.len() * 8);
         map.extend_from_slice(&(funcs.len() as u32).to_le_bytes());
         for f in funcs {
-            map.extend_from_slice(&f.entry.to_le_bytes());
+            if self.code64 {
+                map.extend_from_slice(&f.entry.to_le_bytes());
+            } else {
+                map.extend_from_slice(&(f.entry as u32).to_le_bytes());
+            }
         }
         module.section(&CustomSection {
-            name: Cow::Borrowed(abi::FUNCS_SECTION),
+            name: Cow::Borrowed(if self.code64 {
+                abi::FUNCS64_SECTION
+            } else {
+                abi::FUNCS_SECTION
+            }),
             data: Cow::Owned(map),
         });
         module.section(&CustomSection {
@@ -548,21 +583,92 @@ impl<'g, 'a> FnGen<'g, 'a> {
         }
     }
 
-    fn store_eip_const(&mut self, eip: u32) {
+    fn code64(&self) -> bool {
+        self.m.code64
+    }
+
+    /// A scratch local of the code address type.
+    fn tmp_code(&self) -> u32 {
+        if self.code64() {
+            self.tmp_i64
+        } else {
+            self.tmp_i32
+        }
+    }
+
+    /// Pushes the code address `a`.
+    fn code_const(&mut self, a: u64) {
+        if self.code64() {
+            self.emit(W::I64Const(a as i64));
+        } else {
+            self.emit(W::I32Const(a as i32));
+        }
+    }
+
+    /// Pushes vreg `v` as a code address. With 32-bit code addresses a
+    /// 64-bit value above 4 GB becomes 0, which faults in the dispatcher.
+    fn get_code(&mut self, v: V) {
+        self.get(v);
+        match (self.f.ty(v), self.code64()) {
+            (Ty::I32, true) => self.emit(W::I64ExtendI32U),
+            (Ty::I64, false) => {
+                self.emit(W::LocalTee(self.tmp_i64));
+                self.emit(W::I32WrapI64);
+                self.emit(W::I32Const(0));
+                self.emit(W::LocalGet(self.tmp_i64));
+                self.emit(W::I64Const(32));
+                self.emit(W::I64ShrU);
+                self.emit(W::I64Eqz);
+                self.emit(W::Select);
+            }
+            _ => {}
+        }
+    }
+
+    /// Stores the code address on the stack (after the CPU pointer) as eip.
+    fn store_eip(&mut self) {
+        if self.code64() {
+            self.emit(W::I64Store(memarg(cpu64::RIP, 3)));
+        } else {
+            self.emit(W::I32Store(memarg(cpu::EIP, 2)));
+        }
+    }
+
+    fn store_eip_const(&mut self, eip: u64) {
         self.emit(W::LocalGet(0));
-        self.emit(W::I32Const(eip as i32));
-        self.emit(W::I32Store(memarg(cpu::EIP, 2)));
+        self.code_const(eip);
+        self.store_eip();
+    }
+
+    /// Sets the fault information from the value of type `t` on the stack.
+    fn set_fault_info(&mut self, t: Ty) {
+        if self.code64() {
+            if t == Ty::I32 {
+                self.emit(W::I64ExtendI32U);
+            }
+            self.emit(W::LocalSet(self.tmp_i64b));
+        } else {
+            if t == Ty::I64 {
+                self.emit(W::I32WrapI64);
+            }
+            self.emit(W::LocalSet(self.tmp_i32b));
+        }
     }
 
     /// Raises a fault: writes back `mask`, records eip and calls the host.
-    /// The address/info value must already be in `tmp_i32b`.
-    fn raise(&mut self, mask: StateMask, code: u32, eip: u32) {
+    /// The address/info value must already be in `tmp_i32b` (`tmp_i64b`
+    /// for 64-bit code).
+    fn raise(&mut self, mask: StateMask, code: u32, eip: u64) {
         self.sync(mask);
         self.store_eip_const(eip);
         self.emit(W::LocalGet(0));
         self.emit(W::I32Const(code as i32));
-        self.emit(W::I32Const(eip as i32));
-        self.emit(W::LocalGet(self.tmp_i32b));
+        self.code_const(eip);
+        if self.code64() {
+            self.emit(W::LocalGet(self.tmp_i64b));
+        } else {
+            self.emit(W::LocalGet(self.tmp_i32b));
+        }
         self.emit(W::Call(F_FAULT));
         self.emit(W::Unreachable);
     }
@@ -571,6 +677,32 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     /// Pushes the table index for the address in local `t`.
     fn lookup_index(&mut self, t: u32) {
+        if self.code64() {
+            // page = min(t >> 12, code_pages); L1 entries are 8-byte
+            // pointers to the L2 pages.
+            self.emit(W::GlobalGet(G_LOOKUP_L1));
+            self.emit(W::LocalGet(t));
+            self.emit(W::I64Const(12));
+            self.emit(W::I64ShrU);
+            self.emit(W::LocalTee(self.tmp_i64b));
+            self.emit(W::GlobalGet(G_CODE_PAGES));
+            self.emit(W::LocalGet(self.tmp_i64b));
+            self.emit(W::GlobalGet(G_CODE_PAGES));
+            self.emit(W::I64LtU);
+            self.emit(W::Select);
+            self.emit(W::I64Const(3));
+            self.emit(W::I64Shl);
+            self.emit(W::I64Add);
+            self.emit(W::I64Load(memarg(0, 3)));
+            self.emit(W::LocalGet(t));
+            self.emit(W::I64Const(0xfff));
+            self.emit(W::I64And);
+            self.emit(W::I64Const(2));
+            self.emit(W::I64Shl);
+            self.emit(W::I64Add);
+            self.emit(W::I32Load(memarg(0, 2)));
+            return;
+        }
         if self.m.cfg.mem64 {
             // L1 entries are 8-byte pointers to the L2 pages.
             self.emit(W::GlobalGet(G_LOOKUP_L1));
@@ -613,7 +745,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
     fn call_lookup(&mut self, t: u32, tail: bool) {
         self.emit(W::LocalGet(0));
         self.emit(W::LocalGet(t));
-        self.emit(W::I32Store(memarg(cpu::EIP, 2)));
+        self.store_eip();
         self.emit(W::LocalGet(0));
         self.lookup_index(t);
         if tail {
@@ -888,9 +1020,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.ctx.pop();
                 self.emit(W::End);
                 self.sync(dirty);
-                self.get(fallback);
-                self.emit(W::LocalSet(self.tmp_i32));
-                self.call_lookup(self.tmp_i32, true);
+                self.get_code(fallback);
+                let t = self.tmp_code();
+                self.emit(W::LocalSet(t));
+                self.call_lookup(t, true);
             }
             Term::Call { target, ret, cont } => {
                 self.sync(dirty);
@@ -901,23 +1034,26 @@ impl<'g, 'a> FnGen<'g, 'a> {
                             self.emit(W::Call(fi));
                         }
                         None => {
-                            self.emit(W::I32Const(addr as i32));
-                            self.emit(W::LocalSet(self.tmp_i32));
-                            self.call_lookup(self.tmp_i32, false);
+                            self.code_const(addr);
+                            let t = self.tmp_code();
+                            self.emit(W::LocalSet(t));
+                            self.call_lookup(t, false);
                         }
                     },
                     CallTarget::Indirect(v) => {
-                        self.get(v);
-                        self.emit(W::LocalSet(self.tmp_i32));
-                        self.call_lookup(self.tmp_i32, false);
+                        self.get_code(v);
+                        let t = self.tmp_code();
+                        self.emit(W::LocalSet(t));
+                        self.call_lookup(t, false);
                     }
                 }
                 // Continue inline only if the callee returned to us.
-                self.emit(W::LocalTee(self.tmp_i32));
-                self.emit(W::I32Const(ret as i32));
-                self.emit(W::I32Ne);
+                let t = self.tmp_code();
+                self.emit(W::LocalTee(t));
+                self.code_const(ret);
+                self.emit(if self.code64() { W::I64Ne } else { W::I32Ne });
                 self.emit(W::If(BlockType::Empty));
-                self.emit(W::LocalGet(self.tmp_i32));
+                self.emit(W::LocalGet(t));
                 self.emit(W::Return);
                 self.emit(W::End);
                 let live = self.a.state_live_in(cont) & ALL_STATE;
@@ -932,25 +1068,26 @@ impl<'g, 'a> FnGen<'g, 'a> {
                         self.emit(W::ReturnCall(fi));
                     }
                     None => {
-                        self.emit(W::I32Const(addr as i32));
+                        self.code_const(addr);
                         self.emit(W::Return);
                     }
                 }
             }
             Term::Ret(v) => {
                 self.sync(dirty);
-                self.get(v);
+                self.get_code(v);
                 self.emit(W::Return);
             }
             Term::JmpInd(v) => {
                 self.sync(dirty);
-                self.get(v);
-                self.emit(W::LocalSet(self.tmp_i32));
-                self.call_lookup(self.tmp_i32, true);
+                self.get_code(v);
+                let t = self.tmp_code();
+                self.emit(W::LocalSet(t));
+                self.call_lookup(t, true);
             }
             Term::Fault { code, eip } => {
                 self.emit(W::I32Const(0));
-                self.emit(W::LocalSet(self.tmp_i32b));
+                self.set_fault_info(Ty::I32);
                 self.raise(dirty, code, eip);
             }
             Term::None => self.emit(W::Unreachable),
@@ -1067,7 +1204,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
     }
 
     /// Emits an address check for the access at vreg `v` + `off`.
-    fn check_addr(&mut self, v: V, off: u32, dirty: StateMask, eip: u32) {
+    fn check_addr(&mut self, v: V, off: u32, dirty: StateMask, eip: u64) {
         let addr = self.local_of[v as usize];
         if self.f.ty(v) == Ty::I64 || self.mem64() {
             self.emit(W::LocalGet(addr));
@@ -1412,10 +1549,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.get(*cond);
                 self.emit(W::If(BlockType::Empty));
                 self.get(*info);
-                if self.f.ty(*info) == Ty::I64 {
-                    self.emit(W::I32WrapI64);
-                }
-                self.emit(W::LocalSet(self.tmp_i32b));
+                let t = self.f.ty(*info);
+                self.set_fault_info(t);
                 self.raise(dirty & FAULT_SYNC, *code, inst.eip);
                 self.emit(W::End);
             }
@@ -1432,7 +1567,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
     }
 
     /// Checks that [addr, addr+len) lies in the guest region.
-    fn check_range(&mut self, addr: V, len: V, dirty: StateMask, eip: u32) {
+    fn check_range(&mut self, addr: V, len: V, dirty: StateMask, eip: u64) {
         if self.f.ty(addr) == Ty::I64 || self.mem64() {
             // In i64: fault if addr < NULL_LIMIT || addr + len - NULL_LIMIT > check
             let wide = self.f.ty(addr) == Ty::I64;
