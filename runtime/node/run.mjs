@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { Machine, ProcessExit, GuestFault, hex } from '../runtime.mjs';
 import { Process } from '../win32.mjs';
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
+import { stdout, stderr } from './output.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../..');
@@ -63,21 +64,21 @@ export async function runExe(exePath, argv, opts = {}) {
     abi,
     kernel,
     guestLimit: (opts.guestLimitMB ?? 1024) * 1024 * 1024,
-    log: opts.verbose ? (s) => process.stderr.write(s + '\n') : undefined,
+    log: opts.verbose ? (s) => stderr(s + '\n') : undefined,
   });
   await machine.init();
   if (opts.fast !== false) {
     const tw = findTranslatorWasm();
     if (tw) {
       const ft = await FastTranslator.load(readFileSync(tw));
-      enableFastMode(machine, ft, { log: opts.verbose ? (s) => process.stderr.write(s + '\n') : undefined });
+      enableFastMode(machine, ft, { log: opts.verbose ? (s) => stderr(s + '\n') : undefined });
     }
   }
   const mod = await machine.loadModule(readFileSync(wasmPath), basename(wasmPath));
   const proc = new Process(machine, {
     argv: [basename(exePath), ...argv],
-    stdout: opts.stdout ?? ((b) => (opts.capture ? out.push(Buffer.from(b)) : process.stdout.write(b))),
-    stderr: opts.stderr ?? ((b) => process.stderr.write(b)),
+    stdout: opts.stdout ?? ((b) => (opts.capture ? out.push(Buffer.from(b)) : stdout(b))),
+    stderr: opts.stderr ?? ((b) => stderr(b)),
     trace: opts.trace,
   });
   proc.load(readFileSync(exePath), mod.meta.image);
@@ -91,7 +92,7 @@ export async function runExe(exePath, argv, opts = {}) {
     else error = e;
   }
   const runMs = performance.now() - t0;
-  if (opts.time) process.stderr.write(`run time: ${runMs.toFixed(1)} ms\n`);
+  if (opts.time) stderr(`run time: ${runMs.toFixed(1)} ms\n`);
   if (opts.profile && machine.profile.size) {
     appendFileSync(opts.profile, [...machine.profile].map((a) => hex(a)).join('\n') + '\n');
   }
@@ -115,14 +116,14 @@ async function main() {
   }
   const exe = args.shift();
   if (!exe) {
-    process.stderr.write('usage: run.mjs [options] program.exe [args...]\n');
+    stderr('usage: run.mjs [options] program.exe [args...]\n');
     process.exit(2);
   }
   const r = await runExe(exe, args, opts);
   if (r.error) {
     const e = r.error;
-    process.stderr.write(`\n*** ${e instanceof GuestFault ? 'guest fault' : 'error'}: ${e.message}\n`);
-    if (!(e instanceof GuestFault)) process.stderr.write(e.stack + '\n');
+    stderr(`\n*** ${e instanceof GuestFault ? 'guest fault' : 'error'}: ${e.message}\n`);
+    if (!(e instanceof GuestFault)) stderr(e.stack + '\n');
     process.exit(128);
   }
   process.exit(r.exitCode);
@@ -130,7 +131,7 @@ async function main() {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((e) => {
-    process.stderr.write(e.stack + '\n');
+    stderr(e.stack + '\n');
     process.exit(1);
   });
 }

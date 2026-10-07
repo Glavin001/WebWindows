@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { Machine, GuestFault, hex } from '../runtime.mjs';
 import { WineHost } from '../wine/host.mjs';
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
+import { stdout, stderr } from './output.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const wineBuild = process.env.WINE_BUILD ?? '/opt/wine-build';
@@ -31,7 +32,10 @@ function wwt() {
 /** Translates an image with the CLI, caching by content hash. */
 function translate(path, bytes) {
   mkdirSync(cacheDir, { recursive: true });
-  const hash = createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+  // Keyed by the image and the translator build, so a rebuilt translator
+  // never serves stale translations.
+  const t = statSync(wwt());
+  const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}`).digest('hex').slice(0, 16);
   const out = join(cacheDir, `${path.split('\\').pop()}-${hash}.wasm`);
   if (!existsSync(out)) {
     // Several runners share the cache: write under a per-process name and
@@ -82,14 +86,14 @@ const machine = new Machine({
   abi,
   kernel,
   guestLimit: 0x8000_0000,
-  log: trace ? (s) => process.stderr.write(`[machine] ${s}\n`) : undefined,
+  log: trace ? (s) => stderr(`[machine] ${s}\n`) : undefined,
 });
 await machine.init();
 // Fast mode: code the ahead-of-time pass missed is translated when reached.
 const tw = join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm');
 if (existsSync(tw)) {
   enableFastMode(machine, await FastTranslator.load(readFileSync(tw)), {
-    log: trace ? (s) => process.stderr.write(`[fast] ${s}\n`) : undefined,
+    log: trace ? (s) => stderr(`[fast] ${s}\n`) : undefined,
   });
 }
 const host = new WineHost(machine, {
@@ -97,18 +101,18 @@ const host = new WineHost(machine, {
   files,
   argv: [`C:\\${basename(exe)}`, ...args],
   exePath: `C:\\${basename(exe)}`,
-  stdout: (b) => process.stdout.write(b),
-  stderr: (b) => process.stderr.write(b),
+  stdout: (b) => stdout(b),
+  stderr: (b) => stderr(b),
   trace,
 });
 host.boot(`${sys32}\\ntdll.dll`, exeDos);
 const r = host.run();
 if (host.unimplemented.size) {
-  process.stderr.write(`unimplemented syscalls: ${[...host.unimplemented.keys()].join(', ')}\n`);
+  stderr(`unimplemented syscalls: ${[...host.unimplemented.keys()].join(', ')}\n`);
 }
 if (r.error) {
-  process.stderr.write(`\n*** ${r.error instanceof GuestFault ? 'guest fault' : 'error'}: ${r.error.message}\n`);
-  if (!(r.error instanceof GuestFault)) process.stderr.write(r.error.stack + '\n');
+  stderr(`\n*** ${r.error instanceof GuestFault ? 'guest fault' : 'error'}: ${r.error.message}\n`);
+  if (!(r.error instanceof GuestFault)) stderr(r.error.stack + '\n');
   process.exit(128);
 }
 process.exit(r.exitCode ?? 0);

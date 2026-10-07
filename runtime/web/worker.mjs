@@ -48,7 +48,7 @@ async function cacheWrite(dir, name, bytes) {
  * Runs the program on translated Wine (Milestone 2): Wine's DLLs come
  * pre-translated in the bundle; the .exe is translated here and cached.
  */
-async function runOnWine({ exeName, exe, argv, ft, abi, dir, key, bundleUrl }) {
+async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, key, bundleUrl }) {
   const base = new URL(bundleUrl, self.location.href);
   const manifest = await (await fetch(new URL('manifest.json', base))).json();
   const t0 = performance.now();
@@ -71,7 +71,12 @@ async function runOnWine({ exeName, exe, argv, ft, abi, dir, key, bundleUrl }) {
   ]);
   files.set('c:\\windows\\globalization\\sorting\\sortdefault.nls', files.get(`${sys32}\\sortdefault.nls`));
   log(`loaded Wine ${manifest.wine} (${compiled.size} DLLs) in ${(performance.now() - t0).toFixed(0)} ms`);
-  const exeDos = `c:\\${exeName.toLowerCase()}`;
+  // The chosen folder is C:\app; a program given by URL runs from C:\.
+  for (const [rel, bytes] of Object.entries(folder)) {
+    files.set(`c:\\app\\${rel.replaceAll('/', '\\').toLowerCase()}`, new Uint8Array(bytes));
+  }
+  const exeWin = exePath ? `C:\\app\\${exePath.replaceAll('/', '\\')}` : `C:\\${exeName}`;
+  const exeDos = exeWin.toLowerCase();
   files.set(exeDos, exe);
   const translateTimed = (path, bytes) => {
     const t = performance.now();
@@ -101,8 +106,8 @@ async function runOnWine({ exeName, exe, argv, ft, abi, dir, key, bundleUrl }) {
   const host = new WineHost(machine, {
     translate,
     files,
-    argv: [`C:\\${exeName}`, ...argv],
-    exePath: `C:\\${exeName}`,
+    argv: [exeWin, ...argv],
+    exePath: exeWin,
     stdout: (b) => postMessage({ type: 'stdout', bytes: b }),
     stderr: (b) => postMessage({ type: 'stderr', bytes: b }),
   });
@@ -114,7 +119,7 @@ async function runOnWine({ exeName, exe, argv, ft, abi, dir, key, bundleUrl }) {
 }
 
 onmessage = async (e) => {
-  const { exeName, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl } = e.data;
+  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl } = e.data;
   const enc = new TextEncoder();
   try {
     const t0 = performance.now();
@@ -124,7 +129,7 @@ onmessage = async (e) => {
     const key = `${await sha256(exe)}-abi${abi.version}`;
     const dir = noCache ? null : await cacheDir();
     if (wine) {
-      const r = await runOnWine({ exeName, exe, argv, ft, abi, dir, key, bundleUrl });
+      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl });
       if (r.error) postMessage({ type: 'stderr', bytes: enc.encode(`\n*** ${r.error.message}\n`) });
       postMessage({ type: 'exit', code: r.error ? null : r.exitCode, translated: false, runMs: r.runMs, wine: true });
       return;

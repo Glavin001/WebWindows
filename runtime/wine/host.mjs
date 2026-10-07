@@ -462,7 +462,8 @@ export class WineHost {
     this.w32(p + R.hStdError, this.newHandle({ type: 'file', std: 'stderr', path: null }));
     let dst = p + R.__size;
     // CurrentDirectory: DosPath UNICODE_STRING with MAX_PATH buffer.
-    const curdir = 'C:\\';
+    // The program's own directory, as when started from Explorer.
+    const curdir = this.exePath.replace(/[^\\]*$/, '');
     this.wstr(dst, curdir);
     this.w16(p + R.CurrentDirectory, curdir.length * 2);
     this.w16(p + R.CurrentDirectory + 2, 520);

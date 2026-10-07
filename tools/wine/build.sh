@@ -4,6 +4,8 @@
 # is replaced by runtime/wine.
 #
 #   tools/wine/build.sh [dll ...]      # default: the DLLs a console app needs
+#   tools/wine/build.sh programs/cmd   # one of Wine's programs (cmd.exe)
+#   tools/wine/build.sh kernel32/tests # a DLL's conformance tests
 #
 # Environment: WINE_SRC (default /opt/wine-src/wine-$VERSION), WINE_BUILD
 # (default /opt/wine-build). Needs gcc, flex, bison and gcc-mingw-w64-i686.
@@ -27,7 +29,14 @@ if [ ! -f Makefile ]; then
     --without-unwind --without-capi --without-gphoto --without-inotify --without-xinerama \
     --without-fontconfig --without-opengl --without-pcsclite --without-ffmpeg > configure.log
 fi
+target() {
+  case $1 in
+    programs/*) n=${1#programs/}; case $n in *.*) echo "$1/i386-windows/$n" ;; *) echo "$1/i386-windows/$n.exe" ;; esac ;;
+    */tests) d=${1%/tests}; echo "dlls/$1/i386-windows/${d}_test.exe" ;;
+    *) echo "dlls/$1/i386-windows/$1.dll" ;;
+  esac
+}
 targets=""
-for d in $DLLS; do targets="$targets dlls/$d/i386-windows/$d.dll"; done
+for d in $DLLS; do targets="$targets $(target "$d")"; done
 make -j"$(nproc)" $targets
-for d in $DLLS; do ls -la "dlls/$d/i386-windows/$d.dll"; done
+for t in $targets; do ls -la "$t"; done
