@@ -803,7 +803,15 @@ fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Ca
             let off = ea - MEM_BASE;
             match code.op_code().memory_size() {
                 iced_x86::MemorySize::Float80 => {
-                    let v = nice_f64(b.rng).to_bits();
+                    // Specials often: the 80-bit load path decodes them
+                    // separately from finite values.
+                    let v = if b.rng.below(4) == 0 {
+                        b.rng
+                            .pick(&[f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 0.0, -0.0])
+                    } else {
+                        nice_f64(b.rng)
+                    }
+                    .to_bits();
                     let e = wwt::fpu::f64_to_f80(f64::from_bits(v));
                     b.mem_patch
                         .push((off, u32::from_le_bytes(e[0..4].try_into().unwrap())));
