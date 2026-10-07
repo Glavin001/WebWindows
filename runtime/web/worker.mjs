@@ -9,6 +9,7 @@
 
 import { Machine, ProcessExit, GuestFault } from '../runtime.mjs';
 import { Process } from '../win32.mjs';
+import { peArch } from '../pe.mjs';
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
 import { WineHost } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
@@ -206,7 +207,11 @@ onmessage = async (e) => {
       log(`loaded cached translation of ${exeName} (${(wasm.length / 1024).toFixed(0)} KB)`);
     }
 
-    const machine = new Machine({ abi, kernel: ft.kernel(), guestLimit: guestLimitMB << 20, log });
+    // 64-bit images load at 1 GB and up (preferred bases above 4 GB fold
+    // below it), so their guest region is at least 2 GB.
+    const arch = peArch(exe);
+    const limitMB = arch === 'x64' ? Math.max(guestLimitMB, 2048) : guestLimitMB;
+    const machine = new Machine({ abi, kernel: ft.kernel(), arch, guestLimit: limitMB * 1024 * 1024, log });
     await machine.init();
     enableFastMode(machine, ft, { log });
     const mod = await machine.loadModule(wasm, exeName);

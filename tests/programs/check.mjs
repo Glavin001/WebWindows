@@ -34,9 +34,6 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../..');
-const work = join(root, process.argv.includes('x64') ? 'target/programs-x64' : 'target/programs');
-const failDir = join(root, 'target/program-failures');
-mkdirSync(join(work, 'torture'), { recursive: true });
 
 const args = process.argv.slice(2);
 let opts = ['O0', 'O1', 'O2', 'O3', 'Os'];
@@ -62,6 +59,10 @@ while (args.length) {
   else if (a === '--filter') filter = new RegExp(args.shift());
   else files.push(resolve(a));
 }
+// 64-bit builds go to their own directory (same program names).
+const work = join(root, arch === 'x64' ? 'target/programs-x64' : 'target/programs');
+const failDir = join(root, 'target/program-failures');
+mkdirSync(join(work, 'torture'), { recursive: true });
 if (torture) {
   for (const f of readdirSync(torture).sort()) if (f.endsWith('.c')) files.push(join(torture, f));
 } else if (!files.length && csmith === 0) {

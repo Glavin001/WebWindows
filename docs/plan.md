@@ -10,7 +10,7 @@ We run unmodified 32-bit Windows games in a browser by translating both the game
 - **Rosetta-style translation.** Ahead of time first. Code the first pass missed is translated on the spot when it runs, then folded into the cache for next launch.
 - **Wine is translated, not ported.** Wine's Windows-side DLLs are ordinary x86 DLLs, so the same translator converts them once at build time and we ship the result. Only Wine's narrow Unix side is rewritten or compiled natively.
 - **One shared memory.** The game, translated Wine and the native layer share one WebAssembly memory laid out like a Windows process, so a pointer means the same thing everywhere.
-- **Scope for v1:** 32-bit, single-player, no DRM, Chromium first. Graphics covers normal window and GDI rendering only; Direct3D is disabled for now (problem 11).
+- **Scope for v1:** 32-bit, single-player, no DRM, Chromium first. 64-bit programs follow on a second stack ([64-bit programs](#64-bit-programs)). Graphics covers normal window and GDI rendering only; Direct3D is disabled for now (problem 11).
 - **Delivery order:** a local command-line toolkit that turns an .exe into a web app comes first; the same translator library then moves into the browser.
 
 ## How everything connects
@@ -350,7 +350,37 @@ Each milestone builds a permanent part of the target and adds its test layer; M2
    - **Done when:** the flagship game meets the frame-rate target set in M6.
 8. **M8 — Product.** Installer handling, a compatibility database, per-game settings, a hosted mode for games whose licenses allow it, Firefox and Safari fallbacks.
 
-After v1: x86-64 on 64-bit WebAssembly memory, then DirectX 10 and 11.
+After v1: x86-64 on 64-bit WebAssembly memory (below, started early), then DirectX 10 and 11.
+
+## 64-bit programs
+
+**Decision: two stacks, one translator.** 32-bit programs keep their stack unchanged (32-bit memory, Wine's i386 DLLs, the pure i386 system-call path). 64-bit programs get a second one: x86-64 code, Wine's x86_64 DLLs translated, Wine's Unix side built for wasm64, and a 64-bit (memory64) WebAssembly memory, so both halves of Wine share a pointer size and no structure conversion is needed. The PE machine field picks the stack per process. Status: [milestone-9.md](milestone-9.md).
+
+**Why not the alternatives.**
+
+| | Two stacks (chosen) | One WoW64 stack | x86-64 in a 32-bit memory |
+| --- | --- | --- | --- |
+| How | Separate 32-bit and 64-bit Wine; one translator with a mode | Upstream Wine's and [Hangover](https://github.com/AndreRH/hangover)'s model: one 64-bit Wine, 32-bit programs through `wow64.dll` with our translator as its CPU backend | Every guest address below 4 GB in today's memory |
+| 32-bit speed | Unchanged | Pays the memory64 cost | Unchanged |
+| 64-bit speed | memory64 cost | memory64 cost | Same as 32-bit |
+| New work | A second Wine build and Unix side | Replaces the working M1–M4 path | A hand-written 64-to-32-bit conversion at every system call, Unix call and graphics call |
+
+[Boxedwine64](https://github.com/0x07C0/Boxedwine64) makes the same choice: 32-bit unchanged, 64-bit behind a switch on `-sMEMORY64`.
+
+**Memory64 cost decides the follow-ups.** Browsers bounds-check every memory64 access: V8 traps on a compare with a constant (13.0 and later), SpiderMonkey checks explicitly, reported at 10% to over 100% ([SpiderMonkey](https://spidermonkey.dev/blog/2025/01/15/is-memory64-actually-worth-using.html)). Chrome 133, Firefox 134 and Node 24 ship it; Safari has it behind a flag. The translator therefore keeps the address model separate from the mode: x86-64 code also runs on a 32-bit memory (guest below 4 GB, addresses checked and wrapped), and 32-bit code on a 64-bit memory. `tools/bench/mem64.sh` measures all four. If the cost is small, 32-bit programs can later move onto the 64-bit stack through WoW64 (one Wine); if it is large, the 32-bit-memory model becomes the default for 64-bit programs that fit in about 3.5 GB, with a 64-to-32-bit conversion layer at the Wine boundary.
+
+**Code stays below 4 GB.** Images preferred above 4 GB are moved by their relocations (64-bit executables are relocatable unless linked with `/FIXED`), so x86 code addresses, the lookup table and the dispatcher stay 32-bit; data addresses are 64-bit.
+
+**What x86-64 changes.** Easier: `.pdata` lists nearly every function (a discovery seed), one calling convention, 16 registers, SSE instead of x87. Harder: 8-byte pointers in every structure that crosses a boundary, and table-based exceptions, whose unwinder needs the stack pointer and saved registers exactly where the unwind data says at every call and possible fault (translated code keeps the guest stack real, so this holds as long as prologue saves are never optimized away).
+
+| # | Milestone | Done when |
+| --- | --- | --- |
+| M9 | x86-64 translator and runtime on the M1 shims | x86-64 instruction suite and program tests pass on both memory models (done; [milestone-9.md](milestone-9.md)) |
+| M10 | 64-bit Wine, console | `hello64.exe` prints through translated x86_64 Wine with its Unix side on wasm64 |
+| M11 | 64-bit Wine, windows | x86-64 `winemine` and `notepad` run; a 64-bit program can start a 32-bit one (each in its own stack, one wineserver: its protocol already uses 64-bit pointer fields) |
+| M12 | Exceptions and threads for x86-64 | C++ and SEH exceptions through `.pdata` unwinding; `cmpxchg16b` atomic; `RtlAddFunctionTable` honored by fast mode |
+| M13 | 64-bit graphics, with the Direct3D workstream | A 64-bit game renders through the Direct3D layer built for wasm64 |
+| M14 | Conditional: the 32-bit-memory model as the default for 64-bit programs that fit | Only if `mem64.sh` shows memory64 costs too much |
 
 ## Non-goals and risks
 

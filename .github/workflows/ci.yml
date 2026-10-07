@@ -32,7 +32,7 @@ jobs:
       - name: Install toolchains
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 csmith binaryen
+          sudo apt-get install -y gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 gcc-mingw-w64-x86-64 csmith binaryen
       - name: Format
         run: cargo fmt --all --check
       - name: Build
@@ -47,6 +47,14 @@ jobs:
         run: node tests/programs/check.mjs --jobs 4
       - name: Csmith (layer 2)
         run: node tests/programs/check.mjs --csmith 40 --seed ${{ github.run_number }}000 --opt O0,O2 --jobs 4
+      - name: Programs, x86-64 (layer 2)
+        run: node tests/programs/check.mjs --arch x64 --jobs 4
+      - name: Programs on 64-bit WebAssembly memory (layer 2)
+        run: |
+          node tests/programs/check.mjs --arch x64 --mem64 --jobs 4
+          node tests/programs/check.mjs --mem64 --opt O2 --jobs 4
+      - name: Csmith, x86-64 (layer 2)
+        run: node tests/programs/check.mjs --arch x64 --csmith 40 --seed ${{ github.run_number }}000 --opt O0,O2 --jobs 4
       - name: GCC torture (layer 2)
         run: |
           sh tools/torture/fetch.sh
@@ -68,6 +76,13 @@ jobs:
           path: |
             target/programs/*.exe
             target/programs/results*.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: programs-x64
+          path: |
+            target/programs-x64/*.exe
+            target/programs-x64/results*.json
 
   # Milestone 2: programs on Wine's own DLLs, translated (not ported).
   wine:
@@ -185,9 +200,15 @@ jobs:
         with:
           name: programs
           path: programs
+      - uses: actions/download-artifact@v4
+        with:
+          name: programs-x64
+          path: programs-x64
       - name: Compare native Windows runs with translated runs
         shell: pwsh
-        run: node tests/programs/windows-check.mjs programs
+        run: |
+          node tests/programs/windows-check.mjs programs
+          node tests/programs/windows-check.mjs programs-x64
 
   # Spike: Emscripten's data, heap and stacks above the guest limit.
   emscripten:

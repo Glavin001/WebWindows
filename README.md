@@ -16,11 +16,19 @@ in a page. See [docs/milestone-1.md](docs/milestone-1.md) to
 [docs/milestone-4.md](docs/milestone-4.md) for status, measurements and
 known limitations.
 
+64-bit (x86-64) programs have started on a second stack alongside the
+32-bit one ([the plan](docs/plan.md#64-bit-programs)): the translator, the
+runtime and the instruction and program tests handle x86-64 code, on a 32-bit
+or a 64-bit (memory64) WebAssembly memory, and 64-bit console programs run
+on the Milestone 1 shims. Wine's 64-bit side comes next. See
+[docs/milestone-9.md](docs/milestone-9.md).
+
 ## Quick start
 
 Requirements: Rust (stable, with the `wasm32-unknown-unknown` target),
 Node 22. To build test programs and record instruction fixtures you also need
-`gcc-multilib` and `gcc-mingw-w64-i686` (Debian/Ubuntu).
+`gcc-multilib` and `gcc-mingw-w64-i686` (Debian/Ubuntu), plus
+`gcc-mingw-w64-x86-64` for 64-bit programs.
 
 ```sh
 cargo build -p wwt-cli                    # the `wwt` translator CLI
@@ -28,6 +36,12 @@ cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
 
 # Translate and run a Windows console program in Node:
 node runtime/node/run.mjs tests/programs/hello.exe
+
+# 64-bit programs (needs gcc-mingw-w64-x86-64) are detected from the PE
+# header; --mem64 runs them on a 64-bit WebAssembly memory (Node 24, or
+# Node 22 with --experimental-wasm-memory64):
+x86_64-w64-mingw32-gcc -O2 -nostdlib -o hello64.exe tests/programs/hello.c -lkernel32 -Wl,-e,start
+node runtime/node/run.mjs hello64.exe
 
 # On translated Wine (build Wine's i386 PE DLLs first; needs flex, bison):
 tools/wine/build.sh
