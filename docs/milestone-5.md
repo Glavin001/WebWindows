@@ -17,7 +17,7 @@ build up to it.
 | Audio (`winmm`, DirectSound on an `AudioWorklet`) | Done (below) |
 | DirectDraw (Wine's `ddraw` on `wined3d` with 3D off) | Done (below) |
 | DirectInput | Done (below) |
-| Cave Story | Intro, title and a new game in Node, with music (below); the browser: to check |
+| Cave Story | Intro, title and a new game, with music, in Node and in the browser (below) |
 
 ## Exceptions
 
@@ -268,8 +268,14 @@ and the title screen, windowed at both sizes (320x240 and 640x480) and
 fullscreen in 16 and 32 bits; a new game starts from the keyboard
 (`--input "30000: keydown KeyZ; 30300: keyup KeyZ"`); its music plays
 through DirectSound (`--audio-out` captures it). It keeps up in real time:
-50 seconds of play took 25 seconds of CPU. Still to check: playing further
-in, and the browser.
+50 seconds of play took 25 seconds of CPU.
+
+In headless Chromium, through the page's folder picker (the game's folder
+stood in the origin's private file system, as `tests/web/picker.mjs`
+does): the screen shows after 4 seconds, the title after about 20, and a
+new game starts from the page's keyboard events; the `AudioWorklet`
+consumed 40 seconds of sound in 40 seconds. Still to check: playing further
+in, and the frame rate on slower machines.
 
 Two fixes it needed:
 
