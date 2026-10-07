@@ -929,11 +929,15 @@ pub enum FlagFreeCallees {
     Known(std::sync::Arc<FlagFree>),
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct FlagFree {
-    /// Function entries that do not read the flags.
+    /// The module's function entries.
     pub entries: std::collections::HashSet<u32>,
-    /// Import address table slots of functions that do (`call [slot]`).
+    /// Those that need the flags on entry (grows while it is computed, see
+    /// `translate::prove_flags_abi`).
+    pub needing: std::sync::RwLock<std::collections::HashSet<u32>>,
+    /// Import address table slots of functions that read the flags
+    /// (`call [slot]`).
     pub reading_slots: std::collections::HashSet<u32>,
 }
 
@@ -952,7 +956,9 @@ impl CallAbi {
         match &self.flag_free_callees {
             FlagFreeCallees::None => true,
             FlagFreeCallees::All => false,
-            FlagFreeCallees::Known(k) => !k.entries.contains(&target),
+            FlagFreeCallees::Known(k) => {
+                !k.entries.contains(&target) || k.needing.read().unwrap().contains(&target)
+            }
         }
     }
 

@@ -443,55 +443,108 @@ const FLAGS: [u32; 5] = crate::ir::FLAG_STATE;
 /// likewise, from all of them flag-free, until no caller reads the flags
 /// after a call to a function assumed not to write them back.
 pub fn prove_flags_abi(funcs: &mut [Function], reading_slots: HashSet<u32>) -> usize {
-    let index: HashMap<u32, usize> = funcs
-        .iter()
-        .enumerate()
-        .map(|(i, f)| (f.entry, i))
-        .collect();
-    let mut dead = vec![true; funcs.len()];
-    loop {
-        for (f, &d) in funcs.iter_mut().zip(&dead) {
-            f.abi.flags_dead_at_ret = d;
+    let n = funcs.len();
+    let index: HashMap<u32, usize> = funcs.iter().enumerate().map(|(i, f)| (f.entry, i)).collect();
+    // Who calls or jumps to whom, within the module; who leaves through an
+    // indirect jump that is not an import stub.
+    let mut callers: Vec<Vec<usize>> = vec![vec![]; n];
+    let mut exits: Vec<Vec<usize>> = vec![vec![]; n];
+    let mut jumps_anywhere = vec![false; n];
+    for (i, f) in funcs.iter().enumerate() {
+        for (b, blk) in f.blocks.iter().enumerate() {
+            match blk.term {
+                Term::Call {
+                    target: CallTarget::Direct(t),
+                    ..
+                } => {
+                    if let Some(&j) = index.get(&t) {
+                        callers[j].push(i);
+                    }
+                }
+                Term::Exit(t) => {
+                    if let Some(&j) = index.get(&t) {
+                        callers[j].push(i);
+                        exits[i].push(j);
+                    }
+                }
+                Term::JmpInd(v) => jumps_anywhere[i] |= opt::slot_of(f, b as BlockId, v).is_none(),
+                _ => {}
+            }
         }
-        flag_free_callees(funcs, &index, &reading_slots);
+    }
+    let shared = std::sync::Arc::new(FlagFree {
+        entries: index.keys().copied().collect(),
+        needing: Default::default(),
+        reading_slots,
+    });
+    for f in funcs.iter_mut() {
+        f.abi.flags_dead_at_ret = true;
+        f.abi.flag_free_callees = FlagFreeCallees::Known(shared.clone());
+    }
+    let mut need: Vec<Vec<u8>> = vec![vec![]; n];
+    let mut queued = vec![true; n];
+    let mut work: Vec<usize> = (0..n).collect();
+    loop {
+        // Callees that need the flags on entry, until none is added.
+        while let Some(i) = work.pop() {
+            queued[i] = false;
+            need[i] = flags_needed(&funcs[i]);
+            if need[i][0] != 0 && shared.needing.write().unwrap().insert(funcs[i].entry) {
+                for &c in &callers[i] {
+                    if !queued[c] {
+                        queued[c] = true;
+                        work.push(c);
+                    }
+                }
+            }
+        }
         // Whose returns are observed: callees of calls whose continuation
-        // needs the flags, and (through tail jumps) the callees of those.
-        let mut observed = vec![false; funcs.len()];
-        let mut any_indirect = false;
-        // (Calls and jumps through import slots reach other modules, whose
-        // returns are not decided here.)
+        // needs the flags, and, through tail jumps, the functions those
+        // leave through. (Calls and jumps through import slots reach other
+        // modules, whose returns are not decided here.)
+        let mut observed = vec![false; n];
+        let mut any = false;
         for (i, f) in funcs.iter().enumerate() {
-            let need = flags_needed(f);
             for (b, blk) in f.blocks.iter().enumerate() {
-                let b = b as BlockId;
-                match &blk.term {
-                    Term::Call { target, cont, .. } if need[*cont as usize] != 0 => match target {
+                if let Term::Call { target, cont, .. } = &blk.term {
+                    if need[i][*cont as usize] == 0 {
+                        continue;
+                    }
+                    match target {
                         CallTarget::Direct(t) => {
                             if let Some(&j) = index.get(t) {
                                 observed[j] = true;
                             }
                         }
                         CallTarget::Indirect(v) => {
-                            any_indirect |= opt::slot_of(f, b, *v).is_none();
-                        }
-                    },
-                    Term::Exit(t) if !dead[i] => {
-                        if let Some(&j) = index.get(t) {
-                            observed[j] = true;
+                            any |= opt::slot_of(f, b as BlockId, *v).is_none();
                         }
                     }
-                    Term::JmpInd(v) if !dead[i] => {
-                        any_indirect |= opt::slot_of(f, b, *v).is_none();
-                    }
-                    _ => {}
                 }
             }
         }
-        let next: Vec<bool> = observed.iter().map(|&o| !o && !any_indirect).collect();
-        if next == dead {
-            return dead.iter().filter(|&&d| d).count();
+        let mut stack: Vec<usize> = (0..n).filter(|&i| observed[i]).collect();
+        while let Some(i) = stack.pop() {
+            any |= jumps_anywhere[i];
+            for &j in &exits[i] {
+                if !observed[j] {
+                    observed[j] = true;
+                    stack.push(j);
+                }
+            }
         }
-        dead = next;
+        // A function whose returns now keep the flags may pass its
+        // caller's on to its callees: look at it again.
+        for (i, f) in funcs.iter_mut().enumerate() {
+            if (observed[i] || any) && f.abi.flags_dead_at_ret {
+                f.abi.flags_dead_at_ret = false;
+                queued[i] = true;
+                work.push(i);
+            }
+        }
+        if work.is_empty() {
+            return funcs.iter().filter(|f| f.abi.flags_dead_at_ret).count();
+        }
     }
 }
 
@@ -560,63 +613,6 @@ fn flags_needed(f: &Function) -> Vec<u8> {
         if !changed {
             return need;
         }
-    }
-}
-
-/// Finds the callees that do not need the flags on entry, given each
-/// function's `flags_dead_at_ret` (see `prove_flags_abi`).
-fn flag_free_callees(funcs: &mut [Function], index: &HashMap<u32, usize>, slots: &HashSet<u32>) {
-    // Whether a function needs the flags on entry depends on which of the
-    // functions it calls or jumps to do.
-    let mut callers: Vec<Vec<usize>> = vec![vec![]; funcs.len()];
-    for (i, f) in funcs.iter().enumerate() {
-        for b in &f.blocks {
-            if let Term::Call {
-                target: CallTarget::Direct(t),
-                ..
-            }
-            | Term::Exit(t) = b.term
-            {
-                if let Some(&j) = index.get(&t) {
-                    callers[j].push(i);
-                }
-            }
-        }
-    }
-    let mut free: HashSet<u32> = index.keys().copied().collect();
-    let mut todo: Vec<usize> = (0..funcs.len()).collect();
-    while !todo.is_empty() {
-        let set = std::sync::Arc::new(FlagFree {
-            entries: free.clone(),
-            reading_slots: slots.clone(),
-        });
-        let mut removed = vec![];
-        for &i in &todo {
-            let f = &mut funcs[i];
-            f.abi.flag_free_callees = FlagFreeCallees::Known(set.clone());
-            if flags_needed(f)[0] != 0 {
-                removed.push(i);
-            }
-        }
-        for &i in &removed {
-            free.remove(&funcs[i].entry);
-        }
-        // Only the callers of what was removed can change.
-        let mut next: Vec<usize> = removed
-            .iter()
-            .flat_map(|&i| callers[i].iter().copied())
-            .filter(|&c| free.contains(&funcs[c].entry))
-            .collect();
-        next.sort_unstable();
-        next.dedup();
-        todo = next;
-    }
-    let set = std::sync::Arc::new(FlagFree {
-        entries: free,
-        reading_slots: slots.clone(),
-    });
-    for f in funcs.iter_mut() {
-        f.abi.flag_free_callees = FlagFreeCallees::Known(set.clone());
     }
 }
 
