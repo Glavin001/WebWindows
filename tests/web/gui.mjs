@@ -156,6 +156,35 @@ try {
     await until(() => page.evaluate(() => !!window.lastExit), 60000);
     const summary = (await out()).match(/summary: .*/)?.[0];
     check('d3d9bench: ran and exited', !!summary && (await page.evaluate(() => window.lastExit?.code)) === 0, summary);
+
+    // Presenting on the GPU (no readback), to an offscreen buffer the page
+    // can read (headless Chromium cannot show the canvas it uses
+    // otherwise); and the window moves when its caption is dragged, though
+    // the program polls for messages instead of waiting for them.
+    await open(page, 'd3d9bench.exe', '/tests/programs/gui/d3d9bench.exe', '&args=60+500+60&d3dpresent=offscreen');
+    await until(() => page.evaluate(() => !!window.d3dWindow), 180000);
+    const frame = await page.evaluate(async () => {
+      const { width, height, pixels } = await window.d3dSnapshot();
+      let lit = 0;
+      for (let i = 0; i < (pixels?.length ?? 0); i += 4) if (pixels[i] + pixels[i + 1] + pixels[i + 2] > 300) lit++;
+      return { width, height, lit };
+    });
+    check('d3d9bench: GPU present', frame.width === 640 && frame.height === 480 && frame.lit > 5000, JSON.stringify(frame));
+    const before = await page.evaluate(() => window.d3dWindow);
+    const box = await page.locator('#screen').boundingBox();
+    const sx = (x) => box.x + (x * box.width) / 800;
+    const sy = (y) => box.y + (y * box.height) / 600;
+    await page.mouse.move(sx(200), sy(20));
+    await page.mouse.down();
+    for (let i = 1; i <= 10; i++) {
+      await page.mouse.move(sx(200 + i * 10), sy(20 + i * 6));
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    await page.mouse.up();
+    const moved = await until(() => page.evaluate((x) => window.d3dWindow.x !== x, before.x), 20000);
+    const after = await page.evaluate(() => window.d3dWindow);
+    check('d3d9bench: window drags while rendering', moved && after.x - before.x === 100 && after.y - before.y === 60,
+      `${before.x},${before.y} -> ${after.x},${after.y}`);
   } else {
     console.log('skipping d3d9: no WebGPU in this browser');
   }
