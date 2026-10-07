@@ -1033,6 +1033,30 @@ const msvcrt = {
       if (!u8[p]) return 0;
     }
   }),
+  strrchr: fn(2, function (a) {
+    const u8 = this.m.u8;
+    const c = a.u32(1) & 0xff;
+    let last = 0;
+    for (let p = a.u32(0); ; p++) {
+      if (u8[p] === c) last = p;
+      if (!u8[p]) return last;
+    }
+  }),
+  strncpy: fn(3, function (a) {
+    const u8 = this.m.u8;
+    let i = 0;
+    for (; i < a.u32(2) && u8[a.u32(1) + i]; i++) u8[a.u32(0) + i] = u8[a.u32(1) + i];
+    u8.fill(0, a.u32(0) + i, a.u32(0) + a.u32(2));
+    return a.u32(0);
+  }),
+  memchr: fn(3, function (a) {
+    const i = this.m.u8.subarray(a.u32(0), a.u32(0) + a.u32(2)).indexOf(a.u32(1) & 0xff);
+    return i < 0 ? 0 : a.u32(0) + i;
+  }),
+  isprint: fn(1, function (a) {
+    const c = a.u32(0);
+    return c >= 0x20 && c < 0x7f ? 1 : 0;
+  }),
   atoi: fn(1, function (a) {
     return parseInt(this.m.readCString(a.u32(0)), 10) | 0;
   }),
@@ -1063,6 +1087,14 @@ const msvcrt = {
   }),
   _snprintf: fn(3, function (a) {
     const s = formatPrintf(this.m, this.m.readCString(a.u32(2)), new Args(this.m, a.base + 12));
+    const n = a.u32(1);
+    const t = s.slice(0, n);
+    for (let i = 0; i < t.length; i++) this.m.u8[a.u32(0) + i] = t.charCodeAt(i);
+    if (s.length < n) this.m.u8[a.u32(0) + s.length] = 0;
+    return s.length <= n ? s.length : -1;
+  }),
+  _vsnprintf: fn(4, function (a) {
+    const s = formatPrintf(this.m, this.m.readCString(a.u32(2)), new Args(this.m, a.u32(3)));
     const n = a.u32(1);
     const t = s.slice(0, n);
     for (let i = 0; i < t.length; i++) this.m.u8[a.u32(0) + i] = t.charCodeAt(i);
