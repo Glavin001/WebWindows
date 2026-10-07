@@ -5,13 +5,13 @@
   },
   "atom": {
     "status": "done",
-    "tests": 590684,
-    "failures": 276
+    "tests": 1049715,
+    "failures": 0
   },
   "change": {
     "status": "done",
     "tests": 301,
-    "failures": 161
+    "failures": 175
   },
   "codepage": {
     "status": "done",
@@ -29,8 +29,8 @@
     "failures": 2
   },
   "debugger": {
-    "status": "crash",
-    "failures": 164
+    "status": "timeout",
+    "failures": 51
   },
   "directory": {
     "status": "done",
@@ -48,8 +48,8 @@
     "failures": 27
   },
   "fiber": {
-    "status": "crash",
-    "failures": 2
+    "status": "timeout",
+    "failures": 1
   },
   "file": {
     "status": "crash",
@@ -66,8 +66,8 @@
     "failures": 0
   },
   "heap": {
-    "status": "crash",
-    "failures": 4
+    "status": "timeout",
+    "failures": 1
   },
   "loader": {
     "status": "crash",
@@ -91,8 +91,8 @@
     "failures": 597
   },
   "pipe": {
-    "status": "timeout",
-    "failures": 440
+    "status": "crash",
+    "failures": 21
   },
   "power": {
     "status": "done",
@@ -105,7 +105,7 @@
   },
   "profile": {
     "status": "crash",
-    "failures": 84
+    "failures": 21
   },
   "resource": {
     "status": "crash",
@@ -117,7 +117,7 @@
   },
   "thread": {
     "status": "crash",
-    "failures": 12
+    "failures": 4
   },
   "time": {
     "status": "timeout",
@@ -126,23 +126,23 @@
   "timer": {
     "status": "done",
     "tests": 4,
-    "failures": 3
+    "failures": 0
   },
   "toolhelp": {
-    "status": "crash",
-    "failures": 15
+    "status": "timeout",
+    "failures": 1
   },
   "version": {
     "status": "done",
     "tests": 156,
-    "failures": 21
+    "failures": 30
   },
   "virtual": {
     "status": "crash",
-    "failures": 5393
+    "failures": 6068
   },
   "volume": {
     "status": "crash",
-    "failures": 121
+    "failures": 83
   }
 }

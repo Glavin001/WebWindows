@@ -15,6 +15,7 @@ import { ProcessExit, hex } from '../runtime.mjs';
 import { mapImage } from '../pe.mjs';
 import { VirtualMemory, MEM_IMAGE, MEM_PRIVATE, PAGE_READWRITE, PAGE_EXECUTE_READ, PAGE_READONLY } from './vm.mjs';
 import { SYSCALLS, STATUS } from './syscalls.mjs';
+import { HANDLE_ROUTED } from './unix.mjs';
 
 import layout from './layout.json' with { type: 'json' };
 
@@ -142,7 +143,12 @@ export class WineHost {
     this.trace = opts.trace ?? false;
     this.vm = new VirtualMemory(machine, 0x10000, machine.thunkBase);
     this.handles = new Map();
-    this.nextHandle = 0x20;
+    // The host's own handles (files, sections) are numbered apart from the
+    // ones wineserver hands out (4, 8, 12, ...) when Wine's Unix side is
+    // loaded (opts.unix), so either side can tell its handles from the other's.
+    this.nextHandle = 0x40000;
+    /** Wine's Unix side compiled with Emscripten (./unix.mjs), or null */
+    this.unix = opts.unix ?? null;
     this.images = new Map(); // base -> {path, info}
     this.modulesByPath = new Map();
     this.unimplemented = new Map();
@@ -323,6 +329,7 @@ export class WineHost {
     this.teb = this.alloc(0x2000, PAGE_READWRITE, 'TEB');
     this.cpu = m.newCpu();
     this.buildTeb(this.teb, exe.info);
+    if (this.unix) this.unix.initProcess(this.teb, this.peb);
     m.dv.setUint16(this.cpu + m.abi.cpu.FPU_CW, 0x27f, true);
     // Windows starts threads with IF set.
     m.u32[(this.cpu + m.abi.cpu.EFLAGS_SYS) >>> 2] = 0x200;
@@ -530,9 +537,12 @@ export class WineHost {
     const argBase = esp + 8; // [esp] -> stub, [esp+4] -> caller
     const a = (i) => this.u32(argBase + i * 4);
     this.counts.set(name, (this.counts.get(name) ?? 0) + 1);
+    const unixImpl = this.unix?.syscalls.get(name);
     const impl = SYSCALLS[name];
     let status;
-    if (!impl) {
+    if (unixImpl && this.routeToUnix(name, a)) {
+      status = unixImpl(a(0), a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8), a(9), a(10), a(11)) >>> 0;
+    } else if (!impl) {
       if (!this.unimplemented.has(name)) this.log(`UNIMPLEMENTED ${name}`);
       this.unimplemented.set(name, (this.unimplemented.get(name) ?? 0) + 1);
       status = STATUS.NOT_IMPLEMENTED;
@@ -547,6 +557,22 @@ export class WineHost {
     m.setReg(cpu, EAX, status >>> 0);
     m.setReg(cpu, ESP, esp + 4);
     return ret;
+  }
+
+  /** Whether a host handle (or pseudo-handle the host implements) is involved. */
+  isHostHandle(h) {
+    h >>>= 0;
+    return this.handles.has(h) || h === 0xffffffff || h === 0xfffffffe;
+  }
+
+  /** Handle-based calls go to Wine's Unix side only for server handles. */
+  routeToUnix(name, a) {
+    if (name === 'NtWaitForMultipleObjects') {
+      for (let i = 0; i < a(0); i++) if (this.isHostHandle(this.u32(a(1) + i * 4))) return false;
+      return true;
+    }
+    if (!HANDLE_ROUTED.has(name)) return true;
+    return !this.isHostHandle(name === 'NtDuplicateObject' ? a(1) : a(0));
   }
 
   /** __wine_unix_call_dispatcher(UINT64 handle, UINT code, void *args): stdcall. */
