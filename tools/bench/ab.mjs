@@ -82,6 +82,9 @@ function abWine() {
     env.WWT_TRANSLATE_FLAGS = flags.join(' ');
     const p = spawnSync(process.execPath, [join(root, 'runtime/node/wine.mjs'), ...wineFiles, ...wineCmd], { env, encoding: 'utf8', maxBuffer: 64 << 20 });
     const rows = [...(p.stdout ?? '').matchAll(/^(\w+)\s+(\S+)\s+([0-9.]+)\s*$/gm)].map((m) => ({ name: m[1], sum: m[2], time: Number(m[3]) }));
+    // SQLite's speedtest1: its total, checked by its verification hash.
+    const total = (p.stdout ?? '').match(/TOTAL\.+\s+([0-9.]+)s/)?.[1];
+    if (total) rows.push({ name: 'speedtest1', sum: p.stdout.match(/^Verification Hash: (.*)$/m)?.[1]?.trim(), time: Number(total) });
     if (!rows.length) v.failed = (p.stderr || p.stdout || '').trim().split('\n').slice(-2).join(' | ');
     return rows;
   };

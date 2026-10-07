@@ -93,6 +93,10 @@ export class Machine {
     this.modules = [];
     this.funcCount = 0;
     this.entries = new Set();
+    // Native implementations of guest functions, by name: translated
+    // modules import them in place of the x86 code (see wwt::builtin, e.g.
+    // ntdll's heap from runtime/wine/heap.mjs).
+    this.natives = {};
   }
 
   async init() {
@@ -225,6 +229,7 @@ export class Machine {
     const base = this.table.length;
     this.table.grow(addrs.length);
     const env = {
+      ...this.natives,
       memory: this.memory,
       table: this.table,
       table_base: base,

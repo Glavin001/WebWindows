@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/wwt", "crates/wwt-cli", "crates/wwt-testkit", "crates/wwt-wasm"]
+members = ["crates/wwt", "crates/wwt-cli", "crates/wwt-testkit", "crates/wwt-wasm", "crates/wwt-heap"]
 
 [workspace.package]
 version = "0.1.0"
@@ -47,3 +47,7 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# The native heap runs on every allocation: optimize it for speed.
+[profile.release-wasm.package.wwt-heap]
+opt-level = 3

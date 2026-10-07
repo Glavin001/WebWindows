@@ -108,7 +108,7 @@ jobs:
       - name: Build
         run: |
           cargo build --release -p wwt-cli
-          cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
+          cargo build -p wwt-wasm -p wwt-heap --target wasm32-unknown-unknown --profile release-wasm
           sh native/wine-unix/build.sh
       # The static site (page, runtime, translator, Wine bundle), deployed
       # to Vercel as a prebuilt output (Vercel builds nothing): a preview

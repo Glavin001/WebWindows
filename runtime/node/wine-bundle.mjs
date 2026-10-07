@@ -19,6 +19,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { parsePe, rebaseImage } from '../wine/host.mjs';
+import { NATIVE_HEAP_FLAG } from '../wine/heap.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const out = resolve(process.argv[2] ?? join(root, 'target/wine-bundle'));
@@ -42,6 +43,10 @@ const wwt = ['target/release/wwt', 'target/debug/wwt']
 
 const unixDir = join(root, 'target/wine-unix');
 const withUnix = existsSync(join(unixDir, 'wine_unix.mjs'));
+// ntdll's heap as native WebAssembly (crates/wwt-heap), when built: the
+// bundle's ntdll then imports it (--native-heap), and the bundle ships it.
+const heapWasm = join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_heap.wasm');
+const withHeap = existsSync(heapWasm);
 
 mkdirSync(out, { recursive: true });
 const manifest = { wine: '11.0', dlls: {}, nls: [] };
@@ -64,10 +69,15 @@ for (const d of [...DLLS, ...(withUnix ? GUI_DLLS : [])]) {
   }
   writeFileSync(join(out, `${d}.dll`), bytes);
   // The browser runs Wine with a 2 GB guest (runtime/web/worker.mjs).
-  execFileSync(wwt, ['translate', join(out, `${d}.dll`), '-o', join(out, `${d}.dll.wasm`), '--guest-limit-mb', '2048'], {
+  const heap = withHeap && d === 'ntdll' ? [NATIVE_HEAP_FLAG] : [];
+  execFileSync(wwt, ['translate', join(out, `${d}.dll`), '-o', join(out, `${d}.dll.wasm`), '--guest-limit-mb', '2048', ...heap], {
     stdio: ['ignore', 'ignore', 'inherit'],
   });
   manifest.dlls[`${d}.dll`] = { pe: `${d}.dll`, wasm: `${d}.dll.wasm` };
+}
+if (withHeap) {
+  copyFileSync(heapWasm, join(out, 'wwt_heap.wasm'));
+  manifest.heap = 'wwt_heap.wasm';
 }
 for (const n of NLS) {
   copyFileSync(join(wineSrc, 'nls', `${n}.nls`), join(out, `${n}.nls`));

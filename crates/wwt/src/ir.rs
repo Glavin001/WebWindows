@@ -782,6 +782,12 @@ pub enum Term {
         code: u32,
         eip: u32,
     },
+    /// Leave the function through a native implementation: the host's
+    /// import of this name, tail-called with the CPU state written back. It
+    /// does the whole x86 function (reads the arguments from the stack, sets
+    /// the registers, pops the return address) and returns the next address
+    /// (see `crate::builtin`).
+    Native(&'static str),
     /// Placeholder during construction.
     None,
 }
@@ -859,6 +865,7 @@ impl Term {
                 | Term::JmpInd(_)
                 | Term::Fault { .. }
                 | Term::Switch { .. }
+                | Term::Native(_)
         )
     }
 
@@ -1211,6 +1218,7 @@ impl fmt::Display for Function {
                 Term::Ret(v) => format!("ret {}", VName(*v)),
                 Term::JmpInd(v) => format!("jmp {}", VName(*v)),
                 Term::Fault { code, eip } => format!("fault {code:#x} at {eip:#x}"),
+                Term::Native(n) => format!("native {n}"),
                 Term::None => "<none>".into(),
             };
             writeln!(f, "    {t}")?;

@@ -51,6 +51,10 @@ struct TranslateOpts {
     /// Translate exported memory functions instead of using built-ins.
     #[arg(long)]
     no_builtins: bool,
+    /// Replace ntdll's heap functions with the runtime's native heap
+    /// (`crates/wwt-heap`), which the runtime must then provide.
+    #[arg(long)]
+    native_heap: bool,
     /// No re-entry at loop headers (see `wwt::osr`).
     #[arg(long)]
     no_osr: bool,
@@ -73,6 +77,7 @@ impl TranslateOpts {
         c.codegen.guest_limit = self.guest_limit_mb.map(|mb| mb << 20);
         c.inline = !self.no_inline;
         c.builtins = !self.no_builtins;
+        c.native_heap = self.native_heap;
         c.codegen.osr = !self.no_osr;
         c.c_abi = match self.c_abi.as_str() {
             "on" => Some(true),

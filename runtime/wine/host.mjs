@@ -19,6 +19,7 @@ import { HANDLE_ROUTED, WIN32U_UNIXLIB } from './unix.mjs';
 
 import layout from './layout.json' with { type: 'json' };
 import { installAssemblies } from './sxs.mjs';
+import { attachNativeHeap } from './heap.mjs';
 
 export const L = layout;
 
@@ -134,6 +135,8 @@ export class WineHost {
    *        returns the translated module for an image file (`bytes` are
    *        already rebased when the image could not load at its own base)
    * @param {Map<string, Uint8Array>} opts.files  DOS paths (c:/...) -> contents
+   * @param {WebAssembly.Module} [opts.nativeHeap]  ntdll's heap as native WebAssembly
+   *        (./heap.mjs), for an ntdll translated with --native-heap
    */
   constructor(machine, opts) {
     this.m = machine;
@@ -146,6 +149,7 @@ export class WineHost {
     this.stderr = opts.stderr ?? (() => {});
     this.trace = opts.trace ?? false;
     this.vm = new VirtualMemory(machine, 0x10000, machine.thunkBase);
+    this.nativeHeap = opts.nativeHeap ? attachNativeHeap(machine, opts.nativeHeap, this.vm) : null;
     this.handles = new Map();
     // The host's own handles (files, sections) are numbered apart from the
     // ones wineserver hands out (4, 8, 12, ...) when Wine's Unix side is
@@ -349,6 +353,7 @@ export class WineHost {
     this.w32(ex('__wine_unixlib_handle'), 0x1000);
     this.w32(ex('__wine_unixlib_handle') + 4, 0);
     this.kiUserCallbackDispatcher = ex('KiUserCallbackDispatcher');
+    this.nativeHeap?.init(ex('RtlRaiseStatus'));
 
     // The main executable, mapped by the "Unix side" as Wine does.
     const exe = this.mapImageFile(exeDosPath, this.fileAt(exeDosPath));

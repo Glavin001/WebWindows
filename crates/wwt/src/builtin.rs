@@ -11,8 +11,50 @@
 //! Only exported names are matched: a C function in an image's own symbol
 //! table is named with a leading underscore (`_memcpy`), so an application's
 //! private `memcpy` keeps its translated body.
+//!
+//! Native built-ins replace a function with an implementation the host
+//! provides (`Term::Native`): ntdll's heap ([`NATIVE_HEAP`], see
+//! `crates/wwt-heap`) when translating with `Config::native_heap`.
 
 use crate::ir::*;
+
+/// ntdll's heap functions, implemented natively as a set: every function
+/// that reads or writes a heap's internals, so that a heap handle is never
+/// seen by both implementations. `_heap_thread_detach` is ntdll's internal
+/// hook (found by its COFF symbol) that walks the heaps at thread exit.
+pub const NATIVE_HEAP: &[&str] = &[
+    "RtlCreateHeap",
+    "RtlDestroyHeap",
+    "RtlAllocateHeap",
+    "RtlFreeHeap",
+    "RtlReAllocateHeap",
+    "RtlSizeHeap",
+    "RtlValidateHeap",
+    "RtlLockHeap",
+    "RtlUnlockHeap",
+    "RtlCompactHeap",
+    "RtlWalkHeap",
+    "RtlGetProcessHeaps",
+    "RtlQueryHeapInformation",
+    "RtlSetHeapInformation",
+    "RtlGetUserInfoHeap",
+    "RtlSetUserValueHeap",
+    "RtlSetUserFlagsHeap",
+    "_heap_thread_detach",
+];
+
+/// The native heap function of this name, as the import name.
+pub fn native_heap(name: &str) -> Option<&'static str> {
+    NATIVE_HEAP.iter().copied().find(|n| *n == name)
+}
+
+/// A function whose whole body is the native implementation `name`.
+pub fn native_body(entry: u32, name: &'static str) -> Function {
+    let mut f = Function::new(entry);
+    let b = f.new_block(entry);
+    f.blocks[b as usize].term = Term::Native(name);
+    f
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Builtin {
@@ -187,6 +229,15 @@ mod tests {
             Builtin::by_name("RtlZeroMemory"),
             Some(Builtin::RtlZeroMemory)
         );
+    }
+
+    #[test]
+    fn native_heap_names() {
+        assert_eq!(native_heap("RtlAllocateHeap"), Some("RtlAllocateHeap"));
+        assert_eq!(native_heap("RtlAllocateHeap@12"), None);
+        let f = native_body(0x1000, "RtlFreeHeap");
+        assert_eq!(f.blocks.len(), 1);
+        assert_eq!(f.blocks[0].term, Term::Native("RtlFreeHeap"));
     }
 
     #[test]

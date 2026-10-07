@@ -110,6 +110,80 @@ What running real programs found that CoreMark could not:
     apibench all pass. Liveness had to become strong liveness (a dead
     `shl eax, cl` no longer keeps the old flags alive), and flag-setting
     instructions now define all of the lazy flag state.
+- **Wine's heap** (`RtlAllocateHeap` and friends) was 15–17% of Lua's time:
+  handle checks, the LFH front end, critical sections and free lists, all
+  as translated x86 with a register write-back at every internal call. It
+  is now native WebAssembly (below): `HeapAlloc`/`HeapFree` 5x faster,
+  `malloc`/`free` 3x, faster than Wine running natively.
+
+### ntdll's heap as native WebAssembly
+
+`crates/wwt-heap` implements the whole set of ntdll heap functions
+(`wwt::builtin::NATIVE_HEAP`: create, destroy, allocate, free, reallocate,
+size, validate, lock, walk, process heaps, heap information, user
+values and flags, and ntdll's internal `heap_thread_detach`), so a heap
+handle is never seen by both implementations. `wwt translate --native-heap`
+gives these functions in ntdll a body that is a tail call to an import of
+the same name (`Term::Native`); the import receives the CPU state, reads its
+stdcall arguments from the guest stack, sets `eax`, pops the return address
+and arguments, and returns the address to continue at, like any translated
+function. `HEAP_GENERATE_EXCEPTIONS` continues in ntdll's `RtlRaiseStatus`.
+
+The module is Rust compiled to `wasm32-unknown-unknown`, working directly in
+the machine's memory (its memory import is made shared when it is loaded,
+`runtime/wine/heap.mjs`). Heaps live in guest memory, in regions from the
+Wine host's virtual memory (one call per segment: 1 MB first, doubling to
+16 MB, as Wine grows its heaps); its few process-wide values sit in the
+guest's null region, where guest code cannot reach. Blocks have an 8-byte
+header (exact requested size, region, size class, flags), so pointers are
+8-aligned as on 32-bit Windows and `HeapSize` is exact. Requests up to
+512 KB round up to one of 75 size classes, each with a LIFO free list;
+allocation and free are a few loads and stores. Larger blocks get a region
+of their own. The heap handle starts with the Windows-compatible header
+(`0xffeeffee`, flags, force flags). Status codes and last errors follow
+Wine's `heap.c`; unit tests (`cargo test -p wwt-heap`) call the functions
+as translated code does.
+
+`runtime/node/wine.mjs` uses it whenever it is built
+(`cargo build -p wwt-heap --target wasm32-unknown-unknown --profile
+release-wasm`), translating ntdll with `--native-heap`; `WWT_NATIVE_HEAP=0`
+keeps Wine's heap. The Wine bundle ships it the same way for the browser.
+
+Interleaved A/B (`ab.mjs --wine`, `wineheap=WWT_NATIVE_HEAP=0` against
+`native=`), medians, shared 4-core machine:
+
+| Workload | Wine's heap | Native heap | Speed |
+| --- | --- | --- | --- |
+| apibench/heap (`HeapAlloc`/`HeapFree`, 7 rounds) | 0.219 s | 0.041 s | 5.3x |
+| apibench/malloc (7 rounds) | 0.187 s | 0.061 s | 3.1x |
+| apibench/files (7 rounds) | 0.252 s | 0.187 s | +35% |
+| apibench, all eight (7 rounds) | 5.90 s | 5.35 s | +10% |
+| lua/objects (7 rounds) | 4.22 s | 3.62 s | +16% |
+| lua, all six (7 rounds) | 9.39 s | 8.79 s | +7% |
+| sqlite/speedtest1 (5 rounds) | 12.40 s | 11.61 s | +7% |
+
+Wine running natively takes 0.058 s and 0.060 s for apibench's heap and
+malloc. Checksums are unchanged (`suite.mjs`). What it does differently
+from Wine's heap:
+
+- Blocks are never split or merged, except in heaps created with a maximum
+  size, which take exact-size blocks from what is left and split larger
+  free blocks when no size class fits. A program that frees many blocks of
+  one size and then allocates another size gets new memory, not the freed
+  blocks.
+- Memory is never decommitted or returned before `HeapDestroy`, except
+  large blocks, which are released when freed.
+- No debugging modes: the tail and free checking flags, `HEAP_VALIDATE*`
+  and Wine's `WINEDEBUG=+heap` change nothing.
+- `RtlCreateHeap` with caller-provided memory allocates its own instead.
+- `HeapWalk` lists the same kinds of entries as Wine (a region, its
+  blocks, its unused rest and an uncommitted range, then large blocks),
+  but freed blocks stay separate blocks. Wine's `kernel32_test heap`
+  fails four of those layout checks that pass with Wine's own heap (8
+  failures against 4, before both stop at the same `GlobalFlags` crash);
+  the other `kernel32_test` units give the same results.
+- The low-fragmentation heap is reported (`HeapQueryInformation`) after a
+  growable heap's 17th new block, approximately when Wine enables it.
 
 
 ## Results

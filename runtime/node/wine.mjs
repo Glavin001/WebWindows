@@ -31,6 +31,7 @@ import { windowsKey, KEYEVENTF_KEYUP } from '../web/keys.mjs';
 /** Thrown out of a wait to stop a GUI program that went idle (--screenshot). */
 class ProgramIdle extends Error {}
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
+import { NATIVE_HEAP_FLAG, compileNativeHeap } from '../wine/heap.mjs';
 import { stdout, stderr } from './output.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -39,6 +40,12 @@ const wineSrc = process.env.WINE_SRC ?? '/opt/wine-src/wine-11.0';
 const cacheDir = join(root, 'target/wine-cache');
 // Wine's address space; translations compile it into their memory checks.
 const GUEST_LIMIT = 0x8000_0000;
+// ntdll's heap as native WebAssembly (crates/wwt-heap), when it is built:
+// ntdll is then translated with --native-heap. WWT_NATIVE_HEAP=0 keeps
+// Wine's own heap.
+const heapWasm = join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_heap.wasm');
+const nativeHeap =
+  process.env.WWT_NATIVE_HEAP !== '0' && existsSync(heapWasm) ? compileNativeHeap(readFileSync(heapWasm)) : null;
 
 function wwt() {
   if (process.env.WWT) return process.env.WWT;
@@ -57,6 +64,7 @@ function translate(path, bytes) {
   // WWT_TRANSLATE_FLAGS: extra `wwt translate` options, for A/B tests
   // (tools/bench/ab.mjs --wine); part of the cache key.
   const extra = (process.env.WWT_TRANSLATE_FLAGS ?? '').split(/\s+/).filter(Boolean);
+  if (nativeHeap && path.toLowerCase().endsWith('\\ntdll.dll')) extra.push(NATIVE_HEAP_FLAG);
   const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}:${extra.join(' ')}`).digest('hex').slice(0, 16);
   const out = join(cacheDir, `${path.split('\\').pop()}-${hash}.wasm`);
   if (!existsSync(out)) {
@@ -252,6 +260,7 @@ const host = new WineHost(machine, {
   trace,
   unix,
   debug: process.env.WINEDEBUG ?? '',
+  nativeHeap,
 });
 host.boot(`${sys32}\\ntdll.dll`, exeDos);
 const r = host.run();

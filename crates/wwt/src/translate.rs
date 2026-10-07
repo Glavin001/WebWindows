@@ -41,6 +41,9 @@ pub struct Config {
     /// `prove_flags_abi`). Set for programs (not DLLs, whose callers are
     /// unknown).
     pub prove_flags_abi: bool,
+    /// Replace ntdll's heap functions with the host's native heap
+    /// (`builtin::NATIVE_HEAP`); applies to ntdll.dll only.
+    pub native_heap: bool,
 }
 
 impl Default for Config {
@@ -54,6 +57,7 @@ impl Default for Config {
             builtins: true,
             c_abi: None,
             prove_flags_abi: false,
+            native_heap: false,
         }
     }
 }
@@ -169,6 +173,15 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Con
             d.add_function_seed(p, SeedKind::Profile);
         }
     }
+    // Native functions must be functions of their own, also where ntdll
+    // only tail-jumps to them (`_heap_thread_detach`).
+    if cfg.native_heap {
+        for (va, name) in pe.code_names() {
+            if crate::builtin::native_heap(&name).is_some() && img.is_code(va) {
+                d.add_function_seed(va, SeedKind::Export);
+            }
+        }
+    }
     d.explore(img);
     // Code pointers in data: relocation targets (always present in DLLs),
     // otherwise a scan of data sections. Addresses already known as
@@ -260,6 +273,11 @@ pub fn translate_pe(pe: &PeFile, cfg: &Config, profile: &[u32]) -> Result<Transl
         Some(false) => {}
     }
     cfg.lift.define_all_flags = cfg.lift.abi.flags_dead_at_ret || cfg.prove_flags_abi;
+    let is_ntdll = pe
+        .dll_name
+        .as_deref()
+        .is_some_and(|n| n.eq_ignore_ascii_case("ntdll.dll"));
+    cfg.native_heap &= is_ntdll;
     let cfg = &cfg;
     let img = pe.image()?;
     let mut d = discover_pe(pe, &img, profile, cfg);
@@ -334,13 +352,17 @@ pub fn translate_discovered(
             if !d.insts.contains_key(&entry) {
                 continue;
             }
-            let builtin = names
-                .get(&entry)
+            let name = names.get(&entry);
+            let native = name
+                .and_then(|n| crate::builtin::native_heap(n))
+                .filter(|_| cfg.native_heap);
+            let builtin = name
                 .and_then(|n| crate::builtin::Builtin::by_name(n))
                 .filter(|_| cfg.builtins);
-            let f = match builtin {
-                Some(b) => crate::builtin::body(entry, b),
-                None => {
+            let f = match (native, builtin) {
+                (Some(n), _) => crate::builtin::native_body(entry, n),
+                (None, Some(b)) => crate::builtin::body(entry, b),
+                (None, None) => {
                     let lifted = lift_function(src, d, entry, &cfg.lift);
                     report.unsupported.extend(lifted.unsupported);
                     for e in lifted.extra_entries {

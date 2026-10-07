@@ -54,10 +54,11 @@ const T_FAULT: u32 = 1;
 const T_MATH: u32 = 2;
 const T_FIRST_HELPER: u32 = 3;
 
-// Imported function indices.
+// Imported function indices. Native implementations (`Term::Native`)
+// follow, one import each, in the order of `ModuleGen::natives`.
 const F_FAULT: u32 = 0;
 const F_MATH: u32 = 1;
-const NUM_FUNC_IMPORTS: u32 = 2;
+const F_FIRST_NATIVE: u32 = 2;
 
 // Imported global indices.
 const G_TABLE_BASE: u32 = 0;
@@ -95,6 +96,8 @@ pub struct ModuleGen<'a> {
     func_index: HashMap<u32, u32>,
     helpers: Vec<Helper>,
     helper_types: Vec<(Vec<Ty>, Ty)>,
+    /// Names of the native implementations the functions leave through.
+    natives: Vec<&'static str>,
     /// Symbol names by x86 address, for the name section.
     names: HashMap<u32, String>,
 }
@@ -105,10 +108,16 @@ impl<'a> ModuleGen<'a> {
         for (i, f) in funcs.iter().enumerate() {
             func_index.insert(f.entry, i as u32);
         }
-        // Eflags must stay first: EvalCond calls it by index.
+        // The flag helpers come first, in every module.
         let mut helpers = vec![Helper::Eflags, Helper::EvalCond];
+        let mut natives = vec![];
         for f in funcs {
             for b in &f.blocks {
+                if let Term::Native(n) = b.term {
+                    if !natives.contains(&n) {
+                        natives.push(n);
+                    }
+                }
                 for inst in &b.insts {
                     if let Op::CallHelper(h, _) = &inst.op {
                         if !helpers.contains(h) {
@@ -123,6 +132,7 @@ impl<'a> ModuleGen<'a> {
             func_index,
             helpers,
             helper_types: vec![],
+            natives,
             names: HashMap::new(),
         }
     }
@@ -141,12 +151,20 @@ impl<'a> ModuleGen<'a> {
         self
     }
 
+    fn num_func_imports(&self) -> u32 {
+        F_FIRST_NATIVE + self.natives.len() as u32
+    }
+
+    fn native_func_index(&self, name: &str) -> u32 {
+        F_FIRST_NATIVE + self.natives.iter().position(|n| *n == name).unwrap() as u32
+    }
+
     fn helper_func_index(&self, h: Helper) -> u32 {
-        NUM_FUNC_IMPORTS + self.helpers.iter().position(|x| *x == h).unwrap() as u32
+        self.num_func_imports() + self.helpers.iter().position(|x| *x == h).unwrap() as u32
     }
 
     fn translated_func_index(&self, i: u32) -> u32 {
-        NUM_FUNC_IMPORTS + self.helpers.len() as u32 + i
+        self.num_func_imports() + self.helpers.len() as u32 + i
     }
 
     pub fn direct_target(&self, addr: u32) -> Option<u32> {
@@ -194,6 +212,9 @@ impl<'a> ModuleGen<'a> {
             EntityType::Function(T_FAULT),
         );
         imp.import(imports::MODULE, imports::MATH, EntityType::Function(T_MATH));
+        for n in &self.natives {
+            imp.import(imports::MODULE, n, EntityType::Function(T_FN));
+        }
         imp.import(
             imports::MODULE,
             imports::MEMORY,
@@ -261,8 +282,9 @@ impl<'a> ModuleGen<'a> {
 
         // Code.
         let mut code = CodeSection::new();
+        let eflags = self.helper_func_index(Helper::Eflags);
         for h in self.helpers.clone() {
-            code.function(&gen_helper(h));
+            code.function(&gen_helper(h, eflags));
         }
         for f in funcs {
             code.function(&self.gen_function(f));
@@ -273,7 +295,7 @@ impl<'a> ModuleGen<'a> {
         // `x86_address`.
         let mut fnames = NameMap::new();
         for (i, h) in self.helpers.iter().enumerate() {
-            fnames.append(NUM_FUNC_IMPORTS + i as u32, &format!("helper_{h:?}"));
+            fnames.append(self.num_func_imports() + i as u32, &format!("helper_{h:?}"));
         }
         for (i, f) in funcs.iter().enumerate() {
             let name = match self.names.get(&f.entry) {
@@ -1080,6 +1102,11 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.emit(W::I32Const(0));
                 self.emit(W::LocalSet(self.tmp_i32b));
                 self.raise(dirty, code, eip);
+            }
+            Term::Native(n) => {
+                self.sync(dirty);
+                self.emit(W::LocalGet(0));
+                self.emit(W::ReturnCall(self.m.native_func_index(n)));
             }
             Term::None => self.emit(W::Unreachable),
         }
@@ -2070,7 +2097,8 @@ fn emit_e(out: &mut Vec<W<'static>>, e: &E, map: [u32; 4]) {
     }
 }
 
-fn gen_helper(h: Helper) -> wasm_encoder::Function {
+/// `eflags`: the function index of the Eflags helper.
+fn gen_helper(h: Helper, eflags: u32) -> wasm_encoder::Function {
     let mut out: Vec<W<'static>> = vec![];
     let mut locals: Vec<ValType> = vec![];
     match h {
@@ -2111,7 +2139,7 @@ fn gen_helper(h: Helper) -> wasm_encoder::Function {
             for p in 1..=5 {
                 out.push(W::LocalGet(p));
             }
-            out.push(W::Call(NUM_FUNC_IMPORTS)); // Eflags is helper 0
+            out.push(W::Call(eflags));
             out.push(W::LocalSet(6));
             out.push(W::Block(BlockType::Empty));
             for _ in 0..16 {
@@ -2148,7 +2176,7 @@ mod tests {
         let g = super::ModuleGen::new(&cfg, &[]);
         assert_eq!(
             g.helper_func_index(crate::ir::Helper::Eflags),
-            super::NUM_FUNC_IMPORTS
+            super::F_FIRST_NATIVE
         );
     }
 }
