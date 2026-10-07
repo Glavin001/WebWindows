@@ -67,6 +67,8 @@
       </select></label>
       <label title="Wait for the display (requestAnimationFrame) before each frame, like vsync. Off: as fast as possible.">
         <input id="pace" type="checkbox"> vsync</label>
+      <label title="Split the CPU time into draws (deriving state, recording pass commands) and submit. Each clock read is a call into JavaScript, which adds about a microsecond per draw; off for the benchmark.">
+        <input id="profile" type="checkbox"> timing breakdown</label>
       <button id="pause">Pause</button>
       <button id="copy" class="primary" title="Copy a report of the current scene and environment">Copy report</button>
       <button id="bench" title="Run every demo at several sizes and collect a report (about 90 s)">Run benchmark</button>

@@ -288,6 +288,12 @@ impl Core {
     }
 
     pub(crate) fn draw11(&mut self, d: Draw11) {
+        let t = self.now_ns();
+        self.draw11_inner(d);
+        self.stats.draw_ns += self.now_ns() - t;
+    }
+
+    fn draw11_inner(&mut self, d: Draw11) {
         self.stats.draws += 1;
         for attempt in 0..2 {
             match self.try_draw11(&d) {
@@ -1331,9 +1337,9 @@ impl Core {
         let p = match &self.d11.prepared {
             Some(p) if self.d11.dirty == 0 => p.clone(),
             _ => {
-                let t = crate::now_ns();
+                let t = self.now_ns();
                 let p = self.prepare11();
-                self.stats.prepare_ns += crate::now_ns() - t;
+                self.stats.prepare_ns += self.now_ns() - t;
                 p?
             }
         };
@@ -1423,7 +1429,7 @@ impl Core {
         };
 
         // Record.
-        let t_record = crate::now_ns();
+        let t_record = self.now_ns();
         self.ensure_pass11(targets);
         let blend_factor = self.d11.st.blend_factor.map(|c| c as f64);
         let stencil_ref = self.d11.st.stencil_ref & 0xff;
@@ -1452,7 +1458,7 @@ impl Core {
             }
             _ => {}
         }
-        self.stats.record_ns += crate::now_ns() - t_record;
+        self.stats.record_ns += self.now_ns() - t_record;
         Ok(())
     }
 

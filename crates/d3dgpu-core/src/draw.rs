@@ -901,6 +901,12 @@ impl Core {
     }
 
     pub(crate) fn draw(&mut self, prim: PrimitiveType, src: Source) {
+        let t = self.now_ns();
+        self.draw_inner(prim, src);
+        self.stats.draw_ns += self.now_ns() - t;
+    }
+
+    fn draw_inner(&mut self, prim: PrimitiveType, src: Source) {
         self.stats.draws += 1;
         // Shaders, vertex layout and targets depend on the state only:
         // reuse them while no state command arrived (constants don't count).
@@ -911,9 +917,9 @@ impl Core {
         let front = match &self.caches.front {
             Some((v, s, f)) if *v == self.st.version && *s == up_stride => f.clone(),
             _ => {
-                let t = crate::now_ns();
+                let t = self.now_ns();
                 let f = self.prepare_front(&src);
-                self.stats.prepare_ns += crate::now_ns() - t;
+                self.stats.prepare_ns += self.now_ns() - t;
                 match f {
                     Ok(f) => {
                         self.caches.front = Some((self.st.version, up_stride, f.clone()));
@@ -1097,9 +1103,9 @@ impl Core {
         let back = match &self.caches.back {
             Some((k, b)) if *k == back_key => b.clone(),
             _ => {
-                let t = crate::now_ns();
+                let t = self.now_ns();
                 let b = self.prepare_back(&vsv, &psv, slots, &targets, topology, strip_index);
-                self.stats.prepare_ns += crate::now_ns() - t;
+                self.stats.prepare_ns += self.now_ns() - t;
                 self.caches.back = Some((back_key, b.clone()));
                 b
             }
@@ -1131,7 +1137,7 @@ impl Core {
             self.st.vs_consts.dirty = true;
             self.st.ps_consts.dirty = true;
             self.stats.draws -= 1;
-            return self.draw(prim, src);
+            return self.draw_inner(prim, src);
         }
 
         // Vertex buffers to bind.
@@ -1170,7 +1176,7 @@ impl Core {
         };
 
         // Record.
-        let t_record = crate::now_ns();
+        let t_record = self.now_ns();
         if self.ensure_pass().is_none() {
             return;
         }
@@ -1196,7 +1202,7 @@ impl Core {
             }
             None => pass.draw(vertex_range.0..vertex_range.1, 0..instances),
         }
-        self.stats.record_ns += crate::now_ns() - t_record;
+        self.stats.record_ns += self.now_ns() - t_record;
     }
 
     /// Uploads the constants a shader reads, unless this submission already

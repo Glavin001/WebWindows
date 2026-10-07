@@ -36,6 +36,7 @@ fn main() {
         }
         let built = b.finish("bench");
         let mut core = Core::with_options(device.clone(), queue.clone(), Options::for_device(&device));
+        core.set_profiling(true);
         let mut shared = vec![0u8; 16];
         // Warm up on the setup batch and the first frame.
         core.execute(&built.batches[0], &shared).unwrap();

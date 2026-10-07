@@ -103,15 +103,16 @@ pub struct Stats {
     pub errors: u64,
     /// Nanoseconds spent in draws (decode excluded), of which deriving
     /// state (variants, bind groups, pipelines) and recording pass
-    /// commands; and in `encoder.finish` + `queue.submit`.
+    /// commands; and in `encoder.finish` + `queue.submit`. Kept only while
+    /// profiling ([`Core::set_profiling`]).
     pub draw_ns: u64,
     pub prepare_ns: u64,
     pub record_ns: u64,
     pub submit_ns: u64,
 }
 
-/// A monotonic clock in nanoseconds (0 on wasm32, which has no `Instant`).
-fn now_ns() -> u64 {
+/// A monotonic clock in nanoseconds.
+fn clock_ns() -> u64 {
     #[cfg(not(target_arch = "wasm32"))]
     {
         static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
@@ -243,6 +244,9 @@ pub struct Core {
     completed_fence: u64,
     next_id: u64,
     stats: Stats,
+    /// Whether the `*_ns` stats are kept. Off by default: in browsers each
+    /// clock read is a call into JavaScript, several per draw.
+    profile: bool,
     log: Vec<String>,
 }
 
@@ -287,7 +291,23 @@ impl Core {
             completed_fence: 0,
             next_id: 1,
             stats: Stats::default(),
+            profile: false,
             log: Vec::new(),
+        }
+    }
+
+    /// Keep the time spent in draws, state derivation, pass recording and
+    /// submission in [`Stats`] (`draw_ns` and the rest).
+    pub fn set_profiling(&mut self, on: bool) {
+        self.profile = on;
+    }
+
+    /// [`clock_ns`] while profiling, else 0.
+    fn now_ns(&self) -> u64 {
+        if self.profile {
+            clock_ns()
+        } else {
+            0
         }
     }
 
@@ -500,15 +520,9 @@ impl Core {
             }
             Command::Clear { flags, color, z, stencil, rects } => self.clear(flags, color, z, stencil, &rects),
             Command::Draw { prim, start_vertex, prim_count } => {
-                let t = now_ns();
-                self.draw(prim, draw::Source::Vertices { start: start_vertex, count: prim_count });
-                self.stats.draw_ns += now_ns() - t;
+                self.draw(prim, draw::Source::Vertices { start: start_vertex, count: prim_count })
             }
-            Command::DrawIndexed { prim, draw } => {
-                let t = now_ns();
-                self.draw(prim, draw::Source::Indexed(draw));
-                self.stats.draw_ns += now_ns() - t;
-            }
+            Command::DrawIndexed { prim, draw } => self.draw(prim, draw::Source::Indexed(draw)),
             Command::DrawUp { prim, prim_count, stride, vertices } => {
                 if let Some(v) = self.resolve(vertices, shared) {
                     self.draw(prim, draw::Source::Up { count: prim_count, stride, vertices: v, indices: None })
@@ -969,9 +983,9 @@ impl Core {
         self.streams.flush(&self.queue);
         self.uploads.flush(&self.queue);
         let enc = self.enc.take().unwrap_or_else(|| self.device.create_command_encoder(&Default::default()));
-        let t = now_ns();
+        let t = self.now_ns();
         self.queue.submit([enc.finish()]);
-        self.stats.submit_ns += now_ns() - t;
+        self.stats.submit_ns += self.now_ns() - t;
         self.stats.submits += 1;
         self.epoch += 1;
         for w in std::mem::take(&mut self.presented) {

@@ -173,6 +173,7 @@ if (test) {
   const frameLog = []; // { t, interval, exec } for the last few seconds
   const gpuHistory = []; // { t, ms }
   let counters = null; // last stats message counters
+  let generation = -1; // the render worker's core generation those counters are from
   const windowStats = { frames: 0, draws: 0, passCommands: 0, skipped: 0, created: 0, bytes: 0, errors: 0, skippedDraws: 0, drawNs: 0, prepareNs: 0, recordNs: 0, submitNs: 0 };
   let windowStart = performance.now();
   let lastMessages = [];
@@ -185,12 +186,15 @@ if (test) {
   const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : NaN);
   const fmt = (v, d = 1) => (Number.isFinite(v) ? v.toFixed(d) : '–');
 
-  function resetStats() {
+  function clearWindow() {
     frameLog.length = 0;
     gpuHistory.length = 0;
     counters = null;
     Object.keys(windowStats).forEach((k) => (windowStats[k] = 0));
     windowStart = performance.now();
+  }
+  function resetStats() {
+    clearWindow();
     lastMessages = [];
     render.postMessage({ type: 'restart' });
   }
@@ -228,6 +232,12 @@ if (test) {
 
   render.addEventListener('message', (e) => {
     if (e.data.type !== 'stats') return;
+    if (e.data.generation !== generation) {
+      // A new core: its counters start from zero, and anything still
+      // arriving from the previous one doesn't belong in this window.
+      generation = e.data.generation;
+      clearWindow();
+    }
     const now = performance.now();
     let t = now;
     for (let i = e.data.samples.length - 1; i >= 0; i--) {
@@ -331,8 +341,10 @@ if (test) {
       ['  p50 / p95 / p99', `${fmt(s.p50)} / ${fmt(s.p95)} / ${fmt(s.p99)} ms`],
       ['  worst', `${fmt(s.max)} ms`],
       ['CPU: core execute', `${fmt(s.cpu, 2)} ms (p95 ${fmt(s.cpuP95, 2)})`],
-      ['  in draws', `${fmt(s.drawsMs, 2)} ms (derive ${fmt(s.prepareMs, 2)}, record ${fmt(s.recordMs, 2)})`],
-      ['  finish + submit', `${fmt(s.submitMs, 2)} ms`],
+      ...($('profile').checked ? [
+        ['  in draws', `${fmt(s.drawsMs, 2)} ms (derive ${fmt(s.prepareMs, 2)}, record ${fmt(s.recordMs, 2)})`],
+        ['  finish + submit', `${fmt(s.submitMs, 2)} ms`],
+      ] : []),
       ['GPU: submit → done', `${fmt(s.gpu, 2)} ms (p95 ${fmt(s.gpuP95, 2)})`],
       ['draws / frame', fmt(s.drawsPerFrame, 0)],
       ['CPU µs / draw', fmt((s.cpu * 1000) / Math.max(1, s.drawsPerFrame), 2)],
@@ -355,7 +367,9 @@ if (test) {
     const label = current ? `${current.name}${current.param !== null ? ` (${spec?.label} ${current.param})` : ''}` : '';
     return `## d3dgpu: ${label}\n\n` +
       `FPS ${fmt(s.fps)} · frame ${fmt(s.frameAvg, 2)} ms (p50 ${fmt(s.p50)}, p95 ${fmt(s.p95)}, p99 ${fmt(s.p99)}, worst ${fmt(s.max)}) · ` +
-      `CPU ${fmt(s.cpu, 2)} ms (draws ${fmt(s.drawsMs, 2)}: derive ${fmt(s.prepareMs, 2)}, record ${fmt(s.recordMs, 2)}; submit ${fmt(s.submitMs, 2)}) · GPU submit→done ${fmt(s.gpu, 2)} ms · ${fmt(s.drawsPerFrame, 0)} draws/frame · ` +
+      `CPU ${fmt(s.cpu, 2)} ms` +
+      ($('profile').checked ? ` (draws ${fmt(s.drawsMs, 2)}: derive ${fmt(s.prepareMs, 2)}, record ${fmt(s.recordMs, 2)}; submit ${fmt(s.submitMs, 2)}; timed)` : '') +
+      ` · GPU submit→done ${fmt(s.gpu, 2)} ms · ${fmt(s.drawsPerFrame, 0)} draws/frame · ` +
       `${fmt((s.cpu * 1000) / Math.max(1, s.drawsPerFrame), 2)} µs/draw · ${fmt(s.passCmdsPerDraw, 2)} pass cmds/draw · errors ${s.errors}, skipped draws ${s.skippedDraws}` +
       `${$('pace').checked ? ' · vsync' : ' · uncapped'}\n\n` +
       '```\n' + envText() + '\n```\n' +
@@ -375,6 +389,16 @@ if (test) {
   };
   $('pace').onchange = () => {
     render.postMessage({ type: 'pace', on: $('pace').checked });
+    resetStats();
+  };
+  const setProfiling = (on) => render.postMessage({ type: 'profile', on });
+  $('profile').checked = params.has('profile');
+  setProfiling($('profile').checked);
+  $('profile').onchange = () => {
+    setProfiling($('profile').checked);
+    const q = new URLSearchParams(location.search);
+    if ($('profile').checked) q.set('profile', ''); else q.delete('profile');
+    window.history.replaceState(null, '', '?' + q);
     resetStats();
   };
   $('pause').onclick = () => {
@@ -404,8 +428,10 @@ if (test) {
     $('bench-panel').hidden = false;
     $('bench-copy').hidden = $('bench-json').hidden = true;
     const wasPaced = $('pace').checked;
-    $('pace').checked = false;
+    const wasProfiling = $('profile').checked;
+    $('pace').checked = $('profile').checked = false;
     render.postMessage({ type: 'pace', on: false });
+    setProfiling(false);
     const table = $('bench-table');
     table.innerHTML = '<tr><th>scene</th><th>size</th><th>FPS</th><th>frame p50</th><th>p95</th><th>p99</th><th>CPU ms</th><th>µs/draw</th><th>GPU ms</th><th>draws</th><th>cmds/draw</th><th>errors</th></tr>';
     benchResults = { environment: environment(), results: [] };
@@ -430,7 +456,9 @@ if (test) {
     $('bench-copy').hidden = $('bench-json').hidden = false;
     $('bench').disabled = false;
     $('pace').checked = wasPaced;
+    $('profile').checked = wasProfiling;
     render.postMessage({ type: 'pace', on: wasPaced });
+    setProfiling(wasProfiling);
     window.d3dgpuBench = benchResults;
   }
   function benchMarkdown() {

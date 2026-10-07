@@ -12,6 +12,10 @@ let samples = [];
 let lastFrameEnd = 0;
 let lastReport = performance.now();
 let paced = false;
+let profiling = false;
+// Bumped whenever a new core starts, so the page can tell which counters
+// belong together.
+let generation = 0;
 // Frames the GPU may lag behind; more would queue work without bound in
 // GPU-bound scenes and measure submission speed instead of throughput.
 const MAX_IN_FLIGHT = 2;
@@ -108,6 +112,7 @@ async function loop() {
           : sceneNames()[index];
       } else {
         renderer.restart();
+        generation++;
         lastFrameEnd = 0;
       }
       renderer.set_shared_size(Atomics.load(ctrl, P.SHARED_SIZE));
@@ -136,6 +141,7 @@ async function loop() {
       if (now - lastReport > 250) {
         postMessage({
           type: 'stats',
+          generation,
           samples,
           gpu: renderer.take_gpu_latencies(),
           stats: JSON.parse(renderer.stats_json()),
@@ -152,6 +158,9 @@ onmessage = async (e) => {
   const m = e.data;
   if (m.type === 'pace') {
     paced = m.on;
+  } else if (m.type === 'profile') {
+    profiling = m.on;
+    renderer?.set_profiling(profiling);
   } else if (m.type === 'restart') {
     lastFrameEnd = 0;
     samples = [];
@@ -162,6 +171,7 @@ onmessage = async (e) => {
     testMode = !m.canvas;
     try {
       renderer = await Renderer.create(m.canvas ?? undefined, m.optional ?? true);
+      renderer.set_profiling(profiling);
     } catch (err) {
       postMessage({ type: 'error', message: String(err) });
       return;

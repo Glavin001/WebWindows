@@ -383,17 +383,14 @@ impl Core {
             Command::SetViewports(vps) => self.d11.st.viewport = vps.first().copied(),
             Command::SetScissorRects(rects) => self.d11.st.scissor = rects.first().copied().unwrap_or_default(),
             Command::Draw11 { vertex_count, start_vertex, instance_count, start_instance } => {
-                let t = crate::now_ns();
                 self.draw11(draw::Draw11::Vertices {
                     count: vertex_count,
                     start: start_vertex,
                     instances: instance_count,
                     start_instance,
                 });
-                self.stats.draw_ns += crate::now_ns() - t;
             }
             Command::DrawIndexed11 { index_count, start_index, base_vertex, instance_count, start_instance } => {
-                let t = crate::now_ns();
                 self.draw11(draw::Draw11::Indexed {
                     count: index_count,
                     start: start_index,
@@ -401,7 +398,6 @@ impl Core {
                     instances: instance_count,
                     start_instance,
                 });
-                self.stats.draw_ns += crate::now_ns() - t;
             }
             Command::Dispatch { x, y, z } => self.dispatch11(x, y, z),
             Command::ClearRenderTargetView { view, color } => {

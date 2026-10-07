@@ -44,6 +44,7 @@ pub struct Renderer {
     adapter: String,
     info: String,
     gpu: Arc<GpuTiming>,
+    profile: bool,
 }
 
 #[wasm_bindgen]
@@ -124,6 +125,7 @@ impl Renderer {
             adapter: adapter_name,
             info: info_json,
             gpu: Arc::default(),
+            profile: false,
         })
     }
 
@@ -131,6 +133,7 @@ impl Renderer {
     /// device, presenting headlessly. Used between test scenes.
     pub fn reset(&mut self) {
         self.core = Core::with_options(self.device.clone(), self.queue.clone(), Options::for_device(&self.device));
+        self.core.set_profiling(self.profile);
         self.shared.iter_mut().for_each(|b| *b = 0);
         self.read = None;
     }
@@ -143,6 +146,14 @@ impl Renderer {
         if let Some(p) = presenter {
             self.core.set_presenter(WINDOW, p);
         }
+    }
+
+    /// Keep the per-draw time breakdown (`draw_ns`, `prepare_ns`,
+    /// `record_ns`, `submit_ns`). Each clock read is a call into
+    /// JavaScript, so this costs about a microsecond per draw.
+    pub fn set_profiling(&mut self, on: bool) {
+        self.profile = on;
+        self.core.set_profiling(on);
     }
 
     pub fn adapter(&self) -> String {

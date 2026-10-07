@@ -242,7 +242,10 @@ testing on real hardware:
   frames. Each has a size parameter; the URL keeps scene, size and
   resolution, so a configuration can be shared as a link.
 * **Statistics**: FPS, frame-time average and p50/p95/p99/worst, CPU time
-  in the core split into deriving state, recording and submitting, GPU
+  in the core (with `timing breakdown` or `?profile`: split into deriving
+  state, recording and submitting; each clock read is a call into
+  JavaScript, about 1 µs per draw, so it is off by default and in the
+  benchmark), GPU
   submit-to-done time (`onSubmittedWorkDone`; at most two frames in
   flight, so GPU-bound scenes measure GPU throughput), draws and pass
   commands per draw, uploads, objects created per second (zero in a
@@ -315,6 +318,8 @@ frame, execute time per batch:
 | first version | 15 | 23 | 15 | – |
 | pass-command cache, D3D11 state caching | 15 | 14 | 15 | 2.1 |
 | D3D9 state reuse, device features read once | 5.4 | 4.5 | 2.4 | 2.6 |
+| per-draw clocks off by default | 3.7 | 2.9 | 1.5 | 1.6 |
+| wasm built with `opt-level = 3` instead of `"s"` | 2.1 | 1.7 | 1.1 | 1.0 |
 
 The perf frames change texture and blend state on every draw; the cube
 demos change only constants. The biggest single cost was
@@ -323,7 +328,11 @@ feature set, and the core called it for every texture binding.
 
 On the first real-GPU run in Chrome (before the pass-command cache)
 the Direct3D 9 frame measured ~37.5 ms per 5,000-draw batch, about
-7.5 µs per draw; the demo page shows the current numbers live.
+7.5 µs per draw. An iPhone (WebKit's WebGPU on Metal, before the last two
+rows) measured 3.2 / 2.1 / 1.5 / 1.2 µs per draw at 5,000 draws, with
+the per-draw clocks still on; the GPU-bound demos (500k instances, 1M
+particles, 10k blended sprites at 1280x720) ran at 23, 77 and 10 ms of
+GPU time per frame. The demo page shows the current numbers live.
 
 ## Not done yet
 
