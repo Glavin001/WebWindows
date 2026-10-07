@@ -64,6 +64,46 @@ export function parsePe(bytes) {
   return info;
 }
 
+/**
+ * A copy of a PE file rebased to `base`: its base relocations applied and
+ * ImageBase updated, so Wine's loader finds it already in place. Returns
+ * null when the image cannot move (relocations stripped).
+ */
+export function rebaseImage(bytes, info, base) {
+  const dv0 = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const opt = dv0.getUint32(0x3c, true) + 24;
+  if (info.characteristics & 0x0001) return null; // IMAGE_FILE_RELOCS_STRIPPED
+  const out = bytes.slice();
+  const dv = new DataView(out.buffer);
+  const offsetOf = (rva) => {
+    if (rva < info.sizeOfHeaders) return rva;
+    for (const s of info.sections) {
+      if (rva >= s.virtual_address && rva < s.virtual_address + s.raw_size) return s.raw_offset + rva - s.virtual_address;
+    }
+    return -1;
+  };
+  const delta = (base - info.imageBase) | 0;
+  const relRva = dv.getUint32(opt + 136, true);
+  const relSize = dv.getUint32(opt + 140, true);
+  for (let p = relRva; p + 8 <= relRva + relSize; ) {
+    const page = dv.getUint32(offsetOf(p), true);
+    const blockSize = dv.getUint32(offsetOf(p + 4), true);
+    if (blockSize < 8) break;
+    for (let e = p + 8; e < p + blockSize; e += 2) {
+      const entry = dv.getUint16(offsetOf(e), true);
+      const type = entry >> 12;
+      if (type === 0) continue; // IMAGE_REL_BASED_ABSOLUTE (padding)
+      if (type !== 3) throw new Error(`unsupported relocation type ${type}`);
+      const at = offsetOf(page + (entry & 0xfff));
+      // Fixups in uninitialized data have nothing to patch in the file.
+      if (at >= 0) dv.setUint32(at, (dv.getUint32(at, true) + delta) >>> 0, true);
+    }
+    p += blockSize;
+  }
+  dv.setUint32(opt + 28, base, true);
+  return out;
+}
+
 /** Exported names of a mapped image -> addresses. */
 export function readExports(m, base) {
   const u32 = (a) => m.dv.getUint32(a, true);
@@ -88,8 +128,9 @@ export class WineHost {
   /**
    * @param {import('../runtime.mjs').Machine} machine  initialized with a 2 GB guest limit
    * @param {object} opts
-   * @param {(path: string, bytes: Uint8Array, base: number) => Uint8Array} opts.translate
-   *        returns the translated module for an image file
+   * @param {(path: string, bytes: Uint8Array, at: {base: number, rebased: boolean}) => Uint8Array} opts.translate
+   *        returns the translated module for an image file (`bytes` are
+   *        already rebased when the image could not load at its own base)
    * @param {Map<string, Uint8Array>} opts.files  DOS paths (c:/...) -> contents
    */
   constructor(machine, opts) {
@@ -210,15 +251,28 @@ export class WineHost {
 
   /** Maps an image file at its preferred base and loads its translation. */
   mapImageFile(dosPath, bytes) {
-    const info = parsePe(bytes);
-    const base = info.imageBase;
-    if (!this.vm.reserve(base, info.sizeOfImage, { type: MEM_IMAGE, prot: 0x80, name: dosPath })) {
-      return { status: STATUS.CONFLICTING_ADDRESSES };
+    let info = parsePe(bytes);
+    let base = info.imageBase;
+    const reserve = (at) => this.vm.reserve(at, info.sizeOfImage, { type: MEM_IMAGE, prot: 0x80, name: dosPath });
+    let rebased = false;
+    if (!reserve(base)) {
+      // The preferred range is taken (many DLLs share MinGW's default base):
+      // map elsewhere and translate the rebased image, as Windows would
+      // relocate it.
+      const at = this.vm.findFree(info.sizeOfImage, { topDown: true });
+      const moved = at && rebaseImage(bytes, info, at);
+      if (!moved || !reserve(at)) return { status: STATUS.CONFLICTING_ADDRESSES };
+      this.log(`rebased ${dosPath} from ${hex(base)} to ${hex(at)}`);
+      bytes = moved;
+      info = parsePe(bytes);
+      base = at;
+      rebased = true;
     }
     this.vm.commit(base, info.sizeOfImage, PAGE_EXECUTE_READ);
     // The translation: module bytes, or an already compiled module (Wine's
-    // DLLs are translated ahead of time and compiled by the host).
-    const wasm = this.translate(dosPath, bytes, base);
+    // DLLs are translated ahead of time, at their preferred base, and
+    // compiled by the host).
+    const wasm = this.translate(dosPath, bytes, { base, rebased });
     const name = dosPath.split('\\').pop();
     const rec = wasm instanceof WebAssembly.Module ? this.m.loadCompiledSync(wasm, name) : this.m.loadModuleSync(wasm, name);
     mapImage(this.m, bytes, rec.meta.image);

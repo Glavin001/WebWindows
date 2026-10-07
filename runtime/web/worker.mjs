@@ -88,9 +88,11 @@ async function runOnWine({ exeName, exe, argv, ft, abi, dir, key, bundleUrl }) {
     exeWasm = translateTimed(exeDos, exe);
     await cacheWrite(dir, `${key}.wine.wasm`, exeWasm);
   }
-  const translate = (path, bytes) => {
-    if (compiled.has(path)) return compiled.get(path);
-    if (path === exeDos) return exeWasm;
+  const translate = (path, bytes, { rebased }) => {
+    // The bundle's modules (and the cached .exe) were translated at the
+    // image's own base.
+    if (!rebased && compiled.has(path)) return compiled.get(path);
+    if (!rebased && path === exeDos) return exeWasm;
     return translateTimed(path, bytes);
   };
   const machine = new Machine({ abi, kernel: ft.kernel(), guestLimit: 0x8000_0000, log });
