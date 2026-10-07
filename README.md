@@ -137,8 +137,9 @@ crates/wwt          translator library
 crates/wwt-cli      `wwt` command-line tool
 crates/wwt-wasm     translator compiled to WebAssembly (fast mode, browser)
 crates/wwt-testkit  instruction generator, oracle driver, wasmtime runner
-crates/d3dgpu-*     Direct3D 9 on WebGPU core: protocol, shader translator,
-                    emulation library, render core (wgpu), scenes, web build
+crates/d3dgpu-*     Direct3D 9/10/11 on WebGPU core: protocol, shader translators
+                    (SM1-3, DXBC SM4/5), emulation library, render core (wgpu),
+                    scenes, web build
 runtime/            JavaScript runtime (Node and browser hosts)
 native/wine-unix    Wine's Unix side (wineserver, win32u, display driver) for Emscripten
 tools/oracle        native x86 oracle for instruction tests
@@ -153,14 +154,15 @@ docs/               the plan (plan.md) and each milestone's status
 runtime/d3dgpu/     d3dgpu demo page, render and producer workers, test runner
 ```
 
-## Direct3D 9 on WebGPU
+## Direct3D on WebGPU
 
-The `d3dgpu-*` crates are the reusable core for running Direct3D 9 games on
-WebGPU, which wined3d's future `adapter_wgpu` backend will drive through a
-command stream. See [docs/d3d-webgpu.md](docs/d3d-webgpu.md).
+The `d3dgpu-*` crates are the reusable core for running Direct3D 9, 10 and
+11 games on WebGPU, which wined3d's future `adapter_wgpu` backend will
+drive through a command stream. See [docs/d3d-webgpu.md](docs/d3d-webgpu.md).
 
 ```sh
-cargo test -p d3dgpu-core                     # 36 scenes on native wgpu
+cargo test -p d3dgpu-core                     # 54 scenes (D3D9 and D3D11) on native wgpu
+cargo test -p d3dgpu-dxbc                     # DXBC translator (tools/dxbc/ has the corpora)
 runtime/d3dgpu/build.sh                       # wasm + bindings (needs wasm-bindgen-cli)
 node tests/web/d3dgpu.mjs                     # the same scenes in headless Chromium
 node runtime/web/serve.mjs 8080               # http://localhost:8080/runtime/d3dgpu/

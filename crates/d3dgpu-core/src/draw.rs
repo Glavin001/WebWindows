@@ -109,6 +109,8 @@ struct Dummy {
     id: u64,
 }
 
+type BindGroupKey = (u64, Vec<(u64, u64)>);
+
 pub struct Caches {
     g0_layout: wgpu::BindGroupLayout,
     g0: wgpu::BindGroup,
@@ -117,7 +119,7 @@ pub struct Caches {
     layouts: FastMap<Vec<LayoutEntry>, Arc<Layout>>,
     pipelines: FastMap<PipelineKey, (u64, wgpu::RenderPipeline)>,
     samplers: FastMap<SamplerDesc, (u64, wgpu::Sampler)>,
-    bind_groups: FastMap<(u64, Vec<(u64, u64)>), (u64, wgpu::BindGroup)>,
+    bind_groups: FastMap<BindGroupKey, (u64, wgpu::BindGroup)>,
     clear_pipelines: FastMap<ClearKey, wgpu::RenderPipeline>,
     dummies: FastMap<wgpu::TextureViewDimension, Dummy>,
     zero_buffer: wgpu::Buffer,
