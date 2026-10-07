@@ -5,6 +5,7 @@
 
 import { ProcessExit, GuestFault, hex } from '../runtime.mjs';
 import { parsePe } from './host.mjs';
+import { WIN32U_UNIXLIB } from './unix.mjs';
 
 import L from './layout.json' with { type: 'json' };
 import {
@@ -13,6 +14,7 @@ import {
 } from './vm.mjs';
 
 export const STATUS = {
+  DLL_NOT_FOUND: 0xc0000135,
   SUCCESS: 0,
   BUFFER_OVERFLOW: 0x80000005,
   NO_MORE_FILES: 0x80000006,
@@ -188,7 +190,25 @@ export const SYSCALLS = {
       if (pret) this.w32(pret, 8 + name.length * 2 + 2);
       return STATUS.SUCCESS;
     }
+    if (cls === 1000) {
+      // MemoryWineUnixFuncs: the handle a DLL uses for __wine_unix_call.
+      // win32u's Unix side is in the Emscripten module (./unix.mjs).
+      const img = this.images.get(addr);
+      if (this.unix && img && /\\win32u\.dll$/i.test(img.path)) {
+        this.w32(buf, WIN32U_UNIXLIB);
+        this.w32(buf + 4, 0);
+        return STATUS.SUCCESS;
+      }
+      return STATUS.DLL_NOT_FOUND;
+    }
     return STATUS.INVALID_INFO_CLASS;
+  },
+  // -- user callbacks (see WineHost.userCallback)
+  NtCallbackReturn(a) {
+    const n = this.callbackResults.length;
+    if (!n) return 0xc0000258; // STATUS_NO_CALLBACK_ACTIVE
+    this.callbackResults[n - 1] = { ptr: a(0), len: a(1), status: a(2) };
+    return { jump: this.m.abi.stop_address };
   },
   NtFlushInstructionCache() {
     return STATUS.SUCCESS;

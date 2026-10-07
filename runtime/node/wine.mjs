@@ -15,6 +15,10 @@ import { fileURLToPath } from 'node:url';
 import { Machine, GuestFault, hex } from '../runtime.mjs';
 import { WineHost } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
+import { Display } from '../wine/display.mjs';
+
+/** Thrown out of a wait to stop a GUI program that went idle (--screenshot). */
+class ProgramIdle extends Error {}
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
 import { stdout, stderr } from './output.mjs';
 
@@ -53,6 +57,8 @@ function translate(path, bytes) {
 const args = process.argv.slice(2);
 let trace = false;
 let unixTrace = false;
+let screenshot = null;
+let runFor = Infinity;
 // Wine's Unix side compiled with Emscripten (native/wine-unix): on when built,
 // unless --no-unix.
 const unixDir = join(root, 'target/wine-unix');
@@ -60,13 +66,18 @@ let useUnix = existsSync(join(unixDir, 'wine_unix.mjs'));
 while (args[0]?.startsWith('--')) {
   const a = args.shift();
   if (a === '--trace') trace = true;
-  else if (a === '--trace-unix') unixTrace = true;
+  else if (a === '--trace-unix') unixTrace = args.shift();
   else if (a === '--no-unix') useUnix = false;
   else if (a === '--unix') useUnix = true;
+  // GUI programs: when the program waits with nothing left to wake it (no
+  // timer, no input), save the screen as a PNG and stop.
+  else if (a === '--screenshot') screenshot = args.shift();
+  // ... or once it has run this long (programs with timers never go idle).
+  else if (a === '--run-for') runFor = Number(args.shift());
 }
 const exe = args.shift();
 if (!exe) {
-  console.error('usage: wine.mjs [--trace] [--trace-unix] [--no-unix] program.exe [args...]');
+  console.error('usage: wine.mjs [--trace] [--trace-unix CHANNELS] [--no-unix] [--screenshot F [--run-for MS]] program.exe [args...]');
   process.exit(2);
 }
 
@@ -101,14 +112,40 @@ const machine = new Machine({
 });
 await machine.init();
 let unix = null;
+const display = new Display();
+// Blocks the thread; a wait nothing can end means the program is idle.
+const started = performance.now();
+const wait = (ms) => {
+  if (display.input.length) return 1;
+  if (screenshot && performance.now() - started > runFor) throw new ProgramIdle();
+  if (ms >= 0) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    return display.input.length ? 1 : 0;
+  }
+  if (screenshot) throw new ProgramIdle();
+  return -1;
+};
 if (useUnix) {
   unix = await loadWineUnix(machine, {
     factory: async () => (await import(join(unixDir, 'wine_unix.mjs'))).default,
     layout,
-    dataFiles: new Map([['/wine/share/wine/nls/l_intl.nls', readFileSync(join(wineSrc, 'nls/l_intl.nls'))]]),
+    // wineserver's case tables, and Wine's own fonts for win32u (FreeType).
+    dataFiles: new Map([
+      ['/wine/share/wine/nls/l_intl.nls', readFileSync(join(wineSrc, 'nls/l_intl.nls'))],
+      ...readdirSync(join(wineSrc, 'fonts'))
+        .filter((f) => f.endsWith('.ttf'))
+        .map((f) => [`/wine/share/wine/fonts/${f}`, readFileSync(join(wineSrc, 'fonts', f))]),
+      // Bitmap fonts (System, MS Sans Serif, ...) that Wine's build generates.
+      ...(existsSync(join(wineBuild, 'fonts')) ? readdirSync(join(wineBuild, 'fonts')) : [])
+        .filter((f) => f.endsWith('.fon'))
+        .map((f) => [`/wine/share/wine/fonts/${f}`, readFileSync(join(wineBuild, 'fonts', f))]),
+    ]),
+    display,
+    wait,
     stderr: (s) => stderr(s),
+    win32uNames: JSON.parse(readFileSync(join(unixDir, 'win32u_syscalls.json'), 'utf8')),
   });
-  if (unixTrace) unix.setTrace(true);
+  if (unixTrace) unix.setTrace(unixTrace);
 }
 // Fast mode: code the ahead-of-time pass missed is translated when reached.
 const tw = join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm');
@@ -132,9 +169,18 @@ const r = host.run();
 if (host.unimplemented.size) {
   stderr(`unimplemented syscalls: ${[...host.unimplemented.keys()].join(', ')}\n`);
 }
+if (r.error instanceof ProgramIdle || r.error?.cause instanceof ProgramIdle) {
+  writeFileSync(screenshot, await display.png());
+  stderr(`idle; screenshot in ${screenshot}\n`);
+  process.exit(0);
+}
 if (r.error) {
   stderr(`\n*** ${r.error instanceof GuestFault ? 'guest fault' : 'error'}: ${r.error.message}\n`);
   if (!(r.error instanceof GuestFault)) stderr(r.error.stack + '\n');
   process.exit(128);
+}
+if (screenshot) {
+  writeFileSync(screenshot, await display.png());
+  stderr(`exited; screenshot in ${screenshot}\n`);
 }
 process.exit(r.exitCode ?? 0);

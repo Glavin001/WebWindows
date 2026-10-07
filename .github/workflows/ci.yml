@@ -80,7 +80,7 @@ jobs:
       - name: Install toolchains
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 flex bison
+          sudo apt-get install -y gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 flex bison libfreetype-dev
       - uses: actions/cache@v4
         with:
           path: |
@@ -90,7 +90,8 @@ jobs:
       - name: Build Wine's i386 PE DLLs and kernel32's tests
         run: |
           sh tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost \
-            user32 gdi32 win32u imm32 kernel32/tests
+            user32 gdi32 win32u imm32 kernel32/tests \
+            combase comctl32 coml2 cryptbase ole32 rpcrt4 uxtheme programs/winemine fonts
       - uses: mymindstorm/setup-emsdk@v14
       - name: Build
         run: |
@@ -103,6 +104,13 @@ jobs:
         run: |
           node tests/wine/winetest.mjs --jobs 4 --timeout 60 --baseline tests/wine/baseline/kernel32_test.json \
             "$WINE_BUILD/dlls/kernel32/tests/i386-windows/kernel32_test.exe"
+      - name: GUI programs on translated Wine (browser display driver, headless)
+        run: node tests/wine/gui.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gui-screens
+          path: target/gui/*.png
       - name: GCC torture on translated Wine
         run: |
           sh tools/torture/fetch.sh

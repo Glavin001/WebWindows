@@ -6,6 +6,8 @@
 #   tools/wine/build.sh [dll ...]      # default: the DLLs a console app needs
 #   tools/wine/build.sh programs/cmd   # one of Wine's programs (cmd.exe)
 #   tools/wine/build.sh kernel32/tests # a DLL's conformance tests
+#   tools/wine/build.sh fonts          # the bitmap fonts (.fon) Wine generates;
+#                                      # needs FreeType's headers (libfreetype-dev)
 #
 # Environment: WINE_SRC (default /opt/wine-src/wine-$VERSION), WINE_BUILD
 # (default /opt/wine-build). Needs gcc, flex, bison and gcc-mingw-w64-i686.
@@ -37,6 +39,17 @@ target() {
   esac
 }
 targets=""
-for d in $DLLS; do targets="$targets $(target "$d")"; done
+for d in $DLLS; do
+  if [ "$d" = fonts ]; then
+    # sfnt2fon converts the TrueType sources; Wine was configured without
+    # FreeType (the browser build brings its own), so build it here.
+    gcc -O2 -o tools/sfnt2fon/sfnt2fon "$WINE_SRC/tools/sfnt2fon/sfnt2fon.c" -Itools/sfnt2fon -Iinclude \
+      -I"$WINE_SRC/include" -D__WINESRC__ -DHAVE_FT2BUILD_H -DSONAME_LIBFREETYPE='"libfreetype.so.6"' \
+      $(pkg-config --cflags --libs freetype2)
+    targets="$targets $(grep -oE 'fonts/[a-z_0-9]+\.fon' Makefile | sort -u | tr '\n' ' ')"
+    continue
+  fi
+  targets="$targets $(target "$d")"
+done
 make -j"$(nproc)" $targets
 for t in $targets; do ls -la "$t"; done

@@ -15,7 +15,7 @@ import { ProcessExit, hex } from '../runtime.mjs';
 import { mapImage } from '../pe.mjs';
 import { VirtualMemory, MEM_IMAGE, MEM_PRIVATE, PAGE_READWRITE, PAGE_EXECUTE_READ, PAGE_READONLY } from './vm.mjs';
 import { SYSCALLS, STATUS } from './syscalls.mjs';
-import { HANDLE_ROUTED } from './unix.mjs';
+import { HANDLE_ROUTED, WIN32U_UNIXLIB } from './unix.mjs';
 
 import layout from './layout.json' with { type: 'json' };
 
@@ -149,6 +149,9 @@ export class WineHost {
     this.nextHandle = 0x40000;
     /** Wine's Unix side compiled with Emscripten (./unix.mjs), or null */
     this.unix = opts.unix ?? null;
+    this.unix?.attach(this);
+    /** Results of NtCallbackReturn, one per user callback in progress. */
+    this.callbackResults = [];
     this.images = new Map(); // base -> {path, info}
     this.modulesByPath = new Map();
     this.unimplemented = new Map();
@@ -317,6 +320,7 @@ export class WineHost {
     this.w32(ex('__wine_unix_call_dispatcher'), this.unixCallThunk);
     this.w32(ex('__wine_unixlib_handle'), 0x1000);
     this.w32(ex('__wine_unixlib_handle') + 4, 0);
+    this.kiUserCallbackDispatcher = ex('KiUserCallbackDispatcher');
 
     // The main executable, mapped by the "Unix side" as Wine does.
     const exe = this.mapImageFile(exeDosPath, this.fileAt(exeDosPath));
@@ -533,14 +537,18 @@ export class WineHost {
     const id = m.reg(cpu, EAX);
     const esp = m.reg(cpu, ESP);
     const ret = this.u32(esp);
-    const name = this.syscallNames.get(id) ?? `syscall_${id.toString(16)}`;
+    const name = this.syscallNames.get(id) ?? this.unix?.win32uNames.get(id) ?? `syscall_${id.toString(16)}`;
     const argBase = esp + 8; // [esp] -> stub, [esp+4] -> caller
     const a = (i) => this.u32(argBase + i * 4);
     this.counts.set(name, (this.counts.get(name) ?? 0) + 1);
     const unixImpl = this.unix?.syscalls.get(name);
     const impl = SYSCALLS[name];
     let status;
-    if (unixImpl && this.routeToUnix(name, a)) {
+    if (id >= 0x1000 && this.unix) {
+      // win32u (user32 and gdi32 underneath): its Unix side reads the
+      // arguments from the guest stack.
+      status = this.unix.win32uSyscall(id, argBase);
+    } else if (unixImpl && this.routeToUnix(name, a)) {
       status = unixImpl(a(0), a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8), a(9), a(10), a(11)) >>> 0;
     } else if (!impl) {
       if (!this.unimplemented.has(name)) this.log(`UNIMPLEMENTED ${name}`);
@@ -557,6 +565,49 @@ export class WineHost {
     m.setReg(cpu, EAX, status >>> 0);
     m.setReg(cpu, ESP, esp + 4);
     return ret;
+  }
+
+  /** An NT call from Wine's Unix side (native/wine-unix/inproc/host.c), run by the host's own implementation. */
+  hostNtCall(name, args) {
+    const impl = SYSCALLS[name];
+    if (!impl) {
+      this.unimplemented.set(`${name} (from Unix side)`, (this.unimplemented.get(name) ?? 0) + 1);
+      return STATUS.NOT_IMPLEMENTED;
+    }
+    const status = impl.call(this, (i) => args[i] >>> 0, this.cpu, 0);
+    if (this.trace) this.log(`unix -> ${name}(${args.slice(0, 4).map(hex).join(', ')}) = ${hex(status >>> 0)}`);
+    return status >>> 0;
+  }
+
+  /**
+   * KeUserModeCallback: win32u calls back into user32 (a window procedure,
+   * a hook). Runs ntdll's KiUserCallbackDispatcher(id, args, len) on the
+   * guest stack below the current frame until it ends with NtCallbackReturn,
+   * then restores the thread's registers.
+   */
+  userCallback(id, args, len, retPtr, retLen) {
+    const m = this.m;
+    const saved = m.u8.slice(this.cpu, this.cpu + m.abi.cpu.SIZE);
+    let sp = ((m.reg(this.cpu, ESP) - 256 - len) & ~15) >>> 0;
+    const copy = sp;
+    m.u8.copyWithin(copy, args, args + len);
+    for (const v of [len, copy, id, m.abi.stop_address]) {
+      sp -= 4;
+      this.w32(sp, v);
+    }
+    m.setReg(this.cpu, ESP, sp);
+    const depth = this.callbackResults.length;
+    this.callbackResults.push(null);
+    try {
+      m.run(this.cpu, this.kiUserCallbackDispatcher);
+    } finally {
+      m.u8.set(saved, this.cpu);
+    }
+    const r = this.callbackResults.pop();
+    if (this.callbackResults.length !== depth || !r) throw new Error(`user callback ${id} returned without NtCallbackReturn`);
+    this.w32(retPtr, r.ptr);
+    this.w32(retLen, r.len);
+    return r.status;
   }
 
   /** Whether a host handle (or pseudo-handle the host implements) is involved. */
@@ -586,6 +637,8 @@ export class WineHost {
     let status = STATUS.NOT_IMPLEMENTED;
     if (handle === 0x1000) {
       status = this.ntdllUnixCall(code, args);
+    } else if (handle === WIN32U_UNIXLIB && this.unix) {
+      status = this.unix.win32uUnixCall(code, args);
     } else {
       this.log(`unix call to unknown library ${hex(handle)} code ${code}`);
     }
