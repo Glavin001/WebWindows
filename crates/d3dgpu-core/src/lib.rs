@@ -1,6 +1,6 @@
 //! The d3dgpu render core: executes the command stream on WebGPU.
 //!
-//! The core knows Direct3D 9 semantics and nothing about wined3d. A front
+//! The core knows Direct3D 9 and 10/11 semantics and nothing about wined3d. A front
 //! end encodes batches with [`d3dgpu_proto::Writer`]; the host (the browser
 //! render worker, a native test, a replay tool) owns a [`Core`] and feeds it
 //! each batch with [`Core::execute`], plus the shared memory region the
@@ -159,7 +159,27 @@ impl PendingClear {
 
 enum PendingKind {
     Signal,
-    Read { buffer: wgpu::Buffer, read: ReadInfo },
+    Read {
+        buffer: wgpu::Buffer,
+        read: ReadInfo,
+    },
+    /// A Direct3D 11 readback: rows copied as they are.
+    Raw {
+        buffer: wgpu::Buffer,
+        read: RawRead,
+    },
+}
+
+/// Where the rows of a raw readback go.
+struct RawRead {
+    rows: usize,
+    row_bytes: usize,
+    slices: usize,
+    gpu_row_pitch: usize,
+    gpu_slice_pitch: usize,
+    dest_offset: u32,
+    row_pitch: u32,
+    depth_pitch: u32,
 }
 
 struct ReadInfo {
@@ -197,6 +217,7 @@ pub struct Core {
     streams: Ring,
     uploads: Ring,
     caches: draw::Caches,
+    d11: d3d11::Device11,
     blitter: present::Blitter,
     presenters: HashMap<u32, Box<dyn Presenter>>,
     presented: Vec<u32>,
@@ -221,6 +242,7 @@ impl Core {
         let streams = Ring::new(&device, "d3dgpu streams", opts.stream_ring, U::VERTEX | U::INDEX);
         let uploads = Ring::new(&device, "d3dgpu uploads", opts.upload_ring, U::COPY_SRC);
         let caches = draw::Caches::new(&device, &uniforms.buffer);
+        let d11 = d3d11::Device11::new(&device, &uniforms.buffer);
         let blitter = present::Blitter::new(&device);
         Core {
             device,
@@ -237,6 +259,7 @@ impl Core {
             streams,
             uploads,
             caches,
+            d11,
             blitter,
             presenters: HashMap::new(),
             presented: Vec::new(),
@@ -285,6 +308,7 @@ impl Core {
     pub fn texture(&self, h: Handle) -> Option<&wgpu::Texture> {
         match self.objects.get(&h.0) {
             Some(Object::Texture(t)) => Some(&t.gpu),
+            Some(Object::Texture11(t)) => Some(&t.gpu),
             _ => None,
         }
     }
@@ -747,6 +771,7 @@ impl Core {
     fn end_pass(&mut self) {
         self.pass = None;
         self.pass_targets = None;
+        self.d11.pass = None;
     }
 
     /// The attachments the current state renders to, or `None` when
@@ -888,6 +913,7 @@ impl Core {
     pub fn submit(&mut self) {
         self.end_pass();
         self.flush_clear();
+        self.flush_clears11();
         if self.enc.is_none() && self.uniforms.is_empty() && self.streams.is_empty() && self.uploads.is_empty() {
             return;
         }
@@ -1114,8 +1140,10 @@ impl Core {
             }
             let p = self.pending.pop_front().unwrap();
             progress = true;
-            if let (PendingKind::Read { buffer, read }, 1) = (&p.kind, s) {
-                self.finish_read(buffer, read, shared);
+            match (&p.kind, s) {
+                (PendingKind::Read { buffer, read }, 1) => self.finish_read(buffer, read, shared),
+                (PendingKind::Raw { buffer, read }, 1) => self.finish_raw(buffer, read, shared),
+                _ => {}
             }
             self.completed_fence = self.completed_fence.max(p.fence);
         }
@@ -1139,6 +1167,24 @@ impl Core {
         }
     }
 
+    fn finish_raw(&mut self, buffer: &wgpu::Buffer, r: &RawRead, shared: &mut [u8]) {
+        let data = match buffer.slice(..).get_mapped_range() {
+            Ok(v) => v.to_vec(),
+            Err(e) => return self.warn(format!("readback map failed: {e:?}")),
+        };
+        buffer.unmap();
+        for z in 0..r.slices {
+            for y in 0..r.rows {
+                let src = z * r.gpu_slice_pitch + y * r.gpu_row_pitch;
+                let dst = r.dest_offset as usize + z * r.depth_pitch as usize + y * r.row_pitch as usize;
+                match (shared.get_mut(dst..dst + r.row_bytes), data.get(src..src + r.row_bytes)) {
+                    (Some(d), Some(s)) => d.copy_from_slice(s),
+                    _ => return self.warn("readback destination is outside shared memory"),
+                }
+            }
+        }
+    }
+
     // ---- Presentation ----
 
     fn ensure_presenter(&mut self, window: u32) {
@@ -1148,12 +1194,11 @@ impl Core {
     fn present(&mut self, texture: Handle, window: u32) {
         self.end_pass();
         self.flush_clear();
-        let Some(Object::Texture(t)) = self.objects.get_mut(&texture.0) else {
-            return self.warn(format!("Present: {texture:?} is not a texture"));
+        let (src, (w, h), alpha_is_one) = match self.objects.get_mut(&texture.0) {
+            Some(Object::Texture(t)) => (t.rt_view(0, 0), t.level_size(0), t.plan.alpha_is_one()),
+            Some(Object::Texture11(_)) => self.present_source11(texture).unwrap(),
+            _ => return self.warn(format!("Present: {texture:?} is not a texture")),
         };
-        let src = t.rt_view(0, 0);
-        let (w, h) = t.level_size(0);
-        let alpha_is_one = t.plan.alpha_is_one();
         self.ensure_presenter(window);
         let mut presenter = self.presenters.remove(&window).unwrap();
         {

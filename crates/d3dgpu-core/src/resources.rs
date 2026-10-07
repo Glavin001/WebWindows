@@ -76,6 +76,15 @@ pub enum Object {
     Texture(Texture),
     Shader(Box<Shader>),
     VertexDecl(Vec<VertexElement>),
+    Buffer11(Box<crate::d3d11::Buffer11>),
+    Texture11(Box<crate::d3d11::Texture11>),
+    View11(Box<crate::d3d11::View11>),
+    Shader11(Arc<crate::d3d11::Shader11>),
+    InputLayout11(Arc<crate::d3d11::InputLayout11>),
+    Sampler11(d3dgpu_proto::d3d11::SamplerDesc11),
+    Blend11(Box<d3dgpu_proto::d3d11::BlendDesc11>),
+    DepthStencil11(d3dgpu_proto::d3d11::DepthStencilDesc11),
+    Rasterizer11(d3dgpu_proto::d3d11::RasterizerDesc11),
 }
 
 /// A buffer filled from the CPU once per submission: everything allocated

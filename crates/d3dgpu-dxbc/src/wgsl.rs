@@ -34,8 +34,8 @@ pub const DRIVER_WGSL: &str = "struct Driver {
     // Viewport clamp fixup: pos.xy = pos.xy * pos_fixup.xy + pos.w * pos_fixup.zw.
     pos_fixup: vec4<f32>,
     // x: StartInstanceLocation (SV_InstanceID excludes it, WebGPU's
-    // instance_index doesn't); y: the base vertex to subtract from
-    // vertex_index for SV_VertexID.
+    // instance_index doesn't); y: StartVertexLocation or BaseVertexLocation,
+    // which SV_VertexID excludes and vertex_index doesn't.
     misc: vec4<u32>,
 }
 @group(2) @binding(0) var<uniform> drv: Driver;

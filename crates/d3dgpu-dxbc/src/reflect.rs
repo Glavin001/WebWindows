@@ -99,6 +99,9 @@ pub struct Reflection {
     pub resources: Vec<ResourceDecl>,
     /// Sampler slot and comparison mode.
     pub samplers: Vec<(u32, bool)>,
+    /// (resource, sampler) slot pairs used together by sampling
+    /// instructions.
+    pub pairs: Vec<(u32, u32)>,
     pub uavs: Vec<UavDecl>,
     pub tgsm: Vec<TgsmDecl>,
     /// Immediate constant buffer contents (vec4s of u32).
@@ -228,6 +231,28 @@ impl Reflection {
                     f(d)
                 }
             };
+            if matches!(
+                ins.op,
+                Opcode::Sample
+                    | Opcode::SampleB
+                    | Opcode::SampleL
+                    | Opcode::SampleD
+                    | Opcode::Gather4
+                    | Opcode::Gather4Po
+                    | Opcode::Lod
+                    | Opcode::SampleC
+                    | Opcode::SampleCLz
+                    | Opcode::Gather4C
+                    | Opcode::Gather4PoC
+            ) {
+                let i = if matches!(ins.op, Opcode::Gather4Po | Opcode::Gather4PoC) { 3 } else { 2 };
+                if let (Some(t), Some(s)) = (ins.operands.get(i), ins.operands.get(i + 1)) {
+                    let pair = (t.reg(), s.reg());
+                    if !r.pairs.contains(&pair) {
+                        r.pairs.push(pair);
+                    }
+                }
+            }
             match ins.op {
                 Opcode::Sample
                 | Opcode::SampleB

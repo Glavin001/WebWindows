@@ -13,16 +13,35 @@ use d3dgpu_proto::*;
 
 pub mod perf;
 mod scenes;
+mod scenes11;
 
 pub use scenes::ALL;
 
 /// The window id scenes present to.
 pub const WINDOW: u32 = 1;
 
+/// Which API a scene's builder starts with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Api {
+    D3D9,
+    D3D11,
+}
+
 /// A named scene.
 pub struct Scene {
     pub name: &'static str,
     pub build: fn(&mut Builder),
+    pub api: Api,
+}
+
+impl Scene {
+    pub const fn d3d9(name: &'static str, build: fn(&mut Builder)) -> Scene {
+        Scene { name, build, api: Api::D3D9 }
+    }
+
+    pub const fn d3d11(name: &'static str, build: fn(&mut Builder)) -> Scene {
+        Scene { name, build, api: Api::D3D11 }
+    }
 }
 
 /// What to check after running a scene.
@@ -49,9 +68,12 @@ pub struct Built {
     pub expect: Vec<Expect>,
 }
 
-/// Records a scene: commands plus expectations. Starts with an
-/// `A8R8G8B8` back buffer and a cleared `D24S8` depth buffer bound, a full
-/// viewport, and Direct3D's default state.
+/// Records a scene: commands plus expectations. Direct3D 9 scenes start
+/// with an `A8R8G8B8` back buffer and a cleared `D24S8` depth buffer
+/// bound, a full viewport, and Direct3D's default state; Direct3D 11 scenes
+/// with an `R8G8B8A8_UNORM` back buffer and a cleared `D24_UNORM_S8_UINT`
+/// depth buffer bound through views ([`Builder::rtv`], [`Builder::dsv`]),
+/// a full viewport and the default state objects.
 pub struct Builder {
     pub w: Writer,
     next: u32,
@@ -59,6 +81,8 @@ pub struct Builder {
     pub height: u32,
     pub backbuffer: Handle,
     pub depth: Handle,
+    pub rtv: Handle,
+    pub dsv: Handle,
     batches: Vec<Vec<u8>>,
     expect: Vec<Expect>,
     pub shared_size: usize,
@@ -66,19 +90,25 @@ pub struct Builder {
 }
 
 impl Builder {
-    pub fn new(width: u32, height: u32) -> Builder {
-        let mut b = Builder {
+    fn empty(width: u32, height: u32) -> Builder {
+        Builder {
             w: Writer::new(),
             next: 1,
             width,
             height,
             backbuffer: Handle::NONE,
             depth: Handle::NONE,
+            rtv: Handle::NONE,
+            dsv: Handle::NONE,
             batches: Vec::new(),
             expect: Vec::new(),
             shared_size: 0,
             fence: 0,
-        };
+        }
+    }
+
+    pub fn new(width: u32, height: u32) -> Builder {
+        let mut b = Builder::empty(width, height);
         b.backbuffer = b.render_target(Format::A8R8G8B8, width, height);
         b.depth = b.handle();
         b.w.create_texture(b.depth, &TextureDesc::d2(Format::D24S8, width, height, 1, texture_usage::DEPTH_STENCIL));
@@ -188,6 +218,23 @@ impl Builder {
         self.expect.push(Expect::AnyPixel { rect, rgba, tolerance: 2 });
     }
 
+    /// Reads a Direct3D 11 subresource (or buffer range) back into shared
+    /// memory and expects `bytes` there.
+    pub fn read_back11(
+        &mut self,
+        resource: Handle,
+        sub: u32,
+        bx: Option<&d3d11::Box3>,
+        row_pitch: u32,
+        bytes: Vec<u8>,
+    ) {
+        let offset = self.shared_size.next_multiple_of(16) as u32;
+        self.shared_size = offset as usize + bytes.len();
+        self.fence += 1;
+        self.w.read_subresource(resource, sub, bx, offset, row_pitch, 0, self.fence);
+        self.expect.push(Expect::Shared { offset, bytes });
+    }
+
     pub fn finish(mut self, name: &'static str) -> Built {
         self.split();
         Built {
@@ -247,7 +294,10 @@ impl Built {
 
 impl Scene {
     pub fn build(&self, width: u32, height: u32) -> Built {
-        let mut b = Builder::new(width, height);
+        let mut b = match self.api {
+            Api::D3D9 => Builder::new(width, height),
+            Api::D3D11 => Builder::new_d3d11(width, height),
+        };
         (self.build)(&mut b);
         b.finish(self.name)
     }

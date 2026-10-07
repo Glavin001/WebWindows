@@ -49,17 +49,21 @@ impl ViewportFit {
 /// Fits the viewport `(x, y, w, h)` into a `target_w` x `target_h` render target. `None` when the two do not
 /// overlap (or the viewport is empty): nothing could be drawn, so the core skips the draw.
 pub fn fit_viewport(x: i64, y: i64, w: u32, h: u32, target_w: u32, target_h: u32) -> Option<ViewportFit> {
-    let x0 = x.max(0);
-    let y0 = y.max(0);
-    let x1 = (x + w as i64).min(target_w as i64);
-    let y1 = (y + h as i64).min(target_h as i64);
-    if x1 <= x0 || y1 <= y0 {
+    fit_viewport_f(x as f64, y as f64, w as f64, h as f64, target_w, target_h)
+}
+
+/// [`fit_viewport`] for Direct3D 10+ viewports, whose corners and size are floats.
+pub fn fit_viewport_f(x: f64, y: f64, w: f64, h: f64, target_w: u32, target_h: u32) -> Option<ViewportFit> {
+    let x0 = x.max(0.0);
+    let y0 = y.max(0.0);
+    let x1 = (x + w).min(target_w as f64);
+    let y1 = (y + h).min(target_h as f64);
+    if x1 <= x0 || y1 <= y0 || w <= 0.0 || h <= 0.0 {
         return None;
     }
-    let (nw, nh) = ((x1 - x0) as f64, (y1 - y0) as f64);
-    let (w, h) = (w as f64, h as f64);
+    let (nw, nh) = (x1 - x0, y1 - y0);
     let scale = [(w / nw) as f32, (h / nh) as f32];
-    let offset = [((2.0 * (x - x0) as f64 + w) / nw - 1.0) as f32, (1.0 - (2.0 * (y - y0) as f64 + h) / nh) as f32];
+    let offset = [((2.0 * (x - x0) + w) / nw - 1.0) as f32, (1.0 - (2.0 * (y - y0) + h) / nh) as f32];
     Some(ViewportFit { x: x0 as f32, y: y0 as f32, width: nw as f32, height: nh as f32, scale, offset })
 }
 

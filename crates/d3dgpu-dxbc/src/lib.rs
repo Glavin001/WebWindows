@@ -22,8 +22,8 @@ pub use container::{ComponentType, Container, SigElement};
 pub use decode::{Opcode, Program, ProgramType, RegType, ResourceDim, ReturnType};
 pub use reflect::Reflection;
 pub use wgsl::{
-    Binding, BindingType, BufferFormat, Interp, Key, LinkElement, LinkSlot, SrvKind, StorageFormat, Translation,
-    UavKind,
+    Binding, BindingType, BufferFormat, Clip, Interp, Key, LinkElement, LinkSlot, SrvKind, StorageFormat, TexDim,
+    TexSample, Translation, UavKind,
 };
 
 /// Translation errors.
