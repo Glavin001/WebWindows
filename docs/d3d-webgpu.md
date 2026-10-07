@@ -230,10 +230,30 @@ worker standing in for wined3d's CS thread:
   presentation and `mapAsync` proceed; a 1 ms pump copies finished
   readbacks into shared memory and notifies the fence.
 
-The demo page shows the performance scene (500/2,000/5,000 draws, through
-the Direct3D 9 or the Direct3D 11 commands) or any test scene on the
-canvas with live counters; `?test` runs every scene headlessly and checks
-it.
+The page (`runtime/d3dgpu/`, also the Vercel preview) is the place for
+testing on real hardware:
+
+* **Demos** (`crates/d3dgpu-scenes/src/demos.rs`, HLSL in
+  `crates/d3dgpu-scenes/hlsl/`): lit textured cubes with one draw each
+  through Direct3D 11 (`cubes11`) and Direct3D 9 (`cubes9`, SM3 from
+  HLSL), one instanced draw of up to a million cubes, compute-shader
+  particles in structured buffers, HDR bloom (five passes), shadow maps
+  with PCF, `DrawPrimitiveUP` sprite batches, and the synthetic perf
+  frames. Each has a size parameter; the URL keeps scene, size and
+  resolution, so a configuration can be shared as a link.
+* **Statistics**: FPS, frame-time average and p50/p95/p99/worst, CPU time
+  in the core split into deriving state, recording and submitting, GPU
+  submit-to-done time (`onSubmittedWorkDone`; at most two frames in
+  flight, so GPU-bound scenes measure GPU throughput), draws and pass
+  commands per draw, uploads, objects created per second (zero in a
+  steady state), errors; with a frame-time graph. Optional vsync pacing
+  (`requestAnimationFrame` in the render worker).
+* **Benchmark** (`Run benchmark` or `?bench`): every demo at several sizes,
+  1.5 s warm-up and 4 s measured each; results copy as Markdown (with the
+  browser, `GPUAdapter.info`, features and limits) or download as JSON.
+* **Tests** (`?test`): every scene checked against its expected pixels and
+  readbacks, and every demo run for a few frames (no errors, real
+  content); results copy as Markdown.
 
 ## Testing
 
@@ -244,8 +264,11 @@ it.
 | Emulation unit tests (all 65,536 packed 16-bit values round-trip, BC blocks, viewport fits, fan/strip winding) | `cargo test -p d3dgpu-emu` | 45 pass |
 | DXBC: container and token decoding, translation of an HLSL corpus (compiled with vkd3d, `tools/dxbc/compile.sh`) under several keys to WGSL Naga accepts; Wine's fxc corpus when fetched | `cargo test -p d3dgpu-dxbc` | pass |
 | 54 scenes (36 D3D9, 18 D3D11) on native wgpu (lavapipe in CI), WebGPU default limits, with and without optional features | `cargo test -p d3dgpu-core --test scenes` | 54/54 |
+| The 9 animated demos for a few frames: no errors, real content | `cargo test -p d3dgpu-core --test demos` | 9/9 |
+| Wine's Direct3D 8/9 test shaders (244, SM1–3) translate to valid WGSL | `tools/dxbc/fetch-wine-d3d9-shaders.sh && cargo test -p d3dgpu-shader --test corpus` | 244/244 |
+| Wine's Direct3D 10/11 test shaders (362, fxc) decode; VS/PS/CS translate to valid WGSL | `tools/dxbc/fetch-wine-shaders.sh && cargo test -p d3dgpu-dxbc --test corpus` | 319 + 35 GS/HS/DS unsupported |
 | Steady-state budget: 150 draws/frame after warm-up create nothing, one pass and one submit per frame | `cargo test -p d3dgpu-core --test budget` | pass |
-| The same 54 scenes in headless Chromium on WebGPU (Dawn/Tint, SwiftShader) through the producer/render-worker pipeline, both feature sets | `runtime/d3dgpu/build.sh && node tests/web/d3dgpu.mjs` | 54/54, 54/54 |
+| The same 54 scenes and 9 demos in headless Chromium on WebGPU (Dawn/Tint, SwiftShader) through the producer/render-worker pipeline, both feature sets | `runtime/d3dgpu/build.sh && node tests/web/d3dgpu.mjs` | 63/63, 63/63 |
 
 Scenes cover: clears, culling, `vs_1_1`/`ps_1_1` texturing, eight texture
 formats (packed 16-bit, L8, A8L8, X8, DXT1, A8), indexed and non-indexed
@@ -287,11 +310,16 @@ In the browser the core runs as wasm and every pass command crosses into
 JavaScript. Headless Chromium with SwiftShader in the container, perf
 frame, execute time per batch:
 
-| | 500 draws | 2,000 draws |
-| --- | --- | --- |
-| Direct3D 9 | 7.1 ms | 29.9 ms |
-| Direct3D 11 (before state caching) | 11.6 ms | 46.7 ms |
-| Direct3D 11 | 6.8 ms | 22.9 ms |
+| CPU µs per draw | perf9 | perf11 | cubes9 | cubes11 |
+| --- | --- | --- | --- | --- |
+| first version | 15 | 23 | 15 | – |
+| pass-command cache, D3D11 state caching | 15 | 14 | 15 | 2.1 |
+| D3D9 state reuse, device features read once | 5.4 | 4.5 | 2.4 | 2.6 |
+
+The perf frames change texture and blend state on every draw; the cube
+demos change only constants. The biggest single cost was
+`device.features()`: on wgpu's WebGPU backend it walks the browser's
+feature set, and the core called it for every texture binding.
 
 On the first real-GPU run in Chrome (before the pass-command cache)
 the Direct3D 9 frame measured ~37.5 ms per 5,000-draw batch, about
