@@ -1,0 +1,18 @@
+[package]
+name = "wwt-cli"
+description = "Command-line toolkit: translate a Windows .exe into a web app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wwt"
+path = "src/main.rs"
+
+[dependencies]
+wwt = { path = "../wwt" }
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+wasmprinter.workspace = true
+iced-x86.workspace = true
