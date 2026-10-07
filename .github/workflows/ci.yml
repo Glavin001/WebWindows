@@ -42,16 +42,21 @@ jobs:
         run: node tests/programs/check.mjs --csmith 40 --seed ${{ github.run_number }}000 --opt O0,O2 --jobs 4
       - name: Instruction coverage of MinGW output
         run: cargo run -p wwt-testkit --bin coverage -- target/programs/*.exe
-      - name: Spikes
+      - name: Memory spike
         run: node spikes/memory/run.mjs
+      - name: Browser (headless Chromium)
+        run: |
+          npx --yes playwright@1 install --with-deps chromium
+          npm install --no-save playwright@1
+          node tests/web/browser.mjs
+          node tests/web/browser.mjs tests/fixtures/binaries/jumps-O2.exe "longjmp returned 50 at depth 25"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: programs
           path: |
             target/programs/*.exe
-            target/programs/results.json
-            target/program-failures/
+            target/programs/results*.json
 
   # Runs the same MinGW executables on real Windows and checks they print
   # what the translated runs printed (validating the Linux reference).
@@ -67,3 +72,14 @@ jobs:
       - name: Compare native Windows runs with translated runs
         shell: pwsh
         run: node tests/programs/windows-check.mjs programs
+
+  # Spike: Emscripten's data, heap and stacks above the guest limit.
+  emscripten:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mymindstorm/setup-emsdk@v14
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: spikes/emscripten/build.sh

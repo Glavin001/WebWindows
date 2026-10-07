@@ -740,6 +740,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let dirty = self.a.dirty_end[x as usize];
         match blk.term.clone() {
             Term::Jump(t) => self.do_branch(x, t),
+            Term::Branch { t, f, .. } if t == f => self.do_branch(x, t),
             Term::Branch { cond, t, f } => {
                 if self.is_dead_end(x, t) && !self.ctx.contains(&Ctx::Dispatch) {
                     self.get(cond);

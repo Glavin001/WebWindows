@@ -9,7 +9,7 @@
 // --no-fast (disable run-time translation of code the translator missed).
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, appendFileSync, mkdtempSync } from 'node:fs';
+import { existsSync, readFileSync, appendFileSync, mkdtempSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,10 +24,12 @@ const root = resolve(here, '../..');
 function findWwt(explicit) {
   if (explicit) return explicit;
   if (process.env.WWT) return process.env.WWT;
-  for (const p of ['target/release/wwt', 'target/debug/wwt']) {
-    const f = join(root, p);
-    if (existsSync(f)) return f;
-  }
+  // The most recently built translator.
+  const found = ['target/release/wwt', 'target/debug/wwt']
+    .map((p) => join(root, p))
+    .filter((f) => existsSync(f))
+    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+  if (found.length) return found[0];
   throw new Error('wwt translator not found; build it with `cargo build -p wwt-cli`');
 }
 
@@ -81,12 +83,15 @@ export async function runExe(exePath, argv, opts = {}) {
   proc.load(readFileSync(exePath), mod.meta.image);
   let exitCode;
   let error = null;
+  const t0 = performance.now();
   try {
     exitCode = proc.start();
   } catch (e) {
     if (e instanceof ProcessExit) exitCode = e.exitCode;
     else error = e;
   }
+  const runMs = performance.now() - t0;
+  if (opts.time) process.stderr.write(`run time: ${runMs.toFixed(1)} ms\n`);
   if (opts.profile && machine.profile.size) {
     appendFileSync(opts.profile, [...machine.profile].map((a) => hex(a)).join('\n') + '\n');
   }
@@ -102,6 +107,7 @@ async function main() {
     else if (a === '--wwt') opts.wwt = args.shift();
     else if (a === '--trace') opts.trace = true;
     else if (a === '--no-fast') opts.fast = false;
+    else if (a === '--time') opts.time = true;
     else if (a === '--verbose') opts.verbose = true;
     else if (a === '--profile') opts.profile = args.shift();
     else if (a === '--guest-limit') opts.guestLimitMB = Number(args.shift());
