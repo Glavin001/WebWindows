@@ -40,6 +40,10 @@ jobs:
           cargo build --workspace
           cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
           cargo build -p d3dgpu-core --target wasm32-unknown-unknown
+      - name: Wine's Direct3D 8/9/10/11 test shaders (corpora for the shader translators)
+        run: |
+          tools/dxbc/fetch-wine-shaders.sh
+          tools/dxbc/fetch-wine-d3d9-shaders.sh
       - name: Unit, instruction (layer 1) and snapshot (layer 5) tests; d3dgpu scenes on lavapipe
         env:
           D3DGPU_REQUIRE_GPU: 1
