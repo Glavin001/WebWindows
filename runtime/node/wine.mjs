@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 
 import { Machine, GuestFault, hex } from '../runtime.mjs';
 import { WineHost } from '../wine/host.mjs';
+import { FastTranslator, enableFastMode } from '../fastmode.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const wineBuild = process.env.WINE_BUILD ?? '/opt/wine-build';
@@ -77,6 +78,13 @@ const machine = new Machine({
   log: trace ? (s) => process.stderr.write(`[machine] ${s}\n`) : undefined,
 });
 await machine.init();
+// Fast mode: code the ahead-of-time pass missed is translated when reached.
+const tw = join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm');
+if (existsSync(tw)) {
+  enableFastMode(machine, await FastTranslator.load(readFileSync(tw)), {
+    log: trace ? (s) => process.stderr.write(`[fast] ${s}\n`) : undefined,
+  });
+}
 const host = new WineHost(machine, {
   translate,
   files,

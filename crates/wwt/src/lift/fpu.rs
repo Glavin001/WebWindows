@@ -45,7 +45,7 @@ impl<'a> Lifter<'a> {
 
     /// Address of physical register for st(i) (relative to the CPU struct
     /// base; the load/store adds the FPU_ST offset).
-    fn st_addr(&mut self, i: u32) -> V {
+    pub(super) fn st_addr(&mut self, i: u32) -> V {
         let t = if i == 0 {
             self.copy(FPU_TOP)
         } else {
@@ -56,7 +56,7 @@ impl<'a> Lifter<'a> {
         self.bin(BinOp::I32Add, CPU, off)
     }
 
-    fn st(&mut self, i: u32) -> V {
+    pub(super) fn st(&mut self, i: u32) -> V {
         let a = self.st_addr(i);
         self.emit(
             Ty::F64,
@@ -67,7 +67,7 @@ impl<'a> Lifter<'a> {
         )
     }
 
-    fn set_st(&mut self, i: u32, v: V) {
+    pub(super) fn set_st(&mut self, i: u32, v: V) {
         let a = self.st_addr(i);
         self.effect(Op::Store {
             addr: a,
@@ -190,7 +190,7 @@ impl<'a> Lifter<'a> {
     }
 
     /// Rounds according to the control word's rounding mode.
-    fn fround(&mut self, v: V) -> V {
+    pub(super) fn fround(&mut self, v: V) -> V {
         let rc = self.bini(BinOp::I32ShrU, FPU_CW, 10);
         let rc = self.bini(BinOp::I32And, rc, 3);
         let near = self.un(UnOp::F64Nearest, v);

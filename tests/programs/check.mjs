@@ -9,6 +9,7 @@
 //   node tests/programs/check.mjs                 # hand-written programs
 //   node tests/programs/check.mjs --csmith 50     # plus 50 Csmith programs
 //   node tests/programs/check.mjs --opt O0,O2 tests/programs/c/switch.c
+//   node tests/programs/check.mjs --wine          # on translated Wine DLLs
 //
 // Failing programs are copied to target/program-failures/ for reduction
 // with cvise (see tests/programs/reduce.sh).
@@ -29,6 +30,7 @@ let opts = ['O0', 'O1', 'O2', 'O3', 'Os'];
 let csmith = 0;
 let seed = 1;
 let jobs = 4;
+let wine = false;
 const files = [];
 while (args.length) {
   const a = args.shift();
@@ -36,6 +38,7 @@ while (args.length) {
   else if (a === '--csmith') csmith = Number(args.shift());
   else if (a === '--seed') seed = Number(args.shift());
   else if (a === '--jobs') jobs = Number(args.shift());
+  else if (a === '--wine') wine = true;
   else files.push(resolve(a));
 }
 if (!files.length && csmith === 0) {
@@ -102,11 +105,17 @@ async function runOne(p, opt) {
   const tr = await sh(wwt, ['translate', b.exe, '-o', wasm]);
   if (tr.status !== 0) return { status: 'fail', detail: 'translate: ' + tr.stderr.slice(-800) };
   const t0 = performance.now();
-  const run = await sh('node', [join(root, 'runtime/node/run.mjs'), '--wasm', wasm, b.exe], { timeout: 120000 });
+  // With --wine the program runs on translated Wine DLLs (Milestone 2)
+  // instead of the JavaScript Win32 shims.
+  const runner = wine
+    ? [join(root, 'runtime/node/wine.mjs'), b.exe]
+    : [join(root, 'runtime/node/run.mjs'), '--wasm', wasm, b.exe];
+  const run = await sh('node', runner, { timeout: 120000 });
   run.ms = performance.now() - t0;
   if (run.error) return { status: 'fail', detail: `translated run: ${run.error.message}` };
   const want = { out: nat.stdout, code: nat.status & 0xff };
-  const got = { out: run.stdout, code: run.status & 0xff };
+  // Windows C runtimes write text-mode stdout with CRLF line endings.
+  const got = { out: run.stdout.replace(/\r\n/g, '\n'), code: run.status & 0xff };
   if (want.out !== got.out || want.code !== got.code) {
     let detail = '';
     if (want.code !== got.code) detail += `exit code: want ${want.code} got ${got.code}. `;
@@ -149,5 +158,5 @@ await pool();
 const count = (s) => results.filter((r) => r.status === s).length;
 const summary = `${results.length} runs: ${count('pass')} pass, ${count('fail')} fail, ${count('skip')} skipped, ${count('build-error')} build errors`;
 console.log(summary);
-writeFileSync(join(work, csmith ? 'results-csmith.json' : 'results.json'), JSON.stringify(results, null, 2));
+writeFileSync(join(work, `results${csmith ? '-csmith' : ''}${wine ? '-wine' : ''}.json`), JSON.stringify(results, null, 2));
 process.exit(count('fail') + count('build-error') ? 1 : 0);

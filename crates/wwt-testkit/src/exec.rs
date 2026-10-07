@@ -157,6 +157,7 @@ impl Executor {
             w32(&memory, CPU + cpu::EFLAGS_SYS, 0x200);
             let fx = c.fx_bytes();
             load_fx(&memory, &fx);
+            let simd = is_simd_case(c);
             store.data_mut().fault = None;
             let func = table
                 .get(&mut store, 1 + k as u64)
@@ -202,11 +203,22 @@ impl Executor {
                 eip,
                 fault: fault_kind,
                 mem: mem_diff(&window, &mem),
-                fx: c.fx.as_ref().map(|_| hex(&save_fx(&memory))),
+                fx: c.fx.as_ref().map(|_| hex(&save_fx(&memory, simd))),
             }));
         }
         Ok(results.into_iter().map(|r| r.unwrap()).collect())
     }
+}
+
+/// Whether a case exercises MMX/SSE (its x87 slots hold MMX registers).
+pub fn is_simd_case(c: &Case) -> bool {
+    let code = c.code_bytes();
+    let mut d = iced_x86::Decoder::with_ip(32, &code, INS as u64, iced_x86::DecoderOptions::NONE);
+    let i = d.decode();
+    use iced_x86::CpuidFeature as F;
+    i.cpuid_features()
+        .iter()
+        .any(|f| matches!(f, F::MMX | F::SSE | F::SSE2))
 }
 
 /// Converts an FXSAVE image into the translator's CPU state.
@@ -226,6 +238,8 @@ fn load_fx(m: &SharedMemory, fx: &[u8]) {
         let phys = (top as usize + i) & 7;
         let v = wwt::fpu::f80_to_f64(st);
         write_bytes(m, CPU + cpu::FPU_ST + phys as u32 * 8, &v.to_le_bytes());
+        // MMX register `phys` is the mantissa of the same physical register.
+        write_bytes(m, CPU + cpu::MMX + phys as u32 * 8, &st[0..8]);
     }
     w32(
         m,
@@ -242,7 +256,7 @@ fn load_fx(m: &SharedMemory, fx: &[u8]) {
 }
 
 /// Builds an FXSAVE image from the translator's CPU state.
-fn save_fx(m: &SharedMemory) -> Vec<u8> {
+fn save_fx(m: &SharedMemory, simd: bool) -> Vec<u8> {
     let mut fx = vec![0u8; 512];
     let top = r32(m, CPU + cpu::FPU_TOP) & 7;
     let fsw = (r32(m, CPU + cpu::FPU_SW) & !0x3800) | top << 11;
@@ -254,6 +268,10 @@ fn save_fx(m: &SharedMemory) -> Vec<u8> {
         let b = read_bytes(m, CPU + cpu::FPU_ST + phys * 8, 8);
         let v = f64::from_le_bytes(b.try_into().unwrap());
         fx[32 + i as usize * 16..42 + i as usize * 16].copy_from_slice(&wwt::fpu::f64_to_f80(v));
+        if simd {
+            let mm = read_bytes(m, CPU + cpu::MMX + phys * 8, 8);
+            fx[32 + i as usize * 16..40 + i as usize * 16].copy_from_slice(&mm);
+        }
     }
     fx[24..28].copy_from_slice(&r32(m, CPU + cpu::MXCSR).to_le_bytes());
     fx[28..32].copy_from_slice(&0xffffu32.to_le_bytes());
