@@ -11,8 +11,9 @@
 //   node tests/programs/check.mjs --opt O0,O2 tests/programs/c/switch.c
 //   node tests/programs/check.mjs --wine          # on translated Wine DLLs
 //   node tests/programs/check.mjs --torture DIR   # gcc.c-torture/execute
-//   node tests/programs/check.mjs --arch x64      # 64-bit programs
-//   node tests/programs/check.mjs --arch x64 --mem64   # on 64-bit memory
+//   node tests/programs/check.mjs --arch x64      # 64-bit programs (64-bit memory)
+//   node tests/programs/check.mjs --arch x64 --mem32   # on a 32-bit memory
+//   node tests/programs/check.mjs --mem64         # 32-bit programs, 64-bit memory
 //
 // With --arch x64 the .exe is built with x86_64-w64-mingw32-gcc and the
 // reference with the native x86-64 gcc. Linux is LP64 and Windows LLP64, so
@@ -42,7 +43,7 @@ let seed = 1;
 let jobs = 4;
 let wine = false;
 let arch = 'x86';
-let mem64 = false;
+let mem64 = null;
 let torture = null;
 let filter = null;
 const files = [];
@@ -55,10 +56,14 @@ while (args.length) {
   else if (a === '--wine') wine = true;
   else if (a === '--arch') arch = args.shift();
   else if (a === '--mem64') mem64 = true;
+  else if (a === '--mem32') mem64 = false;
   else if (a === '--torture') torture = resolve(args.shift());
   else if (a === '--filter') filter = new RegExp(args.shift());
   else files.push(resolve(a));
 }
+// 64-bit programs run on a 64-bit memory unless told otherwise.
+const defaultMem64 = arch === 'x64';
+mem64 ??= defaultMem64;
 // 64-bit builds go to their own directory (same program names).
 const work = join(root, arch === 'x64' ? 'target/programs-x64' : 'target/programs');
 const failDir = join(root, 'target/program-failures');
@@ -163,17 +168,17 @@ async function runOne(p, opt) {
     return { status: 'skip', detail: 'needs a C99 runtime (msvcrt.dll is not one)' };
   }
   const wasm = b.exe + '.wasm';
-  const m64 = mem64 ? ['--mem64'] : [];
-  const tr = await sh(wwt, ['translate', b.exe, '-o', wasm, ...m64]);
+  const tr = await sh(wwt, ['translate', b.exe, '-o', wasm, ...(mem64 ? ['--mem64'] : [])]);
   if (tr.status !== 0) return { status: 'fail', detail: 'translate: ' + tr.stderr.slice(-800) };
   const t0 = performance.now();
   // With --wine the program runs on translated Wine DLLs (Milestone 2)
   // instead of the JavaScript Win32 shims.
   const runner = wine
     ? [join(root, 'runtime/node/wine.mjs'), b.exe]
-    : [join(root, 'runtime/node/run.mjs'), '--wasm', wasm, ...m64, b.exe];
-  // Node 22 has 64-bit memory behind a flag.
-  const nodeFlags = mem64 ? ['--experimental-wasm-memory64'] : [];
+    : [join(root, 'runtime/node/run.mjs'), '--wasm', wasm, mem64 ? '--mem64' : '--mem32', b.exe];
+  // Earlier Node 22 releases have 64-bit memory behind a flag (Node 24
+  // rejects the flag).
+  const nodeFlags = mem64 && process.version.startsWith('v22.') ? ['--experimental-wasm-memory64'] : [];
   const run = await sh('node', [...nodeFlags, ...runner], { timeout: 120000 });
   run.ms = performance.now() - t0;
   if (run.error) return { status: 'fail', detail: `translated run: ${run.error.message}` };
@@ -230,5 +235,5 @@ await pool();
 const count = (s) => results.filter((r) => r.status === s).length;
 const summary = `${results.length} runs: ${count('pass')} pass, ${count('fail')} fail, ${count('skip')} skipped, ${count('xfail')} expected failures, ${count('build-error')} build errors`;
 console.log(summary);
-writeFileSync(join(work, `results${csmith ? '-csmith' : ''}${torture ? '-torture' : ''}${wine ? '-wine' : ''}${mem64 ? '-mem64' : ''}.json`), JSON.stringify(results, null, 2));
+writeFileSync(join(work, `results${csmith ? '-csmith' : ''}${torture ? '-torture' : ''}${wine ? '-wine' : ''}${mem64 !== defaultMem64 ? (mem64 ? '-mem64' : '-mem32') : ''}.json`), JSON.stringify(results, null, 2));
 process.exit(count('fail') + count('build-error') ? 1 : 0);

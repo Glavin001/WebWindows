@@ -38,8 +38,8 @@ cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
 node runtime/node/run.mjs tests/programs/hello.exe
 
 # 64-bit programs (needs gcc-mingw-w64-x86-64) are detected from the PE
-# header; --mem64 runs them on a 64-bit WebAssembly memory (Node 24, or
-# Node 22 with --experimental-wasm-memory64):
+# header and run on a 64-bit (memory64) WebAssembly memory (--mem32 for a
+# 32-bit one):
 x86_64-w64-mingw32-gcc -O2 -nostdlib -o hello64.exe tests/programs/hello.c -lkernel32 -Wl,-e,start
 node runtime/node/run.mjs hello64.exe
 

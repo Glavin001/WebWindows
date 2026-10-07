@@ -47,11 +47,11 @@ jobs:
         run: node tests/programs/check.mjs --jobs 4
       - name: Csmith (layer 2)
         run: node tests/programs/check.mjs --csmith 40 --seed ${{ github.run_number }}000 --opt O0,O2 --jobs 4
-      - name: Programs, x86-64 (layer 2)
+      - name: Programs, x86-64 on 64-bit memory (layer 2)
         run: node tests/programs/check.mjs --arch x64 --jobs 4
-      - name: Programs on 64-bit WebAssembly memory (layer 2)
+      - name: Programs on the other memory width (layer 2)
         run: |
-          node tests/programs/check.mjs --arch x64 --mem64 --jobs 4
+          node tests/programs/check.mjs --arch x64 --mem32 --jobs 4
           node tests/programs/check.mjs --mem64 --opt O2 --jobs 4
       - name: Csmith, x86-64 (layer 2)
         run: node tests/programs/check.mjs --arch x64 --csmith 40 --seed ${{ github.run_number }}000 --opt O0,O2 --jobs 4

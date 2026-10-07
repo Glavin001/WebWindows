@@ -6,10 +6,12 @@
 // Options (before the program): --wasm <file> (translated module; default:
 // translate with `wwt`), --wwt <path> (translator binary), --trace (log API
 // calls), --guest-limit <MB>, --profile <file> (append missed addresses),
-// --no-fast (disable run-time translation of code the translator missed),
-// --mem64 (64-bit WebAssembly memory; Node 22 needs
-// --experimental-wasm-memory64). 64-bit programs are detected from the PE
-// header.
+// --no-fast (disable run-time translation of code the translator missed).
+// 64-bit programs (detected from the PE header) run on a 64-bit (memory64)
+// WebAssembly memory (Node 22.22 and 24 have it; earlier Node 22 releases
+// need --experimental-wasm-memory64); --mem32 runs them on a 32-bit memory
+// instead (addresses below 4 GB), --mem64 runs 32-bit programs on a 64-bit
+// one.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, appendFileSync, mkdtempSync, statSync } from 'node:fs';
@@ -17,7 +19,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { Machine, ProcessExit, GuestFault, hex } from '../runtime.mjs';
+import { Machine, ProcessExit, GuestFault, hex, hasMemory64 } from '../runtime.mjs';
 import { Process } from '../win32.mjs';
 import { peArch } from '../pe.mjs';
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
@@ -50,7 +52,13 @@ function findTranslatorWasm() {
 export async function runExe(exePath, argv, opts = {}) {
   const wwt = () => findWwt(opts.wwt);
   const arch = peArch(readFileSync(exePath));
-  const mem64 = opts.mem64 ?? false;
+  const mem64 = opts.mem64 ?? arch === 'x64';
+  if (mem64 && !hasMemory64()) {
+    throw new Error(
+      'this Node has no 64-bit WebAssembly memory, which 64-bit programs use: ' +
+        'run Node 22.22 or 24, or node --experimental-wasm-memory64 (or pass --mem32)',
+    );
+  }
   const m64 = mem64 ? ['--mem64'] : [];
   let wasmPath = opts.wasm;
   if (!wasmPath) {
@@ -124,6 +132,7 @@ async function main() {
     else if (a === '--profile') opts.profile = args.shift();
     else if (a === '--guest-limit') opts.guestLimitMB = Number(args.shift());
     else if (a === '--mem64') opts.mem64 = true;
+    else if (a === '--mem32') opts.mem64 = false;
     else throw new Error(`unknown option ${a}`);
   }
   const exe = args.shift();

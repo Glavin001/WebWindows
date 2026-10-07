@@ -7,7 +7,7 @@
 // InputRing of keyboard and mouse events); 'screen' tells the page the
 // first frame is there.
 
-import { Machine, ProcessExit, GuestFault } from '../runtime.mjs';
+import { Machine, ProcessExit, GuestFault, hasMemory64 } from '../runtime.mjs';
 import { Process } from '../win32.mjs';
 import { peArch } from '../pe.mjs';
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
@@ -191,27 +191,33 @@ onmessage = async (e) => {
       postMessage({ type: 'exit', code: r.error ? null : r.exitCode, translated: false, runMs: r.runMs, wine: true });
       return;
     }
+    // 64-bit programs run on a 64-bit (memory64) memory where the browser
+    // has one (Chrome 133, Firefox 134), otherwise below 4 GB in a 32-bit
+    // memory.
+    const arch = peArch(exe);
+    const mem64 = arch === 'x64' && hasMemory64();
+    if (arch === 'x64') log(mem64 ? '64-bit program: 64-bit WebAssembly memory' : '64-bit program: this browser has no 64-bit WebAssembly memory; running it below 4 GB');
+    const mkey = `${key}${mem64 ? '-m64' : ''}`;
     // The profile lists code found at run time on earlier launches.
     const profileBytes = await cacheRead(dir, `${key}.profile`);
     const profile = profileBytes ? [...new Uint32Array(profileBytes.buffer)] : [];
-    let wasm = await cacheRead(dir, `${key}.wasm`);
+    let wasm = await cacheRead(dir, `${mkey}.wasm`);
     let translated = false;
     if (!wasm) {
       const t = performance.now();
-      wasm = ft.translatePe(exe, { profile });
+      wasm = ft.translatePe(exe, { profile, mem64 });
       if (!wasm.length) throw new Error('translation failed');
       translated = true;
       log(`translated ${exeName} in ${(performance.now() - t).toFixed(0)} ms (${(wasm.length / 1024).toFixed(0)} KB${profile.length ? `, ${profile.length} profiled entries` : ''})`);
-      await cacheWrite(dir, `${key}.wasm`, wasm);
+      await cacheWrite(dir, `${mkey}.wasm`, wasm);
     } else {
       log(`loaded cached translation of ${exeName} (${(wasm.length / 1024).toFixed(0)} KB)`);
     }
 
     // 64-bit images load at 1 GB and up (preferred bases above 4 GB fold
     // below it), so their guest region is at least 2 GB.
-    const arch = peArch(exe);
     const limitMB = arch === 'x64' ? Math.max(guestLimitMB, 2048) : guestLimitMB;
-    const machine = new Machine({ abi, kernel: ft.kernel(), arch, guestLimit: limitMB * 1024 * 1024, log });
+    const machine = new Machine({ abi, kernel: ft.kernel({ mem64 }), arch, mem64, guestLimit: limitMB * 1024 * 1024, log });
     await machine.init();
     enableFastMode(machine, ft, { log });
     const mod = await machine.loadModule(wasm, exeName);
@@ -240,7 +246,7 @@ onmessage = async (e) => {
       await cacheWrite(dir, `${key}.profile`, new Uint8Array(Uint32Array.from(all).buffer));
       if (dir && all.size > profile.length) {
         try {
-          await dir.removeEntry(`${key}.wasm`);
+          await dir.removeEntry(`${mkey}.wasm`);
         } catch {}
         log(`${machine.profile.size} addresses translated at run time; the next launch includes them`);
       }

@@ -18,7 +18,7 @@ process. One translator serves both, through two independent settings:
 | Setting | Values | Chosen by |
 | --- | --- | --- |
 | Mode | x86 (i386) or x86-64 | the PE machine field (`0x14c` / `0x8664`) |
-| Address model | 32-bit memory or 64-bit memory (`--mem64`) | the runtime |
+| Address model | 32-bit memory or 64-bit memory | the runtime: 64-bit memory for 64-bit programs (`--mem32` to opt out; the browser falls back when it has no memory64), 32-bit memory for 32-bit ones (`--mem64` to opt in) |
 
 All four combinations work. x86-64 code on a 32-bit memory keeps every guest
 address below 4 GB and wraps x86-64 addresses after a full 64-bit check; it

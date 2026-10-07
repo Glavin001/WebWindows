@@ -88,6 +88,16 @@ function newMemory64(pages) {
   }
 }
 
+/** Whether this engine has 64-bit (memory64) shared WebAssembly memory. */
+export function hasMemory64() {
+  try {
+    newMemory64(1);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export class Machine {
   /**
    * @param {object} opts
