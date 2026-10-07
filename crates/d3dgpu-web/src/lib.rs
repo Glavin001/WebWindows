@@ -9,7 +9,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use d3dgpu_core::{Core, HeadlessPresenter, Options, SurfacePresenter};
@@ -17,6 +17,21 @@ use wasm_bindgen::prelude::*;
 
 /// Present target window id used by the scenes.
 const WINDOW: u32 = d3dgpu_scenes::WINDOW;
+
+#[wasm_bindgen]
+extern "C" {
+    /// `performance.now()` (also available in workers).
+    #[wasm_bindgen(js_namespace = performance, js_name = now)]
+    fn perf_now() -> f64;
+}
+
+/// Submissions waiting for the GPU, and how long finished ones took from
+/// submit to done.
+#[derive(Default)]
+struct GpuTiming {
+    in_flight: AtomicU32,
+    latencies: Mutex<Vec<f64>>,
+}
 
 #[wasm_bindgen]
 pub struct Renderer {
@@ -27,6 +42,8 @@ pub struct Renderer {
     errors: Arc<Mutex<Vec<String>>>,
     read: Option<(wgpu::Buffer, Arc<AtomicU8>, u32, u32, u32)>,
     adapter: String,
+    info: String,
+    gpu: Arc<GpuTiming>,
 }
 
 #[wasm_bindgen]
@@ -70,6 +87,24 @@ impl Renderer {
         device.on_uncaptured_error(Arc::new(move |e: wgpu::Error| sink.lock().unwrap().push(e.to_string())));
         let info = adapter.get_info();
         let adapter_name = format!("{} {:?}, features: {:?}", info.name, info.backend, features.features_webgpu);
+        let limits = adapter.limits();
+        let json = |s: &str| format!("{s:?}");
+        let info_json = format!(
+            "{{\"name\":{},\"vendor\":{},\"device\":{},\"driver\":{},\"driver_info\":{},\"device_type\":{},\"backend\":{},\"features\":{},\"adapter_features\":{},\"max_texture_2d\":{},\"max_buffer_size\":{},\"max_storage_buffer_binding_size\":{},\"max_compute_invocations_per_workgroup\":{}}}",
+            json(&info.name),
+            info.vendor,
+            info.device,
+            json(&info.driver),
+            json(&info.driver_info),
+            json(&format!("{:?}", info.device_type)),
+            json(&format!("{:?}", info.backend)),
+            json(&format!("{:?}", features.features_webgpu)),
+            json(&format!("{:?}", adapter.features().features_webgpu)),
+            limits.max_texture_dimension_2d,
+            limits.max_buffer_size,
+            limits.max_storage_buffer_binding_size,
+            limits.max_compute_invocations_per_workgroup,
+        );
         let mut core = Core::with_options(device.clone(), queue, Options::for_device(&device));
         if let (Some(surface), Some(c)) = (surface, canvas) {
             let mut config = surface
@@ -79,7 +114,17 @@ impl Renderer {
             core.set_presenter(WINDOW, Box::new(SurfacePresenter::new(&device, surface, config)));
         }
         let queue = core.queue().clone();
-        Ok(Renderer { core, device, queue, shared: Vec::new(), errors, read: None, adapter: adapter_name })
+        Ok(Renderer {
+            core,
+            device,
+            queue,
+            shared: Vec::new(),
+            errors,
+            read: None,
+            adapter: adapter_name,
+            info: info_json,
+            gpu: Arc::default(),
+        })
     }
 
     /// Starts over with a fresh core (objects, state, fences) on the same
@@ -90,8 +135,46 @@ impl Renderer {
         self.read = None;
     }
 
+    /// Starts over with a fresh core that keeps presenting where this one
+    /// did (between demos on the page).
+    pub fn restart(&mut self) {
+        let presenter = self.core.take_presenter(WINDOW);
+        self.reset();
+        if let Some(p) = presenter {
+            self.core.set_presenter(WINDOW, p);
+        }
+    }
+
     pub fn adapter(&self) -> String {
         self.adapter.clone()
+    }
+
+    /// Adapter details (name, vendor, driver, features, a few limits) as JSON.
+    pub fn adapter_info_json(&self) -> String {
+        self.info.clone()
+    }
+
+    /// Notes the time and asks to be told when the GPU has finished
+    /// everything submitted so far (call after a frame's batch).
+    pub fn track_gpu(&mut self) {
+        let t0 = perf_now();
+        let g = self.gpu.clone();
+        g.in_flight.fetch_add(1, Ordering::Relaxed);
+        self.queue.on_submitted_work_done(move || {
+            g.in_flight.fetch_sub(1, Ordering::Relaxed);
+            g.latencies.lock().unwrap().push(perf_now() - t0);
+        });
+    }
+
+    /// Tracked submissions the GPU hasn't finished.
+    pub fn gpu_in_flight(&self) -> u32 {
+        self.gpu.in_flight.load(Ordering::Relaxed)
+    }
+
+    /// Submit-to-done times (ms) of tracked submissions finished since the
+    /// last call.
+    pub fn take_gpu_latencies(&mut self) -> Vec<f64> {
+        std::mem::take(&mut *self.gpu.latencies.lock().unwrap())
     }
 
     /// Resizes the shared memory region readbacks write into.
@@ -124,10 +207,10 @@ impl Renderer {
     pub fn stats_json(&self) -> String {
         let s = self.core.stats();
         format!(
-            "{{\"batches\":{},\"commands\":{},\"draws\":{},\"skipped_draws\":{},\"submits\":{},\"passes\":{},\"pipelines\":{},\"bind_groups\":{},\"samplers\":{},\"buffers\":{},\"textures\":{},\"translations\":{},\"bytes_uploaded\":{},\"load_op_clears\":{},\"quad_clears\":{},\"presents\":{},\"errors\":{}}}",
+            "{{\"batches\":{},\"commands\":{},\"draws\":{},\"skipped_draws\":{},\"submits\":{},\"passes\":{},\"pipelines\":{},\"bind_groups\":{},\"samplers\":{},\"buffers\":{},\"textures\":{},\"translations\":{},\"bytes_uploaded\":{},\"load_op_clears\":{},\"quad_clears\":{},\"presents\":{},\"pass_commands\":{},\"pass_commands_skipped\":{},\"errors\":{}}}",
             s.batches, s.commands, s.draws, s.skipped_draws, s.submits, s.passes, s.pipelines_created, s.bind_groups_created,
             s.samplers_created, s.buffers_created, s.textures_created, s.shader_translations, s.bytes_uploaded,
-            s.load_op_clears, s.quad_clears, s.presents, s.errors
+            s.load_op_clears, s.quad_clears, s.presents, s.pass_commands, s.pass_commands_skipped, s.errors
         )
     }
 
@@ -281,4 +364,55 @@ pub fn build_perf11(draws: u32, frames: u32, width: u32, height: u32) -> SceneDa
         d3dgpu_scenes::perf::frame11(&mut b, &assets, draws, f);
     }
     SceneData { built: b.finish("perf11") }
+}
+
+/// The animated demos as JSON: name, api, about, and the tunable parameter.
+#[wasm_bindgen(js_name = demoList)]
+pub fn demo_list() -> String {
+    let items: Vec<String> = d3dgpu_scenes::demos::DEMOS
+        .iter()
+        .map(|d| {
+            let param = match d.param {
+                Some(p) => {
+                    format!("{{\"label\":{:?},\"default\":{},\"min\":{},\"max\":{}}}", p.label, p.default, p.min, p.max)
+                }
+                None => "null".into(),
+            };
+            format!(
+                "{{\"name\":{:?},\"api\":{:?},\"about\":{:?},\"param\":{}}}",
+                d.name,
+                format!("{:?}", d.api),
+                d.about,
+                param
+            )
+        })
+        .collect();
+    format!("[{}]", items.join(","))
+}
+
+/// A running demo: a setup batch, then one batch per frame.
+#[wasm_bindgen]
+pub struct DemoRunner {
+    builder: d3dgpu_scenes::Builder,
+    demo: Box<dyn d3dgpu_scenes::demos::Demo>,
+}
+
+#[wasm_bindgen]
+impl DemoRunner {
+    pub fn create(name: &str, width: u32, height: u32, param: Option<u32>) -> Option<DemoRunner> {
+        let info = d3dgpu_scenes::demos::find(name)?;
+        let (builder, demo) = info.start(width, height, param);
+        Some(DemoRunner { builder, demo })
+    }
+
+    /// The setup commands (first call), then whatever was recorded since.
+    pub fn setup(&mut self) -> Vec<u8> {
+        self.builder.take_batch()
+    }
+
+    /// The batch for the frame at time `t` (seconds).
+    pub fn frame(&mut self, t: f32) -> Vec<u8> {
+        self.demo.frame(&mut self.builder, t);
+        self.builder.take_batch()
+    }
 }

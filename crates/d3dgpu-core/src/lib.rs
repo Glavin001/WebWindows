@@ -302,6 +302,11 @@ impl Core {
         self.presenters.insert(window, presenter);
     }
 
+    /// Removes the presenter of `window` (to hand it to a new core).
+    pub fn take_presenter(&mut self, window: u32) -> Option<Box<dyn Presenter>> {
+        self.presenters.remove(&window)
+    }
+
     pub fn presenter(&mut self, window: u32) -> Option<&mut (dyn Presenter + 'static)> {
         self.presenters.get_mut(&window).map(|p| p.as_mut())
     }

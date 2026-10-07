@@ -4,7 +4,7 @@
 // render worker must never do: here it waits for slot space and, for
 // readbacks, for the fence the render worker completes after mapAsync.
 
-import init, { buildScene, buildPerf, buildPerf11 } from './pkg/d3dgpu_web.js';
+import init, { buildScene, DemoRunner } from './pkg/d3dgpu_web.js';
 import * as P from './protocol.mjs';
 
 let ctrl, bytes;
@@ -58,7 +58,18 @@ function waitReadbacks(data) {
   return { ok: true, detail: `${fences} readback(s), blocked ${waited.toFixed(1)} ms` };
 }
 
-let demoTimer = null;
+// Streaming demos: one batch per frame. Scheduling through a message
+// channel instead of setTimeout avoids the 4 ms clamp on nested timers;
+// submit() blocks until the render worker took the previous batch, so the
+// render worker sets the pace.
+let demo = null;
+let generation = 0;
+const tickChannel = new MessageChannel();
+tickChannel.port1.onmessage = (e) => {
+  if (!demo || e.data !== generation) return;
+  submit(demo.runner.frame((performance.now() - demo.start) / 1000), 0);
+  tickChannel.port2.postMessage(generation);
+};
 
 onmessage = async (e) => {
   const m = e.data;
@@ -68,22 +79,33 @@ onmessage = async (e) => {
     bytes = new Uint8Array(m.sab);
     postMessage({ type: 'ready' });
   } else if (m.type === 'scene') {
+    demo = null;
     Atomics.store(ctrl, P.SCENE, m.index);
     const data = buildScene(m.name, m.width ?? 64, m.height ?? 64);
     runScene(data);
     const rb = data.shared_size() > 0 ? waitReadbacks(data) : { ok: true, detail: 'no readbacks' };
     postMessage({ type: 'readback', name: m.name, ...rb });
-  } else if (m.type === 'perf') {
-    clearTimeout(demoTimer);
-    const data = (m.api === 'd3d11' ? buildPerf11 : buildPerf)(m.draws, 2, m.width, m.height);
-    submit(data.batch(0), P.FIRST); // setup
-    let frame = 0;
-    const next = () => {
-      submit(data.batch(1 + (frame++ & 1)), 0);
-      demoTimer = setTimeout(next, 0);
-    };
-    next();
+  } else if (m.type === 'demo') {
+    const runner = DemoRunner.create(m.name, m.width, m.height, m.param ?? undefined);
+    if (!runner) {
+      postMessage({ type: 'error', message: `no demo ${m.name}` });
+      return;
+    }
+    Atomics.store(ctrl, P.SHARED_SIZE, 0);
+    submit(runner.setup(), P.FIRST);
+    demo = { runner, start: performance.now() - (m.time ?? 0) * 1000 };
+    tickChannel.port2.postMessage(++generation);
+  } else if (m.type === 'demotest') {
+    // A few frames of a demo, checked by the render worker (test mode).
+    demo = null;
+    const runner = DemoRunner.create(m.name, m.width, m.height, m.param ?? undefined);
+    Atomics.store(ctrl, P.SCENE, P.DEMO_BASE + m.index);
+    Atomics.store(ctrl, P.SHARED_SIZE, 0);
+    submit(runner.setup(), P.FIRST);
+    for (let f = 0; f < 4; f++) submit(runner.frame(f * 0.4), f === 3 ? P.LAST : 0);
+    postMessage({ type: 'readback', name: m.name, ok: true, detail: 'no readbacks' });
   } else if (m.type === 'stop') {
-    clearTimeout(demoTimer);
+    demo = null;
+    generation++;
   }
 };

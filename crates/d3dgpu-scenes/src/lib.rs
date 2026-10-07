@@ -11,6 +11,7 @@
 use d3dgpu_proto::d3d9::*;
 use d3dgpu_proto::*;
 
+pub mod demos;
 pub mod perf;
 mod scenes;
 mod scenes11;
@@ -142,6 +143,14 @@ impl Builder {
         h
     }
 
+    /// Registers shader model 1-3 bytecode (as `fxc` or vkd3d emit it).
+    pub fn shader_bytes(&mut self, stage: Stage, bytes: &[u8]) -> Handle {
+        let h = self.handle();
+        let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x100_0000_01b3));
+        self.w.create_shader(h, stage, hash, bytes);
+        h
+    }
+
     /// Assembles and binds a vertex and pixel shader pair.
     pub fn shaders(&mut self, vs: &str, ps: &str) {
         let (v, p) = (self.shader(vs), self.shader(ps));
@@ -181,6 +190,12 @@ impl Builder {
     pub fn pixel_space(&mut self) {
         let (w, h) = (self.width as f32, self.height as f32);
         self.w.set_shader_const_f(Stage::Vertex, 0, &[[2.0 / w, -2.0 / h, -1.0, 1.0]]);
+    }
+
+    /// Takes the commands recorded since the last split as a batch (for
+    /// hosts that stream frames instead of building a whole scene).
+    pub fn take_batch(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.w).finish()
     }
 
     /// Ends the current batch; later commands go into a new one.

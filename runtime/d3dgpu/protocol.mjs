@@ -3,7 +3,7 @@
 // waits for the render worker to take a batch before writing the next.
 
 export const CTRL_BYTES = 64;
-export const SLOT_BYTES = 8 << 20;
+export const SLOT_BYTES = 32 << 20;
 export const SHARED_BYTES = 1 << 20;
 export const SAB_BYTES = CTRL_BYTES + SLOT_BYTES + SHARED_BYTES;
 export const SLOT = CTRL_BYTES;
@@ -16,7 +16,8 @@ export const LEN = 2; // bytes in the slot
 export const FLAGS = 3; // FIRST | LAST
 export const FENCE = 4; // highest completed fence (render worker writes)
 export const SHARED_SIZE = 5; // bytes of the shared region in use
-export const SCENE = 6; // index of the scene in sceneNames() (test mode)
+export const SCENE = 6; // index of the scene in sceneNames(), or DEMO_BASE + demo index (test mode)
+export const DEMO_BASE = 1000;
 
 export const FIRST = 1; // first batch of a scene: start a fresh core
 export const LAST = 2; // last batch of a scene

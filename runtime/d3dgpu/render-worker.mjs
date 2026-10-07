@@ -2,11 +2,23 @@
 // batches with Atomics.waitAsync (never Atomics.wait), so promises,
 // mapAsync and canvas presentation keep running between batches.
 
-import init, { Renderer, buildScene, sceneNames } from './pkg/d3dgpu_web.js';
+import init, { Renderer, buildScene, sceneNames, demoList } from './pkg/d3dgpu_web.js';
 import * as P from './protocol.mjs';
 
 let renderer, ctrl, bytes, testMode;
-const timing = { frames: 0, executeMs: 0, draws: 0, last: performance.now() };
+// Per-frame samples since the last report: [interval since the previous
+// frame, execute time] in ms.
+let samples = [];
+let lastFrameEnd = 0;
+let lastReport = performance.now();
+let paced = false;
+// Frames the GPU may lag behind; more would queue work without bound in
+// GPU-bound scenes and measure submission speed instead of throughput.
+const MAX_IN_FLIGHT = 2;
+const nextAnimationFrame = () =>
+  typeof requestAnimationFrame === 'function'
+    ? new Promise((r) => requestAnimationFrame(r))
+    : new Promise((r) => setTimeout(r, 16));
 
 /// Retires readbacks: copies the core's shared region into the shared
 /// memory and wakes a producer blocked on the fence.
@@ -25,10 +37,34 @@ function pump() {
 
 const tick = () => new Promise((r) => setTimeout(r, 1));
 
+/// A demo's last frame must have real content (many distinct colours)
+/// and no errors.
+async function finishDemo(name) {
+  if (!renderer.start_frame_read()) {
+    postMessage({ type: 'result', name, failures: ['nothing was presented'], messages: renderer.take_messages() });
+    return;
+  }
+  let pixels;
+  for (let i = 0; i < 5000 && !(pixels = renderer.frame_ready()); i++) await tick();
+  const failures = [];
+  if (!pixels) failures.push('frame read did not finish');
+  else {
+    const colours = new Set();
+    const words = new Uint32Array(pixels.buffer, pixels.byteOffset, pixels.byteLength / 4);
+    for (let i = 0; i < words.length && colours.size < 64; i += 7) colours.add(words[i]);
+    const min = name.startsWith('perf') ? 4 : 16;
+    if (colours.size < min) failures.push(`only ${colours.size} distinct colours`);
+  }
+  const stats = JSON.parse(renderer.stats_json());
+  if (stats.skipped_draws) failures.push(`${stats.skipped_draws} skipped draws`);
+  postMessage({ type: 'result', name, failures, messages: renderer.take_messages(), stats });
+}
+
 async function finishScene() {
   // Collect the frame from the headless front buffer and check it here,
   // with the same scene description the producer used.
   const name = currentScene;
+  if (name.startsWith('demo:')) return finishDemo(name.slice(5));
   const data = buildScene(name, 64, 64);
   if (!renderer.start_frame_read()) {
     postMessage({ type: 'result', name, failures: ['nothing was presented'], messages: renderer.take_messages() });
@@ -66,10 +102,20 @@ async function loop() {
     if (flags & P.FIRST) {
       if (testMode) {
         renderer.reset();
-        currentScene = sceneNames()[Atomics.load(ctrl, P.SCENE)];
+        const index = Atomics.load(ctrl, P.SCENE);
+        currentScene = index >= P.DEMO_BASE
+          ? 'demo:' + JSON.parse(demoList())[index - P.DEMO_BASE].name
+          : sceneNames()[index];
+      } else {
+        renderer.restart();
+        lastFrameEnd = 0;
       }
       renderer.set_shared_size(Atomics.load(ctrl, P.SHARED_SIZE));
       Atomics.store(ctrl, P.FENCE, 0);
+    }
+    if (!testMode) {
+      if (paced) await nextAnimationFrame();
+      while (renderer.gpu_in_flight() >= MAX_IN_FLIGHT) await tick();
     }
     const t0 = performance.now();
     try {
@@ -77,25 +123,26 @@ async function loop() {
     } catch (err) {
       postMessage({ type: 'error', message: String(err) });
     }
-    timing.executeMs += performance.now() - t0;
-    timing.frames++;
+    const t1 = performance.now();
     if (testMode && flags & P.LAST) {
       await finishScene();
     } else if (!testMode) {
+      renderer.track_gpu();
+      if (!(flags & P.FIRST)) samples.push([lastFrameEnd ? t1 - lastFrameEnd : 0, t1 - t0]);
+      lastFrameEnd = t1;
       // Return to the event loop so the canvas presents this frame.
       await new Promise((r) => setTimeout(r, 0));
       const now = performance.now();
-      if (now - timing.last > 500) {
+      if (now - lastReport > 250) {
         postMessage({
           type: 'stats',
-          fps: (timing.frames * 1000) / (now - timing.last),
-          executeMs: timing.executeMs / timing.frames,
+          samples,
+          gpu: renderer.take_gpu_latencies(),
           stats: JSON.parse(renderer.stats_json()),
           messages: renderer.take_messages(),
         });
-        timing.frames = 0;
-        timing.executeMs = 0;
-        timing.last = now;
+        samples = [];
+        lastReport = now;
       }
     }
   }
@@ -103,7 +150,12 @@ async function loop() {
 
 onmessage = async (e) => {
   const m = e.data;
-  if (m.type === 'init') {
+  if (m.type === 'pace') {
+    paced = m.on;
+  } else if (m.type === 'restart') {
+    lastFrameEnd = 0;
+    samples = [];
+  } else if (m.type === 'init') {
     await init();
     ctrl = new Int32Array(m.sab, 0, P.CTRL_BYTES / 4);
     bytes = new Uint8Array(m.sab);
@@ -114,7 +166,7 @@ onmessage = async (e) => {
       postMessage({ type: 'error', message: String(err) });
       return;
     }
-    postMessage({ type: 'ready', adapter: renderer.adapter() });
+    postMessage({ type: 'ready', adapter: renderer.adapter(), info: JSON.parse(renderer.adapter_info_json()) });
     pump();
     loop();
   }

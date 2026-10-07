@@ -36,7 +36,7 @@ try {
     await page.waitForFunction(() => window.d3dgpuResults !== undefined, null, { timeout: 300000 });
     const r = await page.evaluate(() => window.d3dgpuResults);
     console.log(`adapter: ${r.adapter}`);
-    console.log(`${r.total - r.failed.length}/${r.total} scenes pass in the browser (${features} features)`);
+    console.log(`${r.total - r.failed.length}/${r.total} scenes and demos pass in the browser (${features} features)`);
     for (const f of r.failed) console.log(`FAIL ${f.name}: ${f.failures.join('; ')}`);
     failed += r.failed.length;
   }

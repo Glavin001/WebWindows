@@ -5,29 +5,101 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>d3dgpu</title>
 <style>
-  :root { color-scheme: light dark; font: 14px/1.4 system-ui, sans-serif; }
-  body { margin: 16px; max-width: 980px; }
-  canvas { width: 640px; max-width: 100%; aspect-ratio: 4 / 3; background: #000; display: block; }
-  .row { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
-  pre { font-size: 12px; white-space: pre-wrap; }
-  td { padding: 1px 8px; } .fail { color: #d33; } .pass { color: #393; }
+  :root {
+    color-scheme: dark;
+    --bg: #111318; --panel: #1a1d24; --line: #2c313c; --text: #e6e8ee; --dim: #9aa1b1;
+    --accent: #7aa2ff; --good: #4cc38a; --warn: #e0b341; --bad: #ef5b5b;
+    font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif;
+  }
+  body { margin: 0; background: var(--bg); color: var(--text); }
+  header { padding: 14px 20px 6px; }
+  header h1 { margin: 0; font-size: 22px; }
+  header p { margin: 4px 0 0; color: var(--dim); max-width: 1100px; }
+  a { color: var(--accent); }
+  main { padding: 10px 20px 30px; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-bottom: 10px; }
+  .toolbar label { color: var(--dim); display: inline-flex; gap: 6px; align-items: center; }
+  select, input, button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+  input[type=range] { padding: 0; width: 160px; }
+  input[type=number] { width: 96px; }
+  button { cursor: pointer; } button:hover { border-color: var(--accent); }
+  button.primary { background: #26407a; border-color: #3b5bab; }
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; }
+  @media (max-width: 1000px) { .layout { grid-template-columns: 1fr; } }
+  #canvas { width: 100%; height: auto; background: #000; display: block; border-radius: 6px; }
+  #about { color: var(--dim); margin: 6px 0 0; min-height: 1.4em; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+  .fps { font-size: 40px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+  .fps small { font-size: 14px; color: var(--dim); font-weight: 400; }
+  table.kv { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 13px; }
+  table.kv td { padding: 2px 0; } table.kv td:first-child { color: var(--dim); width: 42%; }
+  #graph { width: 100%; height: 120px; display: block; margin-top: 8px; }
+  .legend { font-size: 12px; color: var(--dim); }
+  .legend span { display: inline-block; width: 10px; height: 3px; margin: 0 4px 2px 8px; vertical-align: middle; }
+  pre { font-size: 12px; white-space: pre-wrap; margin: 0; }
+  #messages { color: var(--warn); max-height: 140px; overflow: auto; }
+  table.results { border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; margin-top: 8px; }
+  table.results th, table.results td { border-bottom: 1px solid var(--line); padding: 3px 10px; text-align: right; }
+  table.results th:first-child, table.results td:first-child { text-align: left; }
+  .pass { color: var(--good); } .fail { color: var(--bad); } .dim { color: var(--dim); }
+  details summary { cursor: pointer; color: var(--dim); }
+  #bench-status { color: var(--dim); }
 </style>
 </head>
 <body>
-<h1>d3dgpu</h1>
-<p>Direct3D 9 command streams executed on WebGPU by the Rust render core.
-A producer worker encodes batches into shared memory; the render worker
-(the only WebGPU user) takes them with <code>Atomics.waitAsync</code>.
-<a href="?test">Run the scene tests</a>.</p>
-<div id="demo" class="row">
-  <div>
-    <label>Scene <select id="scene"></select></label>
-    <canvas id="canvas" width="640" height="480"></canvas>
+<header>
+  <h1>d3dgpu</h1>
+  <p>Direct3D 9 and 10/11 command streams executed on WebGPU by the Rust render core (wasm). A producer worker
+  (standing in for wined3d's command-stream thread) encodes frames into shared memory; the render worker, the only
+  WebGPU user, executes them. <a href="?test">Run the correctness tests</a> ·
+  <a href="?bench">Run the benchmark</a></p>
+</header>
+<main>
+  <div id="demo-ui">
+    <div class="toolbar">
+      <label>Scene <select id="scene"></select></label>
+      <label id="param-label"><span id="param-name">count</span>
+        <input id="param-range" type="range" min="0" max="1000" step="1">
+        <input id="param" type="number" min="1">
+      </label>
+      <label>Resolution <select id="res">
+        <option>640x480</option><option>1280x720</option><option>1920x1080</option><option>2560x1440</option><option value="window">window × DPR</option>
+      </select></label>
+      <label title="Wait for the display (requestAnimationFrame) before each frame, like vsync. Off: as fast as possible.">
+        <input id="pace" type="checkbox"> vsync</label>
+      <button id="pause">Pause</button>
+      <button id="copy" class="primary" title="Copy a report of the current scene and environment">Copy report</button>
+      <button id="bench" title="Run every demo at several sizes and collect a report (about 90 s)">Run benchmark</button>
+    </div>
+    <div class="layout">
+      <div>
+        <canvas id="canvas"></canvas>
+        <p id="about"></p>
+      </div>
+      <div>
+        <div class="panel">
+          <div class="fps"><span id="fps">–</span> <small>FPS</small></div>
+          <canvas id="graph" width="680" height="240"></canvas>
+          <div class="legend"><span style="background:#e6e8ee"></span>frame interval<span style="background:#e0b341"></span>CPU (core execute)<span style="background:#7aa2ff"></span>GPU submit→done<span style="background:#4cc38a"></span>16.7 / 33.3 ms</div>
+        </div>
+        <div class="panel"><table class="kv" id="kv"></table></div>
+        <div class="panel"><details><summary>Environment</summary><pre id="env"></pre></details></div>
+        <div class="panel" id="messages-panel" hidden><pre id="messages"></pre></div>
+      </div>
+    </div>
+    <div class="panel" id="bench-panel" hidden>
+      <div><b>Benchmark</b> <span id="bench-status"></span>
+        <button id="bench-copy" class="primary" hidden>Copy results (Markdown)</button>
+        <button id="bench-json" hidden>Download JSON</button></div>
+      <table class="results" id="bench-table"></table>
+    </div>
   </div>
-  <pre id="stats"></pre>
-</div>
-<div id="tests"><table id="results"></table></div>
-<pre id="log"></pre>
+  <div id="tests" hidden>
+    <p><span id="test-status">Running…</span> <button id="test-copy" class="primary" hidden>Copy results</button></p>
+    <table class="results" id="results"></table>
+  </div>
+  <pre id="log"></pre>
+</main>
 <script type="module" src="app.mjs"></script>
 </body>
 </html>
