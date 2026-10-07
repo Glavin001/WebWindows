@@ -148,7 +148,7 @@ pub mod imports {
     pub const CODE_BITMAP: &str = "code_bitmap";
     pub const FAULT: &str = "fault";
     pub const CODE_WRITE: &str = "code_write";
-    pub const DISPATCH: &str = "dispatch";
+    pub const MATH: &str = "math";
 }
 
 /// Custom section listing the x86 address of each translated function, in
@@ -157,7 +157,7 @@ pub const FUNCS_SECTION: &str = "wwt.funcs";
 /// Custom section with JSON metadata about the translation.
 pub const META_SECTION: &str = "wwt.meta";
 /// Bumped whenever generated code changes incompatibly, to invalidate caches.
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 #[derive(Serialize)]
 struct AbiJson {

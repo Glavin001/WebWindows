@@ -366,27 +366,19 @@ pub enum RmwOp {
     Xchg,
 }
 
-/// Functions emitted into every module (see `codegen::helpers`).
+/// Functions emitted into every module that uses them (see
+/// `codegen::gen_helper`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Helper {
     /// (fk, fr, fa, fb, fc) -> arithmetic eflags
     Eflags,
     /// (cc, fk, fr, fa, fb, fc) -> 0/1
     EvalCond,
-    /// x87 helpers on f64.
-    FpuSin,
-    FpuCos,
-    FpuTan,
-    FpuAtan2,
-    FpuLog2,
-    FpuExp2m1,
-    FpuPrem,
-    FpuPrem1,
-    FpuScale,
-    /// (f64) -> i64 bit pattern of an 80-bit float's low 8 bytes; high word via second helper.
+    /// (f64) -> low 8 bytes (significand) of the 80-bit encoding
     F64ToF80Lo,
+    /// (f64) -> sign and exponent word of the 80-bit encoding
     F64ToF80Hi,
-    /// (lo: i64, hi: i32) -> f64
+    /// (significand: i64, sign/exponent: i32) -> f64
     F80ToF64,
 }
 
@@ -397,29 +389,34 @@ impl Helper {
         match self {
             Eflags => (&[I32, I32, I32, I32, I32], I32),
             EvalCond => (&[I32, I32, I32, I32, I32, I32], I32),
-            FpuSin | FpuCos | FpuTan | FpuLog2 | FpuExp2m1 => (&[F64], F64),
-            FpuAtan2 | FpuPrem | FpuPrem1 | FpuScale => (&[F64, F64], F64),
             F64ToF80Lo => (&[F64], I64),
             F64ToF80Hi => (&[F64], I32),
             F80ToF64 => (&[I64, I32], F64),
         }
     }
-    pub const ALL: [Helper; 14] = [
-        Helper::Eflags,
-        Helper::EvalCond,
-        Helper::FpuSin,
-        Helper::FpuCos,
-        Helper::FpuTan,
-        Helper::FpuAtan2,
-        Helper::FpuLog2,
-        Helper::FpuExp2m1,
-        Helper::FpuPrem,
-        Helper::FpuPrem1,
-        Helper::FpuScale,
-        Helper::F64ToF80Lo,
-        Helper::F64ToF80Hi,
-        Helper::F80ToF64,
-    ];
+}
+
+/// Floating-point operations with no WebAssembly instruction, provided by
+/// the host as `env.math(op, a, b) -> f64`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u32)]
+pub enum MathOp {
+    Sin = 0,
+    Cos = 1,
+    Tan = 2,
+    /// atan2(a, b)
+    Atan2 = 3,
+    Log2 = 4,
+    /// 2^a - 1
+    Exp2m1 = 5,
+    /// Truncating remainder (C fmod).
+    Fmod = 6,
+    /// IEEE remainder (round-to-nearest quotient).
+    Remainder = 7,
+    /// a * 2^trunc(b)
+    Scale = 8,
+    /// log2(1 + a)
+    Log2p1 = 9,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -448,6 +445,8 @@ pub enum Op {
     /// Lowered away by the flag pass.
     Eflags,
     CallHelper(Helper, Vec<V>),
+    /// Host math function on f64 values.
+    Math { op: MathOp, a: V, b: V },
     /// Raises a fault when `cond` is non-zero, after writing back registers.
     FaultIf { cond: V, code: u32, info: V },
 }
@@ -472,6 +471,7 @@ impl Op {
             Op::MemCopy { dst, src, len } => vec![*dst, *src, *len],
             Op::MemFill { dst, val, len } => vec![*dst, *val, *len],
             Op::CallHelper(_, args) => args.clone(),
+            Op::Math { a, b, .. } => vec![*a, *b],
             Op::FaultIf { cond, info, .. } => vec![*cond, *info],
         }
     }
@@ -494,6 +494,7 @@ impl Op {
             Op::MemCopy { dst, src, len } => vec![dst, src, len],
             Op::MemFill { dst, val, len } => vec![dst, val, len],
             Op::CallHelper(_, args) => args.iter_mut().collect(),
+            Op::Math { a, b, .. } => vec![a, b],
             Op::FaultIf { cond, info, .. } => vec![cond, info],
         }
     }
@@ -866,6 +867,7 @@ impl fmt::Display for Op {
                 }
                 write!(f, ")")
             }
+            Op::Math { op, a, b } => write!(f, "math.{op:?}({}, {})", VName(*a), VName(*b)),
             Op::FaultIf { cond, code, info } => {
                 write!(f, "fault_if {} code={code:#x} info={}", VName(*cond), VName(*info))
             }

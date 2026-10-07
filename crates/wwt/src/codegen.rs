@@ -40,12 +40,14 @@ impl Default for CodegenConfig {
 const T_FN: u32 = 0;
 const T_FAULT: u32 = 1;
 const T_CODE_WRITE: u32 = 2;
-const T_FIRST_HELPER: u32 = 3;
+const T_MATH: u32 = 3;
+const T_FIRST_HELPER: u32 = 4;
 
 // Imported function indices.
 const F_FAULT: u32 = 0;
 const F_CODE_WRITE: u32 = 1;
-const NUM_FUNC_IMPORTS: u32 = 2;
+const F_MATH: u32 = 2;
+const NUM_FUNC_IMPORTS: u32 = 3;
 
 // Imported global indices.
 const G_TABLE_BASE: u32 = 0;
@@ -139,6 +141,9 @@ impl<'a> ModuleGen<'a> {
             .ty()
             .function([ValType::I32, ValType::I32, ValType::I32, ValType::I32], []);
         types.ty().function([ValType::I32, ValType::I32], []);
+        types
+            .ty()
+            .function([ValType::I32, ValType::F64, ValType::F64], [ValType::F64]);
         let mut helper_type_idx = vec![];
         for h in &self.helpers {
             let (params, ret) = h.signature();
@@ -170,6 +175,7 @@ impl<'a> ModuleGen<'a> {
             imports::CODE_WRITE,
             EntityType::Function(T_CODE_WRITE),
         );
+        imp.import(imports::MODULE, imports::MATH, EntityType::Function(T_MATH));
         imp.import(
             imports::MODULE,
             imports::MEMORY,
@@ -1190,6 +1196,12 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let fi = self.m.helper_func_index(*h);
                 self.emit(W::Call(fi));
             }
+            Op::Math { op, a, b } => {
+                self.emit(W::I32Const(*op as i32));
+                self.get(*a);
+                self.get(*b);
+                self.emit(W::Call(F_MATH));
+            }
             Op::FaultIf { cond, code, info } => {
                 self.get(*cond);
                 self.emit(W::If(BlockType::Empty));
@@ -1542,7 +1554,9 @@ fn gen_helper(h: Helper) -> wasm_encoder::Function {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn helper_indices_are_stable() {
-        assert_eq!(crate::ir::Helper::ALL[0], crate::ir::Helper::Eflags);
+    fn eflags_helper_first() {
+        let cfg = super::CodegenConfig::default();
+        let g = super::ModuleGen::new(&cfg, &[]);
+        assert_eq!(g.helper_func_index(crate::ir::Helper::Eflags), super::NUM_FUNC_IMPORTS);
     }
 }
