@@ -101,7 +101,7 @@ export class Machine {
     // Native region layout.
     let p = this.guestLimit;
     const take = (n, align = 16) => {
-      p = (p + align - 1) & -align;
+      p = Math.ceil(p / align) * align;
       const at = p;
       p += n;
       return at;
@@ -139,7 +139,7 @@ export class Machine {
   }
 
   nativeAlloc(n, align = 16) {
-    const at = (this.nativeNext + align - 1) & -align;
+    const at = Math.ceil(this.nativeNext / align) * align;
     if (at + n > this.nativeEnd) throw new Error('native region exhausted');
     this.nativeNext = at + n;
     return at;
