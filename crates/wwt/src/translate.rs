@@ -28,6 +28,9 @@ pub struct Config {
     pub scan_data: bool,
     /// Inline small leaf functions into their callers (opt level 1).
     pub inline: bool,
+    /// Give exported memory functions (`memmove`, `memset`, ...) built-in
+    /// bodies using WebAssembly's bulk memory operations.
+    pub builtins: bool,
 }
 
 impl Default for Config {
@@ -38,6 +41,7 @@ impl Default for Config {
             opt_level: 1,
             scan_data: true,
             inline: true,
+            builtins: true,
         }
     }
 }
@@ -306,12 +310,21 @@ pub fn translate_discovered(
             if !d.insts.contains_key(&entry) {
                 continue;
             }
-            let lifted = lift_function(src, d, entry, &cfg.lift);
-            report.unsupported.extend(lifted.unsupported);
-            for e in lifted.extra_entries {
-                d.add_function_seed(e, SeedKind::Call);
-            }
-            let mut f = lifted.func;
+            let builtin = names
+                .get(&entry)
+                .and_then(|n| crate::builtin::Builtin::by_name(n))
+                .filter(|_| cfg.builtins);
+            let mut f = match builtin {
+                Some(b) => crate::builtin::body(entry, b),
+                None => {
+                    let lifted = lift_function(src, d, entry, &cfg.lift);
+                    report.unsupported.extend(lifted.unsupported);
+                    for e in lifted.extra_entries {
+                        d.add_function_seed(e, SeedKind::Call);
+                    }
+                    lifted.func
+                }
+            };
             opt::optimize(&mut f, cfg.opt_level);
             report.blocks += f.blocks.len();
             funcs.push(f);

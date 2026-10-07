@@ -44,6 +44,9 @@ pub mod cpu {
     /// Information about the last fault raised by translated code.
     pub const FAULT_CODE: u32 = 356;
     pub const FAULT_ADDR: u32 = 360;
+    /// Set by translated code that re-enters itself to resume at a loop
+    /// header (see `crate::osr`): which one, plus 1; 0 for a plain entry.
+    pub const RESUME: u32 = 364;
     /// Scratch space for the host and kernel.
     pub const SCRATCH: u32 = 384;
     pub const SIZE: u32 = 512;

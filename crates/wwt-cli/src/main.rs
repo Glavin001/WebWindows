@@ -48,6 +48,12 @@ struct TranslateOpts {
     /// Do not inline small leaf functions into their callers.
     #[arg(long)]
     no_inline: bool,
+    /// Translate exported memory functions instead of using built-ins.
+    #[arg(long)]
+    no_builtins: bool,
+    /// No re-entry at loop headers (see `wwt::osr`).
+    #[arg(long)]
+    no_osr: bool,
 }
 
 impl TranslateOpts {
@@ -61,6 +67,8 @@ impl TranslateOpts {
         c.lift.strict_ordering = self.strict_ordering;
         c.codegen.guest_limit = self.guest_limit_mb.map(|mb| mb << 20);
         c.inline = !self.no_inline;
+        c.builtins = !self.no_builtins;
+        c.codegen.osr = !self.no_osr;
         c
     }
 

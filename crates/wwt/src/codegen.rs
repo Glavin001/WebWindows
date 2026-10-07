@@ -33,6 +33,8 @@ pub struct CodegenConfig {
     /// so the module runs under any limit. Recorded in the module metadata;
     /// the runtime refuses a module made for another limit.
     pub guest_limit: Option<u32>,
+    /// Let long-running loops re-enter their function (see `crate::osr`).
+    pub osr: bool,
 }
 
 impl Default for CodegenConfig {
@@ -41,6 +43,7 @@ impl Default for CodegenConfig {
             mem_checks: true,
             smc_checks: true,
             guest_limit: None,
+            osr: true,
         }
     }
 }
@@ -302,11 +305,14 @@ impl<'a> ModuleGen<'a> {
 
     pub fn gen_function(&self, f: &Function) -> wasm_encoder::Function {
         let fixed;
-        let f = if reducible::is_reducible(f) {
+        let f = if reducible::is_reducible(f) && !self.cfg.osr {
             f
         } else {
             let mut c = f.clone();
             reducible::make_reducible(&mut c);
+            if self.cfg.osr {
+                crate::osr::add_reentry(&mut c);
+            }
             fixed = c;
             &fixed
         };
