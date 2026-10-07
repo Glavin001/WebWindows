@@ -336,12 +336,30 @@ GPU time per frame. The demo page shows the current numbers live.
 
 ## wined3d front end (adapter_wgpu)
 
-`native/wined3d-wgpu/` adds a WebGPU backend to Wine 11.0's wined3d, next
-to its OpenGL, Vulkan and no-3D backends. `tools/wine/build.sh` patches the
-hooks in (`wined3d-wgpu.patch`: renderer selection, init wrappers for a few
-static helpers, the source list) and copies `adapter_wgpu.c` and
-`d3dgpu_proto.h` next to wined3d's sources. wined3d stays a PE DLL,
-translated with the rest of Wine.
+`native/wined3d-wgpu/` replaces the OpenGL and Vulkan backends of Wine
+11.0's wined3d with a WebGPU backend; its no-3D backend stays as the
+fallback. `tools/wine/build.sh` patches the hooks in (`wined3d-wgpu.patch`:
+renderer selection, init wrappers for a few static helpers, the source
+list) and copies `adapter_wgpu.c`, `wined3d_nogl.c` and `d3dgpu_proto.h`
+next to wined3d's sources. wined3d stays a PE DLL, translated with the rest
+of Wine.
+
+* **No OpenGL or Vulkan.** wined3d is built with `WINED3D_WEBGPU_ONLY` and
+  without its OpenGL and Vulkan sources (`adapter_gl.c`, `context_gl.c`,
+  `glsl_shader.c`, `texture_gl.c`, `gl_compat.c` and their Vulkan
+  counterparts, `shader_spirv.c`). `wined3d_nogl.c` stands in for the
+  functions of theirs that shared code still names on paths only their
+  adapters reach, for vkd3d's Direct3D 12 API that wined3d exports (it runs
+  on Vulkan; Direct3D 12 creation fails as without a driver), and for
+  vkd3d-shader's SPIR-V, GLSL and MSL backends and DXIL parser, so the
+  linker leaves those out. vkd3d-shader's HLSL compiler and DXBC/d3dbc code
+  stay (fixed-function shaders, d3dcompiler). wined3d's code went from 3.3
+  to 1.9 MB and its translation from 26 to 14 MB; about 100 KB of OpenGL
+  and Vulkan paths remain inside shared files (views, queries, swapchains)
+  as dead code, since cutting them would mean editing most of wined3d.
+  The bundle also strips debug information from every DLL
+  (`runtime/node/wine-bundle.mjs`), which was most of each file: Wine's
+  DLLs went from 95 to 33 MB.
 
 ```
 game ─► d3d9.dll ─► wined3d.dll (adapter_wgpu) ─► d3dgpu batches in guest memory
@@ -352,9 +370,7 @@ game ─► d3d9.dll ─► wined3d.dll (adapter_wgpu) ─► d3dgpu batches in 
 
 * **Selection.** With `renderer` unset (or `webgpu`), wined3d asks the host
   for the WebGPU unix library; without one (Node, no WebGPU) it runs
-  without 3D. OpenGL is only an explicit choice (`renderer=gl`): wined3d
-  delay-loads `opengl32.dll`, so the WebGPU path never loads it and the
-  bundle doesn't ship it. The command stream runs on the application's thread
+  without 3D. The command stream runs on the application's thread
   (`csmt` off) until the runtime has threads.
 * **Resources.** Buffers get a buffer object with a CPU shadow; uploads and
   unmaps are mirrored as `WriteBuffer`. Textures have a GPU location

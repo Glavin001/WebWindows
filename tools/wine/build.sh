@@ -31,7 +31,7 @@ if ! cmp -s "$wpatch" "$WINE_SRC/.wined3d-wgpu.patch"; then
   patch -d "$WINE_SRC" -p1 < "$wpatch"
   cp "$wpatch" "$WINE_SRC/.wined3d-wgpu.patch"
 fi
-for f in native/wined3d-wgpu/adapter_wgpu.c crates/d3dgpu-proto/include/d3dgpu_proto.h; do
+for f in native/wined3d-wgpu/adapter_wgpu.c native/wined3d-wgpu/wined3d_nogl.c crates/d3dgpu-proto/include/d3dgpu_proto.h; do
   cmp -s "$root/$f" "$WINE_SRC/dlls/wined3d/$(basename "$f")" || cp "$root/$f" "$WINE_SRC/dlls/wined3d/"
 done
 mkdir -p "$WINE_BUILD"

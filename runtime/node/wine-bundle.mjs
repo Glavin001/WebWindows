@@ -12,9 +12,11 @@
 // Most of Wine's DLLs are linked at the same default base (0x10000000), so
 // all but one would be relocated at load time and translated again; the
 // bundle gives each its own base first (prelinking), from PRELINK_BASE up.
+// Their debug information is stripped first (most of each file; the browser
+// would download it and map it for nothing).
 
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -43,6 +45,20 @@ const wwt = ['target/release/wwt', 'target/debug/wwt']
   .filter((p) => existsSync(p))
   .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
 
+/** The image without its debug sections (binutils' strip, when installed;
+ * loaded sections keep their addresses). */
+function stripped(path) {
+  const tmp = join(out, '.strip.tmp');
+  try {
+    execFileSync('i686-w64-mingw32-strip', ['--strip-debug', '-o', tmp, path], { stdio: 'ignore' });
+    return readFileSync(tmp);
+  } catch {
+    if (!stripped.warned) console.warn('i686-w64-mingw32-strip not found: the bundle keeps debug information');
+    stripped.warned = true;
+    return readFileSync(path);
+  }
+}
+
 const unixDir = join(root, 'target/wine-unix');
 const withUnix = existsSync(join(unixDir, 'wine_unix.mjs'));
 
@@ -61,7 +77,7 @@ for (const d of [...DLLS, ...(withUnix ? GUI_DLLS : []), ...d3d]) {
     console.error(`missing ${pe}; run tools/wine/build.sh ${d}`);
     process.exit(1);
   }
-  let bytes = readFileSync(pe);
+  let bytes = stripped(pe);
   const info = parsePe(bytes);
   if (info.imageBase === DEFAULT_BASE) {
     const moved = rebaseImage(bytes, info, nextBase);
@@ -104,7 +120,7 @@ if (withUnix) {
       console.warn(`skipping ${p}: ${exe} not built (tools/wine/build.sh programs/${p})`);
       continue;
     }
-    copyFileSync(exe, join(out, 'programs', `${p}.exe`));
+    writeFileSync(join(out, 'programs', `${p}.exe`), stripped(exe));
     manifest.programs.push(`programs/${p}.exe`);
   }
 }
@@ -121,6 +137,7 @@ if (missing.size) {
   process.exit(1);
 }
 writeFileSync(join(out, 'manifest.json'), JSON.stringify(manifest, null, 2));
+rmSync(join(out, '.strip.tmp'), { force: true });
 console.log(`Wine bundle in ${out}${withUnix ? ' (with the Unix side, for windowed programs)' : ''}`);
 
 /** Names (lowercase) of the DLLs a PE image imports. */
