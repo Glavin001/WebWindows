@@ -41,6 +41,7 @@ const cacheDir = join(root, 'target/wine-cache');
 const GUEST_LIMIT = 0x8000_0000;
 
 function wwt() {
+  if (process.env.WWT) return process.env.WWT;
   return ['target/release/wwt', 'target/debug/wwt']
     .map((p) => join(root, p))
     .filter((p) => existsSync(p))

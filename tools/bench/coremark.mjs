@@ -32,6 +32,9 @@ import { fileURLToPath } from 'node:url';
 
 const COMMIT = '1f483d5b8316753a742cbf5590caf5bd0a4e4777';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+// The runtimes translate with the newest of the release and debug builds;
+// benchmarks always use the release one.
+process.env.WWT ??= join(root, 'target/release/wwt');
 const src = join(root, 'target/coremark-src');
 const out = join(root, 'target/bench');
 const FILES = ['core_list_join.c', 'core_main.c', 'core_matrix.c', 'core_state.c', 'core_util.c', 'simple/core_portme.c'];

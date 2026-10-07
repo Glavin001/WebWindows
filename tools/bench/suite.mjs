@@ -29,6 +29,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+// The runtimes translate with the newest of the release and debug builds;
+// benchmarks always use the release one.
+process.env.WWT ??= join(root, 'target/release/wwt');
 const src = join(root, 'target/bench-src');
 const out = join(root, 'target/bench');
 const workloads = join(root, 'tools/bench/workloads');
@@ -291,7 +294,10 @@ for (const t of TIERS) {
   const logs = [];
   for (const row of results) {
     const r = ref(row);
-    if (t === r || row.times[t] === undefined || row.times[r] === undefined) continue;
+    if (t === r || !(row.times[t] > 0) || !(row.times[r] > 0)) continue;
+    // Only rows whose results agree: a tier that fails a workload is not fast.
+    const sums = Object.values(row.sums);
+    if (!sums.every((x) => x === sums[0])) continue;
     logs.push(Math.log(row.times[r] / row.times[t]));
   }
   if (logs.length) console.log(`${t.padEnd(10)} geometric mean ${(Math.exp(logs.reduce((a, b) => a + b, 0) / logs.length) * 100).toFixed(0)}% of reference speed over ${logs.length} measurements`);

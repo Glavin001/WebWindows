@@ -28,6 +28,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+// The runtimes translate with the newest of the release and debug builds;
+// benchmarks always use the release one.
+process.env.WWT ??= join(root, 'target/release/wwt');
 const out = join(root, 'target/bench/ab');
 const wwt = join(root, 'target/release/wwt');
 

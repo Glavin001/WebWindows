@@ -48,6 +48,66 @@ pub fn make_reducible(f: &mut Function) -> bool {
     true
 }
 
+/// Merges jump tables that have the same targets into one dispatch block.
+///
+/// Compilers duplicate an interpreter's dispatch (`jmp *table(,%eax,4)`)
+/// into the end of every handler, which makes each handler a loop entry and
+/// the function irreducible. With one shared dispatch block (each former
+/// table jump sets the shared index and jumps to it), that block is the
+/// loop's only entry, as for a `switch` in a loop. Returns whether
+/// anything changed.
+pub fn merge_switches(f: &mut Function) -> bool {
+    let mut groups: Vec<(Vec<BlockId>, Vec<BlockId>)> = vec![];
+    for (b, blk) in f.blocks.iter().enumerate() {
+        if let Term::Switch { targets, .. } = &blk.term {
+            match groups.iter_mut().find(|(t, _)| t == targets) {
+                Some((_, members)) => members.push(b as BlockId),
+                None => groups.push((targets.clone(), vec![b as BlockId])),
+            }
+        }
+    }
+    let mut changed = false;
+    for (targets, members) in groups {
+        if members.len() < 2 {
+            continue;
+        }
+        let addr = f.blocks[members[0] as usize].addr;
+        let index = f.new_vreg(Ty::I32);
+        let fallback = f.new_vreg(Ty::I32);
+        let shared = f.new_block(addr);
+        f.blocks[shared as usize].term = Term::Switch {
+            index,
+            targets,
+            fallback,
+        };
+        for b in members {
+            let blk = &mut f.blocks[b as usize];
+            let Term::Switch {
+                index: i,
+                fallback: fb,
+                ..
+            } = blk.term.clone()
+            else {
+                unreachable!()
+            };
+            let eip = blk.insts.last().map_or(blk.addr, |x| x.eip);
+            blk.insts.push(Inst {
+                dst: Some(index),
+                op: Op::Copy(i),
+                eip,
+            });
+            blk.insts.push(Inst {
+                dst: Some(fallback),
+                op: Op::Copy(fb),
+                eip,
+            });
+            blk.term = Term::Jump(shared);
+        }
+        changed = true;
+    }
+    changed
+}
+
 /// The test code generation uses: every retreating edge goes to a block
 /// that dominates its source.
 pub fn is_reducible(f: &Function) -> bool {
@@ -483,6 +543,40 @@ mod tests {
                 "eax={a} ecx={c} edx={d}"
             );
         }
+    }
+
+    /// An interpreter shape: two table jumps over the same handlers, each
+    /// handler ending in one of them.
+    #[test]
+    fn merges_duplicated_dispatch() {
+        let mut f = Function::new(0x1000);
+        for i in 0..5 {
+            f.new_block(0x1000 + i * 0x10);
+        }
+        let fb = f.new_vreg(Ty::I32);
+        f.blocks[0].term = Term::Switch {
+            index: EAX,
+            targets: vec![1, 2],
+            fallback: fb,
+        };
+        f.blocks[1].term = Term::Jump(3);
+        f.blocks[2].term = Term::Branch { cond: ECX, t: 4, f: 3 };
+        f.blocks[3].term = Term::Switch {
+            index: EDX,
+            targets: vec![1, 2],
+            fallback: fb,
+        };
+        f.blocks[4].term = Term::Ret(EAX);
+        assert!(!is_reducible(&f));
+        assert!(merge_switches(&mut f));
+        let switches = f
+            .blocks
+            .iter()
+            .filter(|b| matches!(b.term, Term::Switch { .. }))
+            .count();
+        assert_eq!(switches, 1);
+        make_reducible(&mut f);
+        assert!(is_reducible(&f));
     }
 
     #[test]

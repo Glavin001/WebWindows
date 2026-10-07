@@ -309,6 +309,9 @@ impl<'a> ModuleGen<'a> {
             f
         } else {
             let mut c = f.clone();
+            if !reducible::is_reducible(&c) {
+                reducible::merge_switches(&mut c);
+            }
             reducible::make_reducible(&mut c);
             if self.cfg.osr {
                 crate::osr::add_reentry(&mut c);

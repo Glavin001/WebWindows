@@ -115,6 +115,10 @@ function closeFile(h, f) {
   if (!f.path || !h.deletePending?.has(f.path)) return;
   for (const o of h.handles.values()) if (o !== f && o.type === 'file' && o.path === f.path) return;
   h.deletePending.delete(f.path);
+  if (f.dir) {
+    h.dirs.delete(f.path);
+    return;
+  }
   const bytes = h.files.get(f.path);
   h.files.delete(f.path);
   // Keep the largest buffer of a deleted file for the next file that grows:
@@ -749,9 +753,14 @@ export const SYSCALLS = {
     if (!dir || dir.type !== 'file') return STATUS.INVALID_HANDLE;
     if (!dir.dir) return STATUS.INVALID_PARAMETER;
     // FILE_INFORMATION_CLASS -> offset of FileName (and of FileId, if any).
-    const LAYOUT = { 1: [64], 2: [68], 3: [94], 12: [12], 37: [104, 96], 38: [80, 72] };
+    // 60/63 (FileIdExtd[Both]DirectoryInformation, which Wine 11's
+    // FindFirstFileEx asks for) have a 128-bit FileId; the low half is set.
+    const LAYOUT = { 1: [64], 2: [68], 3: [94], 12: [12], 37: [104, 96], 38: [80, 72], 60: [88, 72], 63: [114, 72] };
     const layout = LAYOUT[cls];
-    if (!layout) return STATUS.INVALID_INFO_CLASS;
+    if (!layout) {
+      this.log(`NtQueryDirectoryFile class ${cls} not implemented`);
+      return STATUS.INVALID_INFO_CLASS;
+    }
     // The listing is taken on the first call (or a restart), with its mask.
     if (restart || !dir.listing) {
       const mask = pmask ? this.ustr(pmask) : '*';
@@ -941,7 +950,12 @@ function openFile(h, ph, oa, piosb, disposition, options = 0) {
       const parent = path.replace(/\\[^\\]*$/, '');
       return h.isDir(parent) ? STATUS.OBJECT_NAME_NOT_FOUND : STATUS.OBJECT_PATH_NOT_FOUND;
     }
-    h.files.set(path, new Uint8Array(0));
+    if (options & 1) {
+      // FILE_DIRECTORY_FILE: a new directory (CreateDirectory).
+      h.dirs.add(path);
+    } else {
+      h.files.set(path, new Uint8Array(0));
+    }
     fi = fileInfo(h, path);
   } else if (disposition === 2) {
     return STATUS.OBJECT_NAME_COLLISION;
