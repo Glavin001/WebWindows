@@ -38,7 +38,7 @@ use d3dgpu_proto::{
 };
 
 pub use present::{HeadlessPresenter, PresentContext, Presenter, SurfacePresenter};
-use resources::{Buffer, Object, Ring, Texture};
+use resources::{Buffer, FastMap, Object, Ring, Texture};
 use state::{State, Target};
 
 /// What the device offers beyond core WebGPU, and the size of the rings.
@@ -95,6 +95,24 @@ pub struct Stats {
     pub quad_clears: u64,
     pub presents: u64,
     pub errors: u64,
+    /// Nanoseconds spent recording draws (decode excluded) and in
+    /// `encoder.finish` + `queue.submit`. Zero in the browser build, where
+    /// the host times with `performance.now()`.
+    pub draw_ns: u64,
+    pub submit_ns: u64,
+}
+
+/// A monotonic clock in nanoseconds (0 on wasm32, which has no `Instant`).
+fn now_ns() -> u64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        START.get_or_init(std::time::Instant::now).elapsed().as_nanos() as u64
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        0
+    }
 }
 
 /// Errors that stop a batch. Problems with single commands (an unknown
@@ -165,7 +183,7 @@ pub struct Core {
     device: wgpu::Device,
     queue: wgpu::Queue,
     opts: Options,
-    objects: HashMap<u32, Object>,
+    objects: FastMap<u32, Object>,
     st: State,
     enc: Option<wgpu::CommandEncoder>,
     pass: Option<wgpu::RenderPass<'static>>,
@@ -207,7 +225,7 @@ impl Core {
             device,
             queue,
             opts,
-            objects: HashMap::new(),
+            objects: FastMap::default(),
             st: State::new(),
             enc: None,
             pass: None,
@@ -338,6 +356,7 @@ impl Core {
                             self.warn(format!("shader {id:?}: bytecode stage does not match {stage:?}"));
                             return;
                         }
+                        let module = Arc::new(module);
                         self.objects.insert(id.0, Object::Shader(Box::new(resources::Shader { module, hash })));
                     }
                     Err(e) => self.warn(format!("shader {id:?} ({hash:016x}): {e}")),
@@ -410,9 +429,15 @@ impl Core {
             }
             Command::Clear { flags, color, z, stencil, rects } => self.clear(flags, color, z, stencil, &rects),
             Command::Draw { prim, start_vertex, prim_count } => {
-                self.draw(prim, draw::Source::Vertices { start: start_vertex, count: prim_count })
+                let t = now_ns();
+                self.draw(prim, draw::Source::Vertices { start: start_vertex, count: prim_count });
+                self.stats.draw_ns += now_ns() - t;
             }
-            Command::DrawIndexed { prim, draw } => self.draw(prim, draw::Source::Indexed(draw)),
+            Command::DrawIndexed { prim, draw } => {
+                let t = now_ns();
+                self.draw(prim, draw::Source::Indexed(draw));
+                self.stats.draw_ns += now_ns() - t;
+            }
             Command::DrawUp { prim, prim_count, stride, vertices } => {
                 if let Some(v) = self.resolve(vertices, shared) {
                     self.draw(prim, draw::Source::Up { count: prim_count, stride, vertices: v, indices: None })
@@ -681,7 +706,7 @@ impl Core {
         self.end_pass();
         let aligned = gpu_row.next_multiple_of(256);
         let total = aligned as usize * gpu_rows as usize * depth as usize;
-        let Some((offset, dst)) = self.uploads.alloc_zeroed(total, 256) else {
+        let Some((offset, dst)) = self.uploads.reserve(total, 256) else {
             self.submit();
             let layout =
                 wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(gpu_row), rows_per_image: Some(gpu_rows) };
@@ -868,7 +893,9 @@ impl Core {
         self.streams.flush(&self.queue);
         self.uploads.flush(&self.queue);
         let enc = self.enc.take().unwrap_or_else(|| self.device.create_command_encoder(&Default::default()));
+        let t = now_ns();
         self.queue.submit([enc.finish()]);
+        self.stats.submit_ns += now_ns() - t;
         self.stats.submits += 1;
         self.epoch += 1;
         for w in std::mem::take(&mut self.presented) {

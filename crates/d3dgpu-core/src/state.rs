@@ -29,11 +29,22 @@ pub struct Consts {
     /// Ring offset of the last upload, valid in `epoch`.
     pub offset: u64,
     pub epoch: u64,
+    /// What the last upload copied: float constants, and whether the
+    /// integer and boolean sections were included. Shaders read only what
+    /// their reflection says, so the rest of the window may be stale.
+    pub copied: (u32, bool, bool),
 }
 
 impl Consts {
     pub fn new(layout: ConstLayout) -> Consts {
-        Consts { layout, bytes: vec![0; layout.size() as usize], dirty: true, offset: 0, epoch: u64::MAX }
+        Consts {
+            layout,
+            bytes: vec![0; layout.size() as usize],
+            dirty: true,
+            offset: 0,
+            epoch: u64::MAX,
+            copied: (0, false, false),
+        }
     }
 
     pub fn set_f(&mut self, start: u32, data: &[u8]) {

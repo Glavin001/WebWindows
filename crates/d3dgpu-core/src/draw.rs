@@ -6,19 +6,18 @@
 //! (asynchronous creation with an ubershader fallback is the planned fix
 //! for first-use stutter).
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use d3dgpu_emu::index;
 use d3dgpu_emu::vertex::{self as vfmt, ShaderInput, VertexOptions};
 use d3dgpu_proto::d3d9::*;
-use d3dgpu_proto::{Handle, IndexedDraw, TextureKind};
+use d3dgpu_proto::{Handle, IndexedDraw, Stage, TextureKind};
 use d3dgpu_shader::{
     self as sh, ClipMode, ConstLayout, Driver, Fog, InputKind, PixelKey, SamplerDim, SamplerKey, Translation, VertexKey,
 };
 
 use crate::convert;
-use crate::resources::Object;
+use crate::resources::{FastMap, Object};
 use crate::{Core, Stats};
 
 /// Where a draw's vertices and indices come from.
@@ -113,16 +112,19 @@ struct Dummy {
 pub struct Caches {
     g0_layout: wgpu::BindGroupLayout,
     g0: wgpu::BindGroup,
-    vs: HashMap<(u64, VertexKey), Arc<Variant>>,
-    ps: HashMap<(u64, PixelKey), Arc<Variant>>,
-    layouts: HashMap<Vec<LayoutEntry>, Arc<Layout>>,
-    pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
-    samplers: HashMap<SamplerDesc, (u64, wgpu::Sampler)>,
-    bind_groups: HashMap<(u64, Vec<(u64, u64)>), wgpu::BindGroup>,
-    clear_pipelines: HashMap<ClearKey, wgpu::RenderPipeline>,
-    dummies: HashMap<wgpu::TextureViewDimension, Dummy>,
+    vs: FastMap<(u64, VertexKey), Arc<Variant>>,
+    ps: FastMap<(u64, PixelKey), Arc<Variant>>,
+    layouts: FastMap<Vec<LayoutEntry>, Arc<Layout>>,
+    pipelines: FastMap<PipelineKey, wgpu::RenderPipeline>,
+    samplers: FastMap<SamplerDesc, (u64, wgpu::Sampler)>,
+    bind_groups: FastMap<(u64, Vec<(u64, u64)>), wgpu::BindGroup>,
+    clear_pipelines: FastMap<ClearKey, wgpu::RenderPipeline>,
+    dummies: FastMap<wgpu::TextureViewDimension, Dummy>,
     zero_buffer: wgpu::Buffer,
     driver: (Vec<u8>, u64, u64),
+    /// The last translation looked up per stage, checked before hashing.
+    last_vs: Option<(u64, VertexKey, Arc<Variant>)>,
+    last_ps: Option<(u64, PixelKey, Arc<Variant>)>,
     next_id: u64,
 }
 
@@ -159,16 +161,18 @@ impl Caches {
         Caches {
             g0_layout,
             g0,
-            vs: HashMap::new(),
-            ps: HashMap::new(),
-            layouts: HashMap::new(),
-            pipelines: HashMap::new(),
-            samplers: HashMap::new(),
-            bind_groups: HashMap::new(),
-            clear_pipelines: HashMap::new(),
-            dummies: HashMap::new(),
+            vs: FastMap::default(),
+            ps: FastMap::default(),
+            layouts: FastMap::default(),
+            pipelines: FastMap::default(),
+            samplers: FastMap::default(),
+            bind_groups: FastMap::default(),
+            clear_pipelines: FastMap::default(),
+            dummies: FastMap::default(),
             zero_buffer,
             driver: (Vec::new(), 0, u64::MAX),
+            last_vs: None,
+            last_ps: None,
             next_id: 1,
         }
     }
@@ -432,8 +436,14 @@ impl Core {
 
     fn translate_ps(&mut self, h: Handle, key: &PixelKey) -> Option<Arc<Variant>> {
         let Some(Object::Shader(s)) = self.objects.get(&h.0) else { return None };
+        if let Some((hash, k, v)) = &self.caches.last_ps {
+            if *hash == s.hash && k == key {
+                return Some(v.clone());
+            }
+        }
         let ck = (s.hash, key.clone());
         if let Some(v) = self.caches.ps.get(&ck) {
+            self.caches.last_ps = Some((ck.0, ck.1, v.clone()));
             return Some(v.clone());
         }
         let t = match s.module.pixel(key) {
@@ -443,13 +453,21 @@ impl Core {
                 return None;
             }
         };
-        Some(self.finish_variant(t, ck, false))
+        let v = self.finish_variant(t, ck.clone(), false);
+        self.caches.last_ps = Some((ck.0, ck.1, v.clone()));
+        Some(v)
     }
 
     fn translate_vs(&mut self, h: Handle, key: &VertexKey) -> Option<Arc<Variant>> {
         let Some(Object::Shader(s)) = self.objects.get(&h.0) else { return None };
+        if let Some((hash, k, v)) = &self.caches.last_vs {
+            if *hash == s.hash && k == key {
+                return Some(v.clone());
+            }
+        }
         let ck = (s.hash, key.clone());
         if let Some(v) = self.caches.vs.get(&ck) {
+            self.caches.last_vs = Some((ck.0, ck.1, v.clone()));
             return Some(v.clone());
         }
         let t = match s.module.vertex(key) {
@@ -461,8 +479,9 @@ impl Core {
         };
         let hash = ck.0;
         let v = self.finish_variant(t, (hash, PixelKey::default()), true);
-        self.caches.vs.insert(ck, v.clone());
-        Some(v)
+        self.caches.vs.insert(ck.clone(), v.clone());
+        self.caches.last_vs = Some((ck.0, ck.1, v));
+        self.caches.last_vs.as_ref().map(|l| l.2.clone())
     }
 
     fn finish_variant(&mut self, t: Translation, key: (u64, PixelKey), vertex: bool) -> Arc<Variant> {
@@ -706,7 +725,8 @@ impl Core {
         else {
             return self.skip("draw with an unknown shader handle");
         };
-        let (vs_refl, ps_module) = (vs.module.reflection.clone(), ps.module.clone());
+        let (vs_module, ps_module) = (vs.module.clone(), ps.module.clone());
+        let vs_refl = &vs_module.reflection;
         let Some(Object::VertexDecl(decl)) = self.objects.get(&self.st.decl.0) else {
             return self.skip("draw without a vertex declaration");
         };
@@ -997,29 +1017,8 @@ impl Core {
         };
 
         // Uniforms (uploaded only when changed this submission).
-        let epoch = self.epoch;
-        let vs_off = if self.st.vs_consts.dirty || self.st.vs_consts.epoch != epoch {
-            let bytes = std::mem::take(&mut self.st.vs_consts.bytes);
-            let off = self.alloc_uniform(&bytes);
-            self.st.vs_consts.bytes = bytes;
-            self.st.vs_consts.offset = off;
-            self.st.vs_consts.epoch = self.epoch;
-            self.st.vs_consts.dirty = false;
-            off
-        } else {
-            self.st.vs_consts.offset
-        };
-        let ps_off = if self.st.ps_consts.dirty || self.st.ps_consts.epoch != self.epoch {
-            let bytes = std::mem::take(&mut self.st.ps_consts.bytes);
-            let off = self.alloc_uniform(&bytes);
-            self.st.ps_consts.bytes = bytes;
-            self.st.ps_consts.offset = off;
-            self.st.ps_consts.epoch = self.epoch;
-            self.st.ps_consts.dirty = false;
-            off
-        } else {
-            self.st.ps_consts.offset
-        };
+        let vs_off = self.upload_consts(Stage::Vertex, &vs_module.reflection);
+        let ps_off = self.upload_consts(Stage::Pixel, &ps_module.reflection);
         let drv = self.driver_bytes(&fit);
         let drv_off = if self.caches.driver.2 == self.epoch && self.caches.driver.0 == drv {
             self.caches.driver.1
@@ -1036,6 +1035,7 @@ impl Core {
         }
 
         // Vertex buffers to bind.
+        let epoch = self.epoch;
         let mut vbufs: Vec<(wgpu::Buffer, u64)> = Vec::new();
         for (stream, _) in &slots {
             if *stream == u32::MAX {
@@ -1099,6 +1099,53 @@ impl Core {
             }
             None => pass.draw(vertex_range.0..vertex_range.1, 0..instances),
         }
+    }
+
+    /// Uploads the constants a shader reads, unless this submission already
+    /// has an upload of them that is still current.
+    fn upload_consts(&mut self, stage: Stage, refl: &sh::Reflection) -> u64 {
+        let epoch = self.epoch;
+        let c = match stage {
+            Stage::Vertex => &self.st.vs_consts,
+            Stage::Pixel => &self.st.ps_consts,
+        };
+        let count = c.layout.float_count;
+        let floats = if refl.relative_consts { count } else { refl.float_consts.min(count) };
+        let need = (floats, refl.int_consts != 0, refl.bool_consts != 0);
+        let covered = c.copied.0 >= need.0 && (c.copied.1 || !need.1) && (c.copied.2 || !need.2);
+        if !c.dirty && c.epoch == epoch && covered {
+            return c.offset;
+        }
+        let size = c.layout.size() as usize;
+        // Only what the shader reads needs to be written; the integer and
+        // boolean sections sit at fixed offsets after all float constants.
+        let len = if need.1 || need.2 { size } else { (floats as usize * 16).max(16) };
+        let (offset, dst) = match self.uniforms.reserve_window(len, size, 256) {
+            Some(r) => r,
+            None => {
+                self.submit();
+                self.uniforms.reserve_window(len, size, 256).expect("uniform ring smaller than one constant block")
+            }
+        };
+        let c = match stage {
+            Stage::Vertex => &mut self.st.vs_consts,
+            Stage::Pixel => &mut self.st.ps_consts,
+        };
+        let f = floats as usize * 16;
+        dst[..f].copy_from_slice(&c.bytes[..f]);
+        let (io, bo) = (c.layout.int_offset() as usize, c.layout.bool_offset() as usize);
+        if need.1 {
+            dst[io..bo].copy_from_slice(&c.bytes[io..bo]);
+        }
+        if need.2 {
+            dst[bo..].copy_from_slice(&c.bytes[bo..]);
+        }
+        self.stats.bytes_uploaded += (f + if need.1 { 256 } else { 0 } + if need.2 { 64 } else { 0 }) as u64;
+        c.offset = offset;
+        c.epoch = self.epoch;
+        c.dirty = false;
+        c.copied = need;
+        offset
     }
 
     fn upload_indices(&mut self, data: IndexData) -> Option<(IndexBuf, u32)> {

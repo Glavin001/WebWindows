@@ -1,6 +1,8 @@
 //! GPU objects behind protocol handles, and the per-submission rings.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
+use std::sync::Arc;
 
 use d3dgpu_emu::format::FormatPlan;
 use d3dgpu_proto::d3d9::VertexElement;
@@ -64,7 +66,7 @@ impl Texture {
 }
 
 pub struct Shader {
-    pub module: ShaderModule,
+    pub module: Arc<ShaderModule>,
     pub hash: u64,
 }
 
@@ -80,10 +82,12 @@ pub enum Object {
 /// during a submission lands at its own offset and is written with one
 /// `write_buffer` just before the submit, so it is visible to every command
 /// in it and the next submission can start again at offset 0 (queue writes
-/// are ordered after earlier submissions).
+/// are ordered after earlier submissions). The CPU copy is allocated once
+/// and never cleared: callers write every byte the GPU will read.
 pub struct Ring {
     pub buffer: wgpu::Buffer,
-    pub data: Vec<u8>,
+    data: Vec<u8>,
+    cursor: usize,
     pub size: u64,
     usage: wgpu::BufferUsages,
     label: &'static str,
@@ -98,47 +102,57 @@ impl Ring {
             usage,
             mapped_at_creation: false,
         });
-        Ring { buffer, data: Vec::with_capacity(size as usize), size, usage, label }
+        Ring { buffer, data: vec![0; size as usize], cursor: 0, size, usage, label }
     }
 
-    /// Reserves `bytes` at an offset aligned to `align`; `None` when the
-    /// ring is full for this submission.
-    pub fn alloc(&mut self, bytes: &[u8], align: u64) -> Option<u64> {
-        let offset = (self.data.len() as u64).next_multiple_of(align);
-        if offset + bytes.len() as u64 > self.size {
-            return None;
-        }
-        self.data.resize(offset as usize, 0);
-        self.data.extend_from_slice(bytes);
-        Some(offset)
-    }
-
-    /// Reserves `len` zeroed bytes and returns the offset and the slice.
-    pub fn alloc_zeroed(&mut self, len: usize, align: u64) -> Option<(u64, &mut [u8])> {
-        let offset = (self.data.len() as u64).next_multiple_of(align);
+    /// Reserves `len` bytes at an offset aligned to `align`; `None` when the
+    /// ring is full for this submission. The slice holds stale bytes.
+    pub fn reserve(&mut self, len: usize, align: u64) -> Option<(u64, &mut [u8])> {
+        let offset = (self.cursor as u64).next_multiple_of(align);
         if offset + len as u64 > self.size {
             return None;
         }
-        self.data.resize(offset as usize + len, 0);
-        Some((offset, &mut self.data[offset as usize..]))
+        self.cursor = offset as usize + len;
+        Some((offset, &mut self.data[offset as usize..offset as usize + len]))
+    }
+
+    /// Like [`Ring::reserve`], but the binding window at the returned offset
+    /// is `window` bytes, of which only the first `len` are written. Later
+    /// allocations may land inside the rest of the window: the shader
+    /// bound with it never reads past `len` (uniform blocks whose shaders
+    /// read only their first constants).
+    pub fn reserve_window(&mut self, len: usize, window: usize, align: u64) -> Option<(u64, &mut [u8])> {
+        let offset = (self.cursor as u64).next_multiple_of(align);
+        if offset + window.max(len) as u64 > self.size {
+            return None;
+        }
+        self.cursor = offset as usize + len;
+        Some((offset, &mut self.data[offset as usize..offset as usize + len]))
+    }
+
+    /// Copies `bytes` in at an offset aligned to `align`.
+    pub fn alloc(&mut self, bytes: &[u8], align: u64) -> Option<u64> {
+        let (offset, dst) = self.reserve(bytes.len(), align)?;
+        dst.copy_from_slice(bytes);
+        Some(offset)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.cursor == 0
     }
 
     pub fn flush(&mut self, queue: &wgpu::Queue) {
-        if !self.data.is_empty() {
-            let len = self.data.len().next_multiple_of(4);
-            self.data.resize(len, 0);
-            queue.write_buffer(&self.buffer, 0, &self.data);
-            self.data.clear();
+        if self.cursor != 0 {
+            let len = self.cursor.next_multiple_of(4).min(self.data.len());
+            queue.write_buffer(&self.buffer, 0, &self.data[..len]);
+            self.cursor = 0;
         }
     }
 
     /// Replaces the buffer with a bigger one (between submissions).
     pub fn grow(&mut self, device: &wgpu::Device, min: u64) {
         self.size = (self.size * 2).max(min.next_power_of_two());
+        self.data = vec![0; self.size as usize];
         self.buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(self.label),
             size: self.size,
@@ -147,3 +161,37 @@ impl Ring {
         });
     }
 }
+
+/// The Fx hash (as used in rustc): much faster than SipHash for the small
+/// fixed keys the caches use, and no external dependency.
+#[derive(Default, Clone, Copy)]
+pub struct FxHasher(u64);
+
+impl Hasher for FxHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks {
+            self.write_u64(u64::from_le_bytes(c.try_into().unwrap()));
+        }
+        for b in chunks.remainder() {
+            self.write_u64(*b as u64);
+        }
+    }
+    fn write_u8(&mut self, i: u8) {
+        self.write_u64(i as u64);
+    }
+    fn write_u32(&mut self, i: u32) {
+        self.write_u64(i as u64);
+    }
+    fn write_u64(&mut self, i: u64) {
+        self.0 = (self.0.rotate_left(5) ^ i).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+    fn write_usize(&mut self, i: usize) {
+        self.write_u64(i as u64);
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+pub type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;

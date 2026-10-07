@@ -11,6 +11,7 @@
 use d3dgpu_proto::d3d9::*;
 use d3dgpu_proto::*;
 
+pub mod perf;
 mod scenes;
 
 pub use scenes::ALL;
