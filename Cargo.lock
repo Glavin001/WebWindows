@@ -447,6 +447,7 @@ dependencies = [
  "d3dgpu-scenes",
  "d3dgpu-shader",
  "pollster",
+ "wasm-bindgen",
  "wgpu",
 ]
 
