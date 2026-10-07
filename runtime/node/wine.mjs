@@ -3,6 +3,14 @@
 //
 //   node runtime/node/wine.mjs [--trace] program.exe [args...]
 //
+// GUI programs draw on a virtual 800x600 screen (runtime/wine/display.mjs):
+//   --screenshot F    save it as a PNG when the program goes idle or exits
+//   --run-for MS      ... or after this long
+//   --input SCRIPT    scripted input, timed from the first frame:
+//                     "500:click 20,80; 900:text Hi; 1200:key Enter"
+//                     (click/rclick/move X,Y; key CODE as in KeyboardEvent.code;
+//                     text types letters, digits and spaces)
+//
 // Wine's PE DLLs come from WINE_BUILD (default /opt/wine-build) and its NLS
 // files from WINE_SRC; translations are cached in target/wine-cache.
 
@@ -16,6 +24,7 @@ import { Machine, GuestFault, hex } from '../runtime.mjs';
 import { WineHost } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
+import { windowsKey, KEYEVENTF_KEYUP } from '../web/keys.mjs';
 
 /** Thrown out of a wait to stop a GUI program that went idle (--screenshot). */
 class ProgramIdle extends Error {}
@@ -59,6 +68,7 @@ let trace = false;
 let unixTrace = false;
 let screenshot = null;
 let runFor = Infinity;
+let script = [];
 // Wine's Unix side compiled with Emscripten (native/wine-unix): on when built,
 // unless --no-unix.
 const unixDir = join(root, 'target/wine-unix');
@@ -74,6 +84,51 @@ while (args[0]?.startsWith('--')) {
   else if (a === '--screenshot') screenshot = args.shift();
   // ... or once it has run this long (programs with timers never go idle).
   else if (a === '--run-for') runFor = Number(args.shift());
+  else if (a === '--input') script = parseInput(args.shift());
+}
+
+/** "ms:action args; ..." -> [{at, push(display)}], in time order. */
+function parseInput(text) {
+  const steps = [];
+  for (const part of text.split(';').map((p) => p.trim()).filter(Boolean)) {
+    const m = part.match(/^(\d+):\s*(\w+)\s*(.*)$/);
+    if (!m) throw new Error(`--input: cannot parse "${part}"`);
+    const [, at, action, arg] = m;
+    const xy = () => arg.split(',').map(Number);
+    const tap = (d, k) => {
+      d.key(k.vk, k.scan, k.flags);
+      d.key(k.vk, k.scan, k.flags | KEYEVENTF_KEYUP);
+    };
+    const shift = windowsKey('ShiftLeft');
+    let push;
+    if (action === 'move') push = (d) => d.mouse(...xy());
+    else if (action === 'click' || action === 'rclick') {
+      const [down, up] = action === 'click' ? [0x2, 0x4] : [0x8, 0x10];
+      push = (d) => {
+        d.mouse(...xy());
+        d.mouse(...xy(), down);
+        d.mouse(...xy(), up);
+      };
+    } else if (action === 'key') {
+      const k = windowsKey(arg);
+      if (!k) throw new Error(`--input: unknown key ${arg}`);
+      push = (d) => tap(d, k);
+    } else if (action === 'text') {
+      push = (d) => {
+        for (const c of arg) {
+          const code = c === ' ' ? 'Space' : /\d/.test(c) ? `Digit${c}` : `Key${c.toUpperCase()}`;
+          const k = windowsKey(code);
+          if (!k) throw new Error(`--input: cannot type "${c}"`);
+          const upper = c !== c.toLowerCase();
+          if (upper) d.key(shift.vk, shift.scan, shift.flags);
+          tap(d, k);
+          if (upper) d.key(shift.vk, shift.scan, shift.flags | KEYEVENTF_KEYUP);
+        }
+      };
+    } else throw new Error(`--input: unknown action ${action}`);
+    steps.push({ at: Number(at), push });
+  }
+  return steps.sort((a, b) => a.at - b.at);
 }
 const exe = args.shift();
 if (!exe) {
@@ -112,15 +167,32 @@ const machine = new Machine({
 });
 await machine.init();
 let unix = null;
-const display = new Display();
+// Scripted input is timed from the first frame on the screen.
+let firstFrame = null;
+const display = new Display({
+  onChange: () => (firstFrame ??= performance.now()),
+  inputSource: (d) => {
+    while (script.length && firstFrame !== null && performance.now() - firstFrame >= script[0].at) {
+      if (trace) stderr(`[input] step at ${script[0].at} ms\n`);
+      script.shift().push(d);
+    }
+  },
+});
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 // Blocks the thread; a wait nothing can end means the program is idle.
 const started = performance.now();
 const wait = (ms) => {
-  if (display.input.length) return 1;
+  if (display.hasInput()) return 1;
   if (screenshot && performance.now() - started > runFor) throw new ProgramIdle();
+  // Scripted input still to come wakes the program when it is due.
+  const due = script.length && firstFrame !== null ? Math.max(0, firstFrame + script[0].at - performance.now()) : -1;
+  if (due >= 0 && (ms < 0 || due < ms)) {
+    sleep(due);
+    return display.hasInput() ? 1 : 0;
+  }
   if (ms >= 0) {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-    return display.input.length ? 1 : 0;
+    sleep(ms);
+    return display.hasInput() ? 1 : 0;
   }
   if (screenshot) throw new ProgramIdle();
   return -1;
@@ -163,6 +235,7 @@ const host = new WineHost(machine, {
   stderr: (b) => stderr(b),
   trace,
   unix,
+  debug: process.env.WINEDEBUG ?? '',
 });
 host.boot(`${sys32}\\ntdll.dll`, exeDos);
 const r = host.run();

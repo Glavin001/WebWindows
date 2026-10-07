@@ -58,7 +58,7 @@ fn main() -> Result<()> {
             let mut shown = BTreeSet::new();
             for (a, b) in old.iter().zip(&fixtures) {
                 let diffs = compare(&a.case, &a.out, &b.out);
-                if diffs.is_empty() {
+                if diffs.is_empty() || model_specific(&a.case.form) {
                     continue;
                 }
                 bad += 1;
@@ -87,4 +87,11 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Forms whose behaviour itself varies between CPU models: the reserved-NOP
+/// space at 0F 0D with a register operand is a NOP on some CPUs and #UD on
+/// others (the fixtures record the NOP the translator implements).
+fn model_specific(form: &str) -> bool {
+    form.starts_with("Reservednop_") && form.ends_with("_0F0D")
 }

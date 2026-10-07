@@ -17,6 +17,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <sys/time.h>
 
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
@@ -34,6 +35,7 @@ extern int wasm_server_client_wait_fd(void);
 
 extern void wasm_process_input(void);
 extern void wasm_set_nt_data_dir( const WCHAR *dir );
+extern void wasm_init_case_tables(void);
 extern void browser_driver_init(void);
 
 /* Blocks the thread for up to `ms` milliseconds (-1: until something
@@ -49,6 +51,33 @@ static int wait_fd = -1;
 TEB * WINAPI NtCurrentTeb(void)
 {
     return current_teb;
+}
+
+/* Sleep (NtDelayExecution): blocks until the time given has passed, or
+ * for good when `tv` is NULL. Input that arrives meanwhile goes to the
+ * server's queues (it waits there for the program, as on Windows). */
+int wasm_sleep( const struct timeval *tv )
+{
+    double end = tv ? emscripten_get_now() + tv->tv_sec * 1000.0 + tv->tv_usec / 1000.0 : 0;
+
+    for (;;)
+    {
+        int ms = -1, woke;
+
+        if (tv)
+        {
+            double left = end - emscripten_get_now();
+            if (left <= 0) return 0;
+            ms = (int)left + 1;
+        }
+        woke = host_wait( ms );
+        if (woke > 0) wasm_process_input();
+        else if (woke < 0 && ms < 0)
+        {
+            fprintf( stderr, "wine: the thread sleeps forever and nothing can wake it\n" );
+            abort();
+        }
+    }
 }
 
 unsigned int server_call_unlocked( void *req_ptr )
@@ -273,6 +302,7 @@ EMSCRIPTEN_KEEPALIVE unsigned int wasm_init_process( TEB *teb, PEB *peb, unsigne
                                          '\\','w','i','n','e',0};
         wasm_set_nt_data_dir( data_dir );
     }
+    wasm_init_case_tables();
     browser_driver_init();
     wasm_server_start();
     wait_fd = wasm_server_new_process();

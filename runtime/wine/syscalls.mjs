@@ -555,6 +555,9 @@ export const SYSCALLS = {
       case 14: // FilePositionInformation
         this.w64(buf, f.pos ?? 0);
         return done(8);
+      case 20: // FileEndOfFileInformation
+        this.w64(buf, size);
+        return done(8);
       case 34: // FileNetworkOpenInformation
         writeTimes(this, buf);
         this.w64(buf + 32, size);
@@ -651,13 +654,78 @@ export const SYSCALLS = {
   NtFsControlFile() {
     return STATUS.NOT_SUPPORTED;
   },
+  NtQueryDirectoryFile(a) {
+    const [handle, piosb, buf, len, cls, single, pmask, restart] = [a(0), a(4), a(5), a(6), a(7), a(8) & 0xff, a(9), a(10) & 0xff];
+    const dir = this.object(handle);
+    if (!dir || dir.type !== 'file') return STATUS.INVALID_HANDLE;
+    if (!dir.dir) return STATUS.INVALID_PARAMETER;
+    // FILE_INFORMATION_CLASS -> offset of FileName (and of FileId, if any).
+    const LAYOUT = { 1: [64], 2: [68], 3: [94], 12: [12], 37: [104, 96], 38: [80, 72] };
+    const layout = LAYOUT[cls];
+    if (!layout) return STATUS.INVALID_INFO_CLASS;
+    // The listing is taken on the first call (or a restart), with its mask.
+    if (restart || !dir.listing) {
+      const mask = pmask ? this.ustr(pmask) : '*';
+      const re = new RegExp(`^${mask.toLowerCase().replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')}$`);
+      const prefix = dir.path + '\\';
+      const names = new Map(/^[a-z]:$/.test(dir.path) ? [] : [['.', true], ['..', true]]);
+      for (const k of this.files.keys()) {
+        if (!k.startsWith(prefix)) continue;
+        const rest = k.slice(prefix.length);
+        const i = rest.indexOf('\\');
+        names.set(i < 0 ? rest : rest.slice(0, i), i >= 0);
+      }
+      dir.listing = [...names].filter(([n]) => re.test(n)).map(([name, isDir]) => ({ name, isDir }));
+      dir.listPos = 0;
+      if (!dir.listing.length) {
+        iosb(this, piosb, STATUS.NO_SUCH_FILE, 0);
+        return STATUS.NO_SUCH_FILE;
+      }
+    }
+    if (dir.listPos >= dir.listing.length) {
+      iosb(this, piosb, STATUS.NO_MORE_FILES, 0);
+      return STATUS.NO_MORE_FILES;
+    }
+    let at = 0;
+    let last = -1;
+    while (dir.listPos < dir.listing.length) {
+      const { name, isDir } = dir.listing[dir.listPos];
+      const size = layout[0] + name.length * 2;
+      if (at + size > len) {
+        if (last < 0) return STATUS.BUFFER_OVERFLOW;
+        break;
+      }
+      const e = buf + at;
+      this.m.u8.fill(0, e, e + layout[0]);
+      if (cls === 12) {
+        this.w32(e + 8, name.length * 2);
+      } else {
+        const data = isDir ? null : this.files.get(`${dir.path}\\${name}`);
+        writeTimes(this, e + 8);
+        this.w64(e + 40, data?.length ?? 0);
+        this.w64(e + 48, data ? (data.length + 4095) & ~4095 : 0);
+        this.w32(e + 56, isDir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
+        this.w32(e + 60, name.length * 2);
+        if (layout[1]) this.w64(e + layout[1], dir.listPos + 1);
+      }
+      for (let i = 0; i < name.length; i++) this.w16(e + layout[0] + i * 2, name.charCodeAt(i));
+      if (last >= 0) this.w32(buf + last, at - last);
+      last = at;
+      at = (at + size + 7) & ~7;
+      dir.listPos++;
+      if (single) break;
+    }
+    iosb(this, piosb, 0, last >= 0 ? at : 0);
+    return STATUS.SUCCESS;
+  },
 
   // -- sections
   NtCreateSection(a) {
     const [ph, , oa, psize, prot, attrs, file] = [a(0), a(1), a(2), a(3), a(4), a(5), a(6)];
     const f = file ? this.object(file) : null;
     if (file && (!f || f.type !== 'file')) return STATUS.INVALID_HANDLE;
-    const size = psize ? Number(this.u64(psize)) : f?.data?.length ?? 0;
+    // A maximum size of zero (or none) means the whole file.
+    const size = (psize && Number(this.u64(psize))) || (f?.data?.length ?? 0);
     const sec = { type: 'section', image: !!(attrs & SEC_IMAGE), file: f, size, prot, name: oaName(this, oa) };
     if (sec.image) {
       if (!f?.data || f.data[0] !== 0x4d || f.data[1] !== 0x5a) return STATUS.INVALID_IMAGE_FORMAT;

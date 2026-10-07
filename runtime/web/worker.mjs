@@ -1,11 +1,19 @@
 // Runs one Windows program in a Web Worker: translates it (or loads the
 // cached translation), then executes it over a shared memory. Messages to
-// the page: {type: 'log' | 'stdout' | 'stderr' | 'exit', ...}.
+// the page: {type: 'log' | 'stdout' | 'stderr' | 'screen' | 'exit', ...}.
+//
+// Windowed programs on Wine draw into the screen the page shares with the
+// worker (`display`: its pixels, a frame counter the page polls, and an
+// InputRing of keyboard and mouse events); 'screen' tells the page the
+// first frame is there.
 
 import { Machine, ProcessExit, GuestFault } from '../runtime.mjs';
 import { Process } from '../win32.mjs';
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
 import { WineHost } from '../wine/host.mjs';
+import { loadWineUnix } from '../wine/unix.mjs';
+import { Display } from '../wine/display.mjs';
+import { InputRing } from '../wine/input-ring.mjs';
 
 const log = (text) => postMessage({ type: 'log', text });
 
@@ -48,10 +56,19 @@ async function cacheWrite(dir, name, bytes) {
  * Runs the program on translated Wine (Milestone 2): Wine's DLLs come
  * pre-translated in the bundle; the .exe is translated here and cached.
  */
-async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, key, bundleUrl }) {
+async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, key, bundleUrl, display: shared }) {
   const base = new URL(bundleUrl, self.location.href);
   const manifest = await (await fetch(new URL('manifest.json', base))).json();
   const t0 = performance.now();
+  const bytesOf = async (rel) => new Uint8Array(await (await fetch(new URL(rel, base))).arrayBuffer());
+  // Wine's Unix side (windowed programs): its layout decides the machine's.
+  const unixFiles = manifest.unix && shared
+    ? await Promise.all([
+        fetch(new URL(manifest.unix.layout, base)).then((r) => r.json()),
+        fetch(new URL(manifest.unix.syscalls, base)).then((r) => r.json()),
+        Promise.all(Object.entries(manifest.unix.data).map(async ([path, rel]) => [path, await bytesOf(rel)])),
+      ])
+    : null;
   const files = new Map();
   const compiled = new Map();
   const sys32 = 'c:\\windows\\system32';
@@ -93,16 +110,54 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
     exeWasm = translateTimed(exeDos, exe);
     await cacheWrite(dir, `${key}.wine.wasm`, exeWasm);
   }
+  // By file, too: an assembly's DLL is also installed in C:\windows\winsxs.
+  const compiledFor = new Map([...compiled].map(([path, mod]) => [files.get(path), mod]));
   const translate = (path, bytes, { rebased }) => {
     // The bundle's modules (and the cached .exe) were translated at the
     // image's own base.
-    if (!rebased && compiled.has(path)) return compiled.get(path);
+    if (!rebased && compiledFor.has(bytes)) return compiledFor.get(bytes);
     if (!rebased && path === exeDos) return exeWasm;
     return translateTimed(path, bytes);
   };
-  const machine = new Machine({ abi, kernel: ft.kernel(), guestLimit: 0x8000_0000, log });
+  const [layout, win32uNames, dataFiles] = unixFiles ?? [];
+  const machine = new Machine({
+    abi,
+    kernel: ft.kernel(),
+    guestLimit: 0x8000_0000,
+    ...(layout && { nativeSize: layout.nativeSize, extraSize: layout.extraSize }),
+    log,
+  });
   await machine.init();
   enableFastMode(machine, ft, { log });
+  let unix = null;
+  if (layout) {
+    const ring = new InputRing(shared.input);
+    const frame = new Int32Array(shared.frame);
+    const display = new Display({
+      width: shared.width,
+      height: shared.height,
+      buffer: shared.screen,
+      onChange: () => {
+        if (Atomics.add(frame, 0, 1) === 0) postMessage({ type: 'screen' });
+      },
+      inputSource: (d) => ring.drain(d),
+    });
+    unix = await loadWineUnix(machine, {
+      factory: async () => (await import(new URL(manifest.unix.module, base).href)).default,
+      layout,
+      dataFiles: new Map(dataFiles),
+      display,
+      // The program waits: sleep until its timeout or the page's next event.
+      wait: (ms) => {
+        if (display.hasInput()) return 1;
+        ring.wait(ms);
+        return display.hasInput() ? 1 : 0;
+      },
+      stderr: (s) => postMessage({ type: 'stderr', bytes: new TextEncoder().encode(s) }),
+      win32uNames,
+    });
+    log(`loaded Wine's Unix side (wineserver, win32u) in ${(performance.now() - t0).toFixed(0)} ms`);
+  }
   const host = new WineHost(machine, {
     translate,
     files,
@@ -110,6 +165,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
     exePath: exeWin,
     stdout: (b) => postMessage({ type: 'stdout', bytes: b }),
     stderr: (b) => postMessage({ type: 'stderr', bytes: b }),
+    unix,
   });
   host.boot(`${sys32}\\ntdll.dll`, exeDos);
   log(`Wine process ready in ${(performance.now() - t0).toFixed(0)} ms; running`);
@@ -119,7 +175,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
 }
 
 onmessage = async (e) => {
-  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl } = e.data;
+  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, display } = e.data;
   const enc = new TextEncoder();
   try {
     const t0 = performance.now();
@@ -129,7 +185,7 @@ onmessage = async (e) => {
     const key = `${await sha256(exe)}-abi${abi.version}`;
     const dir = noCache ? null : await cacheDir();
     if (wine) {
-      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl });
+      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, display });
       if (r.error) postMessage({ type: 'stderr', bytes: enc.encode(`\n*** ${r.error.message}\n`) });
       postMessage({ type: 'exit', code: r.error ? null : r.exitCode, translated: false, runMs: r.runMs, wine: true });
       return;

@@ -203,20 +203,41 @@ static BOOL send_queued_input(void)
 
     while (host_next_input( &input ))
     {
-        NtUserSendHardwareInput( 0, 0, &input, 0 );
+        NTSTATUS status = NtUserSendHardwareInput( 0, 0, &input, 0 );
+        if (input.type == INPUT_MOUSE)
+            TRACE( "mouse %d,%d flags %#x: %#x\n", (int)input.mi.dx, (int)input.mi.dy, (UINT)input.mi.dwFlags, (UINT)status );
+        else
+            TRACE( "key vk %#x scan %#x flags %#x: %#x\n", input.ki.wVk, input.ki.wScan, (UINT)input.ki.dwFlags, (UINT)status );
         any = TRUE;
     }
     return any;
 }
 
+/* The page is the only "window manager": with no foreground window (as
+ * when a program has just shown its first window), the thread's active
+ * window becomes the foreground one, which is where wineserver sends
+ * keyboard input (X11 does this when the window manager focuses it). */
+static void update_foreground(void)
+{
+    GUITHREADINFO info = {.cbSize = sizeof(info)};
+    HWND foreground = NtUserGetForegroundWindow();
+
+    if (foreground && foreground != NtUserGetDesktopWindow()) return;
+    if (!NtUserGetGUIThreadInfo( GetCurrentThreadId(), &info ) || !info.hwndActive) return;
+    TRACE( "foreground %p\n", info.hwndActive );
+    NtUserSetForegroundWindow( info.hwndActive );
+}
+
 static BOOL BROWSER_ProcessEvents( DWORD mask )
 {
+    update_foreground();
     return send_queued_input();
 }
 
 /* From the wait loop (inproc/client.c), when the host reports input. */
 void wasm_process_input(void)
 {
+    update_foreground();
     send_queued_input();
 }
 

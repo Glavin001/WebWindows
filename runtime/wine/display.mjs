@@ -4,8 +4,9 @@
 // changed rectangle to flush(), and window placement and stacking to
 // windowPos(). This keeps an RGBA copy of each window and composes them,
 // bottom to top, into `screen`, an RGBA image of the whole display that the
-// page draws into a canvas (or a test saves as a PNG). Input the page
-// queues with pushInput() goes to the driver through nextInput().
+// page draws into a canvas (or a test saves as a PNG). Input queued with
+// pushInput() (or brought in by `inputSource`, e.g. from the page's
+// InputRing in a worker) goes to the driver through nextInput().
 
 const INPUT_MOUSE = 0;
 const INPUT_KEYBOARD = 1;
@@ -15,13 +16,19 @@ export class Display {
    * @param {object} [opts]
    * @param {number} [opts.width]
    * @param {number} [opts.height]
+   * @param {SharedArrayBuffer} [opts.buffer]  memory for `screen` (width * height * 4 bytes),
+   *        e.g. shared with the page that shows it
    * @param {(rect: {left: number, top: number, right: number, bottom: number}) => void} [opts.onChange]
    *        called after a part of the screen changed
+   * @param {(display: Display) => void} [opts.inputSource]  called before input is taken;
+   *        queues newly arrived events with mouse(), key() or pushInput()
    */
   constructor(opts = {}) {
     this.size = { width: opts.width ?? 800, height: opts.height ?? 600 };
-    this.screen = new Uint8ClampedArray(this.size.width * this.size.height * 4);
+    const bytes = this.size.width * this.size.height * 4;
+    this.screen = new Uint8ClampedArray(opts.buffer ?? new ArrayBuffer(bytes), 0, bytes);
     this.onChange = opts.onChange ?? (() => {});
+    this.inputSource = opts.inputSource ?? null;
     /** hwnd -> { shown, left, top, right, bottom, ox, oy, width, height, pixels } */
     this.windows = new Map();
     /** top-level windows, bottom first */
@@ -143,12 +150,12 @@ export class Display {
 
   /** Queues a mouse event: screen coordinates and MOUSEEVENTF_* flags (button changes). */
   mouse(x, y, flags = 0, data = 0) {
-    const { width: W, height: H } = this.size;
-    // MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, in the 0..65535 range.
+    // MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE: hardware input (as display
+    // drivers send it) is in screen pixels, not SendInput's 0..65535.
     this.pushInput({
       type: INPUT_MOUSE,
-      dx: Math.round((x * 65535) / Math.max(1, W - 1)),
-      dy: Math.round((y * 65535) / Math.max(1, H - 1)),
+      dx: Math.round(x),
+      dy: Math.round(y),
       data,
       flags: 0x8001 | flags,
     });
@@ -159,6 +166,12 @@ export class Display {
     this.pushInput({ type: INPUT_KEYBOARD, vk, scan, flags });
   }
 
+  /** Whether input is waiting (after fetching any that arrived). */
+  hasInput() {
+    this.inputSource?.(this);
+    return this.input.length > 0;
+  }
+
   pushInput(ev) {
     this.input.push(ev);
     this.inputWaiter?.();
@@ -166,6 +179,7 @@ export class Display {
 
   /** The driver takes the next event: writes an INPUT structure at `ptr`; 0 when none is queued. */
   nextInput(ptr) {
+    if (!this.input.length) this.inputSource?.(this);
     const ev = this.input.shift();
     if (!ev) return 0;
     const dv = this.m.dv;
