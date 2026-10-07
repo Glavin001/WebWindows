@@ -63,6 +63,8 @@ On the development machine (x86-64, Node 22):
 
 Speed work is M7; these numbers are a baseline, not a target. The checks
 cost about 30% here, mostly code-write checks on stores through pointers.
+The benchmark is built with `i686-w64-mingw32-gcc -O2 bench.c -o bench.exe`
+(translated) and `gcc -m32 -O2 bench.c -o bench.native` (native).
 
 ## Design decisions made during M1
 
