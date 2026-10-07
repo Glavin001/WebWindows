@@ -21,7 +21,7 @@
 
 import { spawn } from 'node:child_process';
 import { mkdirSync, readdirSync, readFileSync, copyFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -129,7 +129,10 @@ async function build(p, opt) {
   // translator implements by default (registers are f64).
   const nat = await sh('gcc', ['-m32', `-${opt}`, ...p.cflags, '-o', base + '.native', p.src, join(here, 'pc53.c'), '-lm']);
   if (nat.status !== 0) return { error: 'native build: ' + nat.stderr.slice(0, 500) };
-  const win = await sh('i686-w64-mingw32-gcc', [`-${opt}`, ...p.cflags, '-o', base + '.exe', p.src]);
+  // The Windows build gets the same precision setting: MinGW's start-up
+  // leaves the x87 at 64-bit precision, so a native Windows run would not
+  // compute what the reference computes (windows-check.mjs).
+  const win = await sh('i686-w64-mingw32-gcc', [`-${opt}`, ...p.cflags, '-o', base + '.exe', p.src, join(here, 'pc53.c')]);
   if (win.status !== 0) return { error: 'mingw build: ' + win.stderr.slice(0, 500) };
   return { native: base + '.native', exe: base + '.exe' };
 }
@@ -171,7 +174,7 @@ async function runOne(p, opt) {
     detail += run.stderr.split('\n').filter((l) => !l.includes('.wasm:')).join(' ').slice(0, 600);
     return { status: 'fail', detail };
   }
-  return { status: 'pass', exitCode: got.code, stdout: got.out, ms: Math.round(run.ms ?? 0) };
+  return { status: 'pass', exe: relative(work, b.exe), exitCode: got.code, stdout: got.out, ms: Math.round(run.ms ?? 0) };
 }
 
 const results = [];
