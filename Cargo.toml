@@ -1,6 +1,14 @@
 [workspace]
 resolver = "2"
-members = ["crates/wwt", "crates/wwt-cli", "crates/wwt-testkit", "crates/wwt-wasm"]
+members = [
+    "crates/wwt",
+    "crates/wwt-cli",
+    "crates/wwt-testkit",
+    "crates/wwt-wasm",
+    "crates/d3dgpu-proto",
+    "crates/d3dgpu-emu",
+    "crates/d3dgpu-shader",
+]
 
 [workspace.package]
 version = "0.1.0"
