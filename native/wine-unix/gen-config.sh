@@ -36,5 +36,8 @@ tmp=$(mktemp -d)
       *) echo "$line" ;;
     esac
   done < "$in"
+  # FreeType comes from Emscripten's port, linked in (see inproc/freetype.c).
+  echo '#define HAVE_FT2BUILD_H 1'
+  echo '#define SONAME_LIBFREETYPE "libfreetype.so.6"'
 } > "$out"
 rm -rf "$tmp"

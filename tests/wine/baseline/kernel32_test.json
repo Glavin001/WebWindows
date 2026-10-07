@@ -45,7 +45,7 @@
   "environ": {
     "status": "done",
     "tests": 429,
-    "failures": 27
+    "failures": 25
   },
   "fiber": {
     "status": "timeout",
@@ -75,7 +75,7 @@
   },
   "locale": {
     "status": "crash",
-    "failures": 1443
+    "failures": 1351
   },
   "mailslot": {
     "status": "done",

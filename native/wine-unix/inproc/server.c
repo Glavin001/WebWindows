@@ -160,6 +160,23 @@ EMSCRIPTEN_KEEPALIVE int wasm_server_run(void)
     return wasm_server_poll();
 }
 
+extern const void *wasm_server_session_view( struct process *process, obj_handle_t handle, mem_size_t offset,
+                                             mem_size_t *size );
+
+/* A view of a server section for an in-process client: the session's
+ * shared memory is mapped by pointer. NULL for other sections. */
+const void *wasm_server_map_view( unsigned int handle, unsigned long long offset, unsigned int *size )
+{
+    mem_size_t sz = 0;
+    const void *ret;
+
+    if (!inproc_thread) return NULL;
+    ret = wasm_server_session_view( inproc_thread->process, handle, offset, &sz );
+    clear_error();
+    *size = sz;
+    return ret;
+}
+
 EMSCRIPTEN_KEEPALIVE void wasm_server_set_debug( int level )
 {
     debug_level = level;

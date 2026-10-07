@@ -32,8 +32,13 @@ extern int wasm_server_run(void);
 extern int wasm_server_client_reply_fd(void);
 extern int wasm_server_client_wait_fd(void);
 
+extern void wasm_process_input(void);
+extern void wasm_set_nt_data_dir( const WCHAR *dir );
+extern void browser_driver_init(void);
+
 /* Blocks the thread for up to `ms` milliseconds (-1: until something
- * happens) while nothing is runnable; the host returns early for input. */
+ * happens) while nothing is runnable. Returns 1 when the host has input to
+ * deliver, 0 when the time passed, -1 when nothing can ever arrive. */
 EM_JS( int, host_wait, (int ms), {
     return Module.hostWait ? Module.hostWait(ms) : -1;
 });
@@ -72,9 +77,11 @@ static int wait_select_reply( void *cookie )
             continue;  /* a stale wakeup for an earlier wait */
         }
         if (ret >= 0 || errno != EAGAIN) return STATUS_INTERNAL_ERROR;
-        int ms = wasm_server_run();
+        int ms = wasm_server_run(), woke;
         if (read( wait_fd, &reply, 0 ) < 0 && errno != EAGAIN) return STATUS_INTERNAL_ERROR;
-        if (host_wait( ms ) < 0 && ms < 0)
+        woke = host_wait( ms );
+        if (woke > 0) wasm_process_input();  /* the page queued keyboard or mouse input */
+        else if (woke < 0 && ms < 0)
         {
             fprintf( stderr, "wine: a wait can never be satisfied (no timer, no input)\n" );
             return STATUS_INTERNAL_ERROR;
@@ -155,9 +162,13 @@ unsigned int server_wait_for_object( HANDLE handle, BOOL alertable, const LARGE_
     return server_wait( &select_op, offsetof( union select_op, wait.handles[1] ), flags, timeout );
 }
 
+extern BOOL z_close( HANDLE handle );
+
 NTSTATUS WINAPI NtClose( HANDLE handle )
 {
     unsigned int ret;
+
+    if (z_close( handle )) return STATUS_SUCCESS;  /* a directory on drive Z: (host.c) */
 
     SERVER_START_REQ( close_handle )
     {
@@ -207,17 +218,29 @@ NTSTATUS open_unix_file( HANDLE *handle, const char *unix_name, ACCESS_MASK acce
  * host turns tracing on (wasm_set_trace). A header returning -1 tells
  * wine_dbg_log to drop the message. */
 static int trace_all;
+static char trace_channels[512];  /* ",name,name," */
 
-EMSCRIPTEN_KEEPALIVE void wasm_set_trace( int on )
+/* Like WINEDEBUG: "all" or a comma-separated list of channel names. */
+EMSCRIPTEN_KEEPALIVE void wasm_set_trace( const char *channels )
 {
-    trace_all = on;
+    trace_all = channels && !strcmp( channels, "all" );
+    snprintf( trace_channels, sizeof(trace_channels), ",%s,", channels ? channels : "" );
+}
+
+static int channel_traced( const struct __wine_debug_channel *channel )
+{
+    char name[sizeof(channel->name) + 3];
+    if (trace_all) return 1;
+    if (!channel) return 0;
+    snprintf( name, sizeof(name), ",%s,", channel->name );
+    return strstr( trace_channels, name ) != NULL;
 }
 
 int __wine_dbg_header( enum __wine_debug_class cls, struct __wine_debug_channel *channel,
                        const char *function )
 {
     static const char * const classes[] = { "fixme", "err", "warn", "trace" };
-    if (!trace_all && cls != __WINE_DBCL_ERR) return -1;
+    if (cls != __WINE_DBCL_ERR && !channel_traced( channel )) return -1;
     return fprintf( stderr, "%s:%s:%s ", classes[cls], channel ? channel->name : "", function ? function : "" );
 }
 
@@ -244,6 +267,13 @@ EMSCRIPTEN_KEEPALIVE unsigned int wasm_init_process( TEB *teb, PEB *peb, unsigne
     USHORT machines[8];
 
     current_teb = teb;
+    {
+        /* Wine's data (fonts, NLS) on drive Z:, as ntdll's start-up would set it. */
+        static const WCHAR data_dir[] = {'\\','?','?','\\','Z',':','\\','w','i','n','e','\\','s','h','a','r','e',
+                                         '\\','w','i','n','e',0};
+        wasm_set_nt_data_dir( data_dir );
+    }
+    browser_driver_init();
     wasm_server_start();
     wait_fd = wasm_server_new_process();
     data = ntdll_get_thread_data();
