@@ -730,8 +730,9 @@ export class WineHost {
     const impl = SYSCALLS[name];
     const unixImpl = this.unix?.syscalls.get(name);
     // The module's thunks take the raw slots: C's casts drop a 32-bit
-    // argument's garbage upper half.
-    const slots = () => Array.from({ length: 16 }, (_, i) => raw(i));
+    // argument's garbage upper half. The most any call takes is 17
+    // (NtUserCreateWindowEx, whose last is `ansi`); the module has room for 32.
+    const slots = () => Array.from({ length: 20 }, (_, i) => raw(i));
     let status;
     if (id >= 0x1000 && this.unix) {
       // win32u: a 64-bit result (handles, LRESULTs).

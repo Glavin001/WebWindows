@@ -81,7 +81,12 @@ export function enableFastMode(machine, translator, { window = 0x40000, log } = 
     const known = machine.entriesIn(addr, end);
     const bytes = translator.translate(code, addr, [addr], { known, x64: machine.x64, mem64: machine.mem64 });
     if (!bytes.length) return 0;
-    const rec = machine.loadModuleSync(bytes, `fast@${addr.toString(16)}`, { keepExisting: true });
+    let rec;
+    try {
+      rec = machine.loadModuleSync(bytes, `fast@${addr.toString(16)}`, { keepExisting: true });
+    } catch (e) {
+      throw new Error(`fast mode: translating ${addr.toString(16)}: ${e.message}`, { cause: e });
+    }
     log?.(`fast mode: translated ${addr.toString(16)} (${rec.count} functions, ${bytes.length} bytes) in ${(performance.now() - t0).toFixed(1)} ms`);
     return machine.lookup(addr);
   };
