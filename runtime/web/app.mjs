@@ -8,6 +8,9 @@ let folder = new Map(); // relative path -> File
 const params = new URLSearchParams(location.search);
 const translatorUrl = params.get('translator') ?? new URL('../../target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm', import.meta.url).href;
 
+const bundleUrl = params.get('bundle') ?? new URL('../../target/wine-bundle/', import.meta.url).href;
+if (params.get('wine')) $('wine').checked = true;
+
 if (!crossOriginIsolated) {
   $('status').textContent = 'This page needs cross-origin isolation (COOP/COEP headers) for shared memory; serve it with runtime/web/serve.mjs.';
 }
@@ -69,7 +72,16 @@ function run(exeName, exeBytes, files) {
     };
     const args = $('args').value.trim();
     worker.postMessage(
-      { exeName, exeBytes, files, argv: args ? args.split(/\s+/) : [], translatorUrl, noCache: $('nocache').checked },
+      {
+        exeName,
+        exeBytes,
+        files,
+        argv: args ? args.split(/\s+/) : [],
+        translatorUrl,
+        noCache: $('nocache').checked,
+        wine: $('wine').checked,
+        bundleUrl,
+      },
       [exeBytes],
     );
   });

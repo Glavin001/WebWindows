@@ -3,12 +3,10 @@
 // image sections, one thread). Each function receives `a(i)`, the i-th
 // 32-bit argument, and returns an NTSTATUS (or {jump} to resume elsewhere).
 
-import { readFileSync } from 'node:fs';
-
 import { ProcessExit, GuestFault, hex } from '../runtime.mjs';
 import { parsePe } from './host.mjs';
 
-const L = JSON.parse(readFileSync(new URL('./layout.json', import.meta.url), 'utf8'));
+import L from './layout.json' with { type: 'json' };
 import {
   MEM_COMMIT, MEM_RESERVE, MEM_RELEASE, MEM_DECOMMIT, MEM_TOP_DOWN, MEM_MAPPED, MEM_IMAGE,
   PAGE_READWRITE, PAGE_READONLY, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_WRITECOPY,

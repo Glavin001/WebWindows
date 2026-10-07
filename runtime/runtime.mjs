@@ -179,6 +179,11 @@ export class Machine {
     return this.instantiateModule(module, name, opts, (m, imports) => new WebAssembly.Instance(m, imports));
   }
 
+  /** Synchronous instantiation of an already compiled module. */
+  loadCompiledSync(module, name = 'module', opts = {}) {
+    return this.instantiateModule(module, name, opts, (m, imports) => new WebAssembly.Instance(m, imports));
+  }
+
   instantiateModule(module, name, opts, instantiate) {
     const funcsSec = WebAssembly.Module.customSections(module, this.abi.funcs_section)[0];
     const metaSec = WebAssembly.Module.customSections(module, this.abi.meta_section)[0];
