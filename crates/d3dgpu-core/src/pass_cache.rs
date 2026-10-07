@@ -9,6 +9,9 @@
 /// Pass state set so far. Reset when a pass begins and after anything
 /// records pass commands behind its back (quad clears).
 pub struct PassCache {
+    /// State commands issued and skipped (for the stats).
+    pub issued: u64,
+    pub skipped: u64,
     pipeline: u64,
     groups: [(u64, Vec<u32>); 4],
     vbs: [(u64, u64); 8],
@@ -24,6 +27,8 @@ const UNSET: u64 = u64::MAX;
 impl PassCache {
     pub fn new() -> PassCache {
         PassCache {
+            issued: 0,
+            skipped: 0,
             pipeline: UNSET,
             groups: std::array::from_fn(|_| (UNSET, Vec::new())),
             vbs: [(UNSET, 0); 8],
@@ -36,11 +41,21 @@ impl PassCache {
     }
 
     pub fn reset(&mut self) {
-        *self = PassCache::new();
+        let (issued, skipped) = (self.issued, self.skipped);
+        *self = PassCache { issued, skipped, ..PassCache::new() };
+    }
+
+    fn count(&mut self, changed: bool) -> bool {
+        if changed {
+            self.issued += 1;
+        } else {
+            self.skipped += 1;
+        }
+        changed
     }
 
     pub fn set_pipeline(&mut self, pass: &mut wgpu::RenderPass<'static>, id: u64, p: &wgpu::RenderPipeline) {
-        if self.pipeline != id {
+        if self.count(self.pipeline != id) {
             pass.set_pipeline(p);
             self.pipeline = id;
         }
@@ -54,8 +69,10 @@ impl PassCache {
         group: &wgpu::BindGroup,
         offsets: &[u32],
     ) {
+        let changed = self.groups[index as usize].0 != id || self.groups[index as usize].1 != offsets;
+        let changed = self.count(changed);
         let slot = &mut self.groups[index as usize];
-        if slot.0 != id || slot.1 != offsets {
+        if changed {
             pass.set_bind_group(index, group, offsets);
             slot.0 = id;
             slot.1.clear();
@@ -71,8 +88,9 @@ impl PassCache {
         buffer: &wgpu::Buffer,
         offset: u64,
     ) {
+        let changed = self.count(self.vbs[slot as usize] != (id, offset));
         let s = &mut self.vbs[slot as usize];
-        if *s != (id, offset) {
+        if changed {
             pass.set_vertex_buffer(slot, buffer.slice(offset..));
             *s = (id, offset);
         }
@@ -86,7 +104,7 @@ impl PassCache {
         offset: u64,
         format: wgpu::IndexFormat,
     ) {
-        if self.ib != (id, offset, Some(format)) {
+        if self.count(self.ib != (id, offset, Some(format))) {
             pass.set_index_buffer(buffer.slice(offset..), format);
             self.ib = (id, offset, Some(format));
         }
@@ -94,14 +112,14 @@ impl PassCache {
 
     pub fn set_viewport(&mut self, pass: &mut wgpu::RenderPass<'static>, v: [f32; 6]) {
         let key = v.map(f32::to_bits);
-        if self.viewport != key {
+        if self.count(self.viewport != key) {
             pass.set_viewport(v[0], v[1], v[2], v[3], v[4], v[5]);
             self.viewport = key;
         }
     }
 
     pub fn set_scissor(&mut self, pass: &mut wgpu::RenderPass<'static>, r: [u32; 4]) {
-        if self.scissor != r {
+        if self.count(self.scissor != r) {
             pass.set_scissor_rect(r[0], r[1], r[2], r[3]);
             self.scissor = r;
         }
@@ -109,14 +127,14 @@ impl PassCache {
 
     pub fn set_blend_constant(&mut self, pass: &mut wgpu::RenderPass<'static>, c: wgpu::Color) {
         let key = [c.r, c.g, c.b, c.a].map(f64::to_bits);
-        if self.blend != key {
+        if self.count(self.blend != key) {
             pass.set_blend_constant(c);
             self.blend = key;
         }
     }
 
     pub fn set_stencil_reference(&mut self, pass: &mut wgpu::RenderPass<'static>, r: u32) {
-        if self.stencil != r {
+        if self.count(self.stencil != r) {
             pass.set_stencil_reference(r);
             self.stencil = r;
         }

@@ -120,6 +120,7 @@ pub struct Caches11 {
     driver: ([u8; 32], u64, u64),
     zero_cb: (u64, u64, u32),
     zero_buffer: wgpu::Buffer,
+    vertex_layouts: FastMap<Vec<(u32, VertexBufferKey)>, u64>,
     dummies: FastMap<(wgpu::TextureViewDimension, u8, bool), (wgpu::TextureView, u64)>,
     dummy_storage: FastMap<(wgpu::TextureFormat, wgpu::TextureViewDimension), (wgpu::TextureView, u64)>,
 }
@@ -177,6 +178,7 @@ impl Caches11 {
             driver: ([0; 32], 0, u64::MAX),
             zero_cb: (u64::MAX, 0, 0),
             zero_buffer,
+            vertex_layouts: FastMap::default(),
             dummies: FastMap::default(),
             dummy_storage: FastMap::default(),
         }
@@ -204,11 +206,47 @@ enum Res {
     Buffer(wgpu::Buffer, u64, u64, u64),
 }
 
-/// A resolved bind group and its dynamic offsets.
+/// A resolved bind group, and the constant buffer windows (slot, size)
+/// whose ring offsets are its dynamic offsets, in binding order.
+#[derive(Clone)]
 struct Bound {
     layout: Arc<Layout11>,
     group: (u64, wgpu::BindGroup),
-    offsets: Vec<u32>,
+    cbs: Vec<(u32, u32)>,
+}
+
+/// What a draw derives from the bound state, kept until a command marks
+/// a part of it dirty (see [`super::dirty`]).
+pub struct Prepared {
+    targets: Targets11,
+    vs: Arc<super::Shader11>,
+    vsv: Arc<Variant11>,
+    ps: Option<Arc<super::Shader11>>,
+    psv: Option<Arc<Variant11>>,
+    g0: Bound,
+    g1: Bound,
+    slots: Vec<(u32, VertexBufferKey)>,
+    vertex_id: u64,
+    fast: FastKey,
+    key: PipelineKey,
+    pipeline: (u64, wgpu::RenderPipeline),
+    scissor: bool,
+}
+
+/// Everything the pipeline depends on, by identity: when it is unchanged
+/// the pipeline is too, without building and hashing the full key.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FastKey {
+    vs: u64,
+    ps: u64,
+    layouts: (u64, u64),
+    vertex: u64,
+    blend: u64,
+    depth_stencil: u64,
+    rasterizer: u64,
+    topology: u32,
+    targets: Targets11,
+    sample_mask: u32,
 }
 
 fn view_dim(d: TexDim) -> wgpu::TextureViewDimension {
@@ -740,13 +778,12 @@ impl Core {
         let mut entries = Vec::with_capacity(bindings.len());
         let mut res = Vec::with_capacity(bindings.len());
         let mut ids = Vec::with_capacity(bindings.len());
-        let mut offsets = Vec::new();
+        let mut cbs = Vec::new();
         let mut unfilterable: Vec<u32> = Vec::new();
         for b in &bindings {
             match b.ty {
                 BindingType::ConstantBuffer { size } => {
-                    let off = self.cb_window(si, b.slot, size)?;
-                    offsets.push(off as u32);
+                    cbs.push((b.slot, size));
                     entries.push((b.binding, EntryKind::Uniform(size)));
                     res.push(Res::Ring(size));
                     ids.push([0, size as u64]);
@@ -908,7 +945,7 @@ impl Core {
         let layout = self.layout11(vis, entries);
         let key = (layout.id, ids);
         if let Some(g) = self.d11.caches.bind_groups.get(&key) {
-            return Ok(Bound { layout, group: g.clone(), offsets });
+            return Ok(Bound { layout, group: g.clone(), cbs });
         }
         let ring = self.uniforms.buffer.clone();
         let wentries: Vec<wgpu::BindGroupEntry> = bindings
@@ -943,7 +980,16 @@ impl Core {
         }
         let g = (self.id(), g);
         self.d11.caches.bind_groups.insert(key, g.clone());
-        Ok(Bound { layout, group: g, offsets })
+        Ok(Bound { layout, group: g, cbs })
+    }
+
+    /// The dynamic offsets of a bound group: its constant buffer windows.
+    fn cb_offsets(&mut self, stage: S, b: &Bound) -> Result<Vec<u32>, Fail> {
+        let mut out = Vec::with_capacity(b.cbs.len());
+        for (slot, size) in &b.cbs {
+            out.push(self.cb_window(stage as usize, *slot, *size)? as u32);
+        }
+        Ok(out)
     }
 
     fn pipeline_layout11(&mut self, g0: &Layout11, g1: &Layout11, compute: bool) -> wgpu::PipelineLayout {
@@ -962,98 +1008,126 @@ impl Core {
 
     // ---- Draw ----
 
-    fn try_draw11(&mut self, d: &Draw11) -> Result<(), Fail> {
+    /// Derives what the dirty parts of the state decide: targets, shader
+    /// variants, bind groups, vertex layout, pipeline.
+    fn prepare11(&mut self) -> Result<Arc<Prepared>, Fail> {
+        use super::dirty::*;
+        let prev = self.d11.prepared.take();
+        let dirty = if prev.is_some() { self.d11.dirty } else { ALL };
         for s in [S::Geometry, S::Hull, S::Domain] {
             if !self.d11.st.shaders[s as usize].is_none() {
                 return skip("geometry and tessellation shaders are not supported yet");
             }
         }
-        let Some(vs) = self.shader11(S::Vertex) else { return skip("draw without a vertex shader") };
-        let ps = self.shader11(S::Pixel);
-        let Some(topo) = topology(self.d11.st.topology) else {
-            return skip(format!("primitive topology {} is not supported", self.d11.st.topology));
+        let targets = match &prev {
+            Some(p) if dirty & TARGETS == 0 => p.targets,
+            _ => self.targets11()?,
         };
-        let targets = self.targets11()?;
-        let (count, instances) = match d {
-            Draw11::Vertices { count, instances, .. } | Draw11::Indexed { count, instances, .. } => {
-                (*count, *instances)
+        let (vs, ps) = match &prev {
+            Some(p) if dirty & SHADERS == 0 => (p.vs.clone(), p.ps.clone()),
+            _ => {
+                let Some(vs) = self.shader11(S::Vertex) else { return skip("draw without a vertex shader") };
+                (vs, self.shader11(S::Pixel))
             }
         };
-        if count == 0 || instances == 0 {
-            return Err(Fail::Nothing);
-        }
-
-        // Shaders.
         let clip = match vs.clip_distances.min(8) {
             0 => Clip::None,
             n if self.opts.clip_distances => Clip::Builtin(n),
             n => Clip::Varying(n),
         };
-        let psv = match &ps {
-            Some(p) => Some(self.variant11(p, S::Pixel, None, clip)?),
-            None => None,
-        };
-        let vsv = self.variant11(&vs, S::Vertex, ps.as_ref(), clip)?;
-
-        // Fixed-function state.
-        let st = &self.d11.st;
-        let rs = match self.objects.get(&st.rasterizer.0) {
-            Some(Object::Rasterizer11(r)) => *r,
-            _ => RasterizerDesc11::default(),
-        };
-        let blend = match self.objects.get(&st.blend.0) {
-            Some(Object::Blend11(b)) => **b,
-            _ => BlendDesc11::default(),
-        };
-        let dss = match self.objects.get(&st.depth_stencil.0) {
-            Some(Object::DepthStencil11(d)) => *d,
-            _ => DepthStencilDesc11::default(),
-        };
-        let Some(vp) = st.viewport else { return Err(Fail::Nothing) };
-        let Some(fit) = d3dgpu_emu::viewport::fit_viewport_f(
-            vp.x as f64,
-            vp.y as f64,
-            vp.width as f64,
-            vp.height as f64,
-            targets.width,
-            targets.height,
-        ) else {
-            return Err(Fail::Nothing);
-        };
-        let full = d3dgpu_proto::Rect::new(0, 0, targets.width as i32, targets.height as i32);
-        let scissor = if rs.scissor { crate::intersect(full, st.scissor) } else { full };
-        if scissor.width() == 0 || scissor.height() == 0 {
-            return Err(Fail::Nothing);
-        }
-        if rs.fill == 2 {
-            self.warn_once("wireframe fill is not supported yet; drawing solid");
-        }
-
-        // Uniforms and bindings.
-        // SV_VertexID excludes StartVertexLocation and BaseVertexLocation and
-        // SV_InstanceID excludes StartInstanceLocation (Wine's
-        // test_vertex_id); WebGPU's builtins include them.
-        let (start_instance, base_vertex) = match d {
-            Draw11::Vertices { start_instance, start, .. } => (*start_instance, *start as i32),
-            Draw11::Indexed { start_instance, base_vertex, .. } => (*start_instance, *base_vertex),
-        };
-        let mut drv = [0u8; 32];
-        for (i, f) in [fit.scale[0], fit.scale[1], fit.offset[0], fit.offset[1]].iter().enumerate() {
-            drv[i * 4..i * 4 + 4].copy_from_slice(&f.to_le_bytes());
-        }
-        drv[16..20].copy_from_slice(&start_instance.to_le_bytes());
-        drv[20..24].copy_from_slice(&(base_vertex as u32).to_le_bytes());
-        let drv_off = self.driver11(drv)?;
-        let g0 = self.bind_stage11(S::Vertex, &vs, &vsv, 0, Some(&targets))?;
-        let g1 = match (&ps, &psv) {
-            (Some(p), Some(v)) => self.bind_stage11(S::Pixel, p, v, 1, Some(&targets))?,
+        let (vsv, psv) = match &prev {
+            Some(p) if dirty & (SHADERS | RES_VS | RES_PS) == 0 => (p.vsv.clone(), p.psv.clone()),
             _ => {
-                let (layout, group) = self.empty11();
-                Bound { layout, group, offsets: Vec::new() }
+                let psv = match &ps {
+                    Some(p) => Some(self.variant11(p, S::Pixel, None, clip)?),
+                    None => None,
+                };
+                (self.variant11(&vs, S::Vertex, ps.as_ref(), clip)?, psv)
             }
         };
+        let g0 = match &prev {
+            Some(p) if dirty & (SHADERS | RES_VS | TARGETS) == 0 && p.vsv.id == vsv.id => p.g0.clone(),
+            _ => self.bind_stage11(S::Vertex, &vs, &vsv, 0, Some(&targets))?,
+        };
+        let same_ps = |p: &Prepared| p.psv.as_ref().map(|v| v.id) == psv.as_ref().map(|v| v.id);
+        let g1 = match (&prev, &ps, &psv) {
+            (Some(p), _, _) if dirty & (SHADERS | RES_PS | TARGETS) == 0 && same_ps(p) => p.g1.clone(),
+            (_, Some(p), Some(v)) => self.bind_stage11(S::Pixel, p, v, 1, Some(&targets))?,
+            _ => {
+                let (layout, group) = self.empty11();
+                Bound { layout, group, cbs: Vec::new() }
+            }
+        };
+        let (slots, vertex_id) = match &prev {
+            Some(p) if dirty & (SHADERS | VERTEX) == 0 && p.vsv.id == vsv.id => (p.slots.clone(), p.vertex_id),
+            _ => self.vertex_layout11(&vsv)?,
+        };
 
-        // Vertex buffers.
+        // Pipeline, unless nothing it depends on changed.
+        let st = &self.d11.st;
+        let (blend_id, blend) = match self.objects.get(&st.blend.0) {
+            Some(Object::Blend11(id, b)) => (*id, **b),
+            _ => (0, BlendDesc11::default()),
+        };
+        let (ds_id, dss) = match self.objects.get(&st.depth_stencil.0) {
+            Some(Object::DepthStencil11(id, d)) => (*id, *d),
+            _ => (0, DepthStencilDesc11::default()),
+        };
+        let (rs_id, rs) = match self.objects.get(&st.rasterizer.0) {
+            Some(Object::Rasterizer11(id, r)) => (*id, *r),
+            _ => (0, RasterizerDesc11::default()),
+        };
+        let fast = FastKey {
+            vs: vsv.id,
+            ps: psv.as_ref().map(|v| v.id).unwrap_or(0),
+            layouts: (g0.layout.id, g1.layout.id),
+            vertex: vertex_id,
+            blend: blend_id,
+            depth_stencil: ds_id,
+            rasterizer: rs_id,
+            topology: st.topology,
+            targets,
+            sample_mask: st.sample_mask,
+        };
+        let (key, pipeline) = match &prev {
+            Some(p) if p.fast == fast => (p.key.clone(), p.pipeline.clone()),
+            _ => {
+                let Some(topo) = topology(st.topology) else {
+                    return skip(format!("primitive topology {} is not supported", st.topology));
+                };
+                if rs.fill == 2 {
+                    self.warn_once("wireframe fill is not supported yet; drawing solid");
+                }
+                let key =
+                    self.pipeline_key11(&targets, topo, &blend, &dss, &rs, &vsv, psv.as_deref(), &g0, &g1, &slots)?;
+                let pipeline = self.render_pipeline11(&key, &vsv, psv.as_deref(), &g0.layout, &g1.layout);
+                (key, pipeline)
+            }
+        };
+        let p = Arc::new(Prepared {
+            targets,
+            vs,
+            vsv,
+            ps,
+            psv,
+            g0,
+            g1,
+            slots,
+            vertex_id,
+            fast,
+            key,
+            pipeline,
+            scissor: rs.scissor,
+        });
+        self.d11.prepared = Some(p.clone());
+        self.d11.prepared_epoch = self.epoch;
+        self.d11.dirty = 0;
+        Ok(p)
+    }
+
+    /// Vertex buffer layouts feeding the vertex shader's inputs from the
+    /// input layout (zeros for inputs it lacks), interned to an id.
+    fn vertex_layout11(&mut self, vsv: &Variant11) -> Result<(Vec<(u32, VertexBufferKey)>, u64), Fail> {
         let layout = match self.objects.get(&self.d11.st.input_layout.0) {
             Some(Object::InputLayout11(l)) => Some(l.clone()),
             _ => None,
@@ -1081,7 +1155,7 @@ impl Core {
             };
             let slot = el.slot.min(super::MAX_VBS as u32 - 1);
             let stride = self.d11.st.vbs[slot as usize].stride;
-            if !stride.is_multiple_of(4) || el.offset % 4 != 0 {
+            if !stride.is_multiple_of(4) || !el.offset.is_multiple_of(4) {
                 return skip(format!("unaligned vertex layout (stride {stride}, offset {})", el.offset));
             }
             if el.per_instance && el.step_rate > 1 {
@@ -1102,45 +1176,32 @@ impl Core {
         if slots.len() > 8 {
             return skip("more than 8 vertex buffers");
         }
-        let epoch = self.epoch;
-        let mut vbufs: Vec<(wgpu::Buffer, u64, u64)> = Vec::with_capacity(slots.len());
-        for (slot, _) in &slots {
-            if *slot == u32::MAX {
-                vbufs.push((self.d11.caches.zero_buffer.clone(), 0, 0));
-                continue;
+        let id = match self.d11.caches.vertex_layouts.get(&slots) {
+            Some(id) => *id,
+            None => {
+                let id = self.id();
+                self.d11.caches.vertex_layouts.insert(slots.clone(), id);
+                id
             }
-            let b = self.d11.st.vbs[*slot as usize];
-            match self.objects.get_mut(&b.buffer.0) {
-                Some(Object::Buffer11(buf)) if buf.gpu.is_some() && (b.offset as u64) < buf.shadow.len() as u64 => {
-                    buf.last_use = epoch;
-                    vbufs.push((buf.gpu.clone().unwrap(), buf.gen, b.offset as u64));
-                }
-                _ => return skip(format!("vertex buffer slot {slot} is empty")),
-            }
-        }
-        let index = match d {
-            Draw11::Indexed { .. } => {
-                let (h, f, off) = self.d11.st.ib;
-                let f = match f {
-                    DxgiFormat::R16Uint => wgpu::IndexFormat::Uint16,
-                    DxgiFormat::R32Uint => wgpu::IndexFormat::Uint32,
-                    _ => return skip(format!("index format {f:?}")),
-                };
-                match self.objects.get_mut(&h.0) {
-                    Some(Object::Buffer11(buf)) if buf.gpu.is_some() => {
-                        buf.last_use = epoch;
-                        Some((buf.gpu.clone().unwrap(), buf.gen, off as u64, f))
-                    }
-                    _ => return skip("indexed draw without an index buffer"),
-                }
-            }
-            Draw11::Vertices { .. } => None,
         };
+        Ok((slots, id))
+    }
 
-        // Pipeline.
-        let strip = matches!(topo, wgpu::PrimitiveTopology::TriangleStrip | wgpu::PrimitiveTopology::LineStrip);
-        let strip_index = strip.then(|| index.as_ref().map(|i| i.3).unwrap_or(wgpu::IndexFormat::Uint32));
-        let ps_targets: &[(u32, ComponentType)] = psv.as_ref().map(|v| v.t.targets.as_slice()).unwrap_or(&[]);
+    #[allow(clippy::too_many_arguments)]
+    fn pipeline_key11(
+        &mut self,
+        targets: &Targets11,
+        topo: wgpu::PrimitiveTopology,
+        blend: &BlendDesc11,
+        dss: &DepthStencilDesc11,
+        rs: &RasterizerDesc11,
+        vsv: &Variant11,
+        psv: Option<&Variant11>,
+        g0: &Bound,
+        g1: &Bound,
+        slots: &[(u32, VertexBufferKey)],
+    ) -> Result<PipelineKey, Fail> {
+        let ps_targets: &[(u32, ComponentType)] = psv.map(|v| v.t.targets.as_slice()).unwrap_or(&[]);
         let mut colors: Vec<Option<ColorKey>> = Vec::new();
         for i in 0..MAX_RTS {
             let Some(Object::View11(v)) = self.objects.get(&targets.colors[i].0) else {
@@ -1217,13 +1278,13 @@ impl Core {
         };
         let unclipped_depth = !rs.depth_clip && self.device.features().contains(wgpu::Features::DEPTH_CLIP_CONTROL);
         let msaa = targets.samples > 1;
-        let pkey = PipelineKey {
+        Ok(PipelineKey {
             vs: vsv.id,
-            ps: psv.as_ref().map(|v| v.id).unwrap_or(0),
+            ps: psv.map(|v| v.id).unwrap_or(0),
             layout: (g0.layout.id, g1.layout.id),
             buffers: slots.iter().map(|(_, k)| k.clone()).collect(),
             topology: topo,
-            strip_index,
+            strip_index: None,
             cull,
             front_ccw: rs.front_ccw,
             unclipped_depth,
@@ -1232,8 +1293,110 @@ impl Core {
             samples: targets.samples,
             sample_mask: if msaa { self.d11.st.sample_mask } else { !0 },
             alpha_to_coverage: msaa && blend.alpha_to_coverage,
+        })
+    }
+
+    fn try_draw11(&mut self, d: &Draw11) -> Result<(), Fail> {
+        let (count, instances) = match d {
+            Draw11::Vertices { count, instances, .. } | Draw11::Indexed { count, instances, .. } => {
+                (*count, *instances)
+            }
         };
-        let (pid, pipeline) = self.render_pipeline11(&pkey, &vsv, psv.as_deref(), &g0.layout, &g1.layout);
+        if count == 0 || instances == 0 {
+            return Err(Fail::Nothing);
+        }
+        if self.d11.prepared_epoch != self.epoch {
+            // Bind groups mark the resources they use for this submission.
+            self.d11.dirty |= super::dirty::RES_VS | super::dirty::RES_PS;
+        }
+        let p = match &self.d11.prepared {
+            Some(p) if self.d11.dirty == 0 => p.clone(),
+            _ => self.prepare11()?,
+        };
+        let targets = p.targets;
+
+        // Viewport and scissor.
+        let st = &self.d11.st;
+        let Some(vp) = st.viewport else { return Err(Fail::Nothing) };
+        let Some(fit) = d3dgpu_emu::viewport::fit_viewport_f(
+            vp.x as f64,
+            vp.y as f64,
+            vp.width as f64,
+            vp.height as f64,
+            targets.width,
+            targets.height,
+        ) else {
+            return Err(Fail::Nothing);
+        };
+        let full = d3dgpu_proto::Rect::new(0, 0, targets.width as i32, targets.height as i32);
+        let scissor = if p.scissor { crate::intersect(full, st.scissor) } else { full };
+        if scissor.width() == 0 || scissor.height() == 0 {
+            return Err(Fail::Nothing);
+        }
+
+        // Uniforms. SV_VertexID excludes StartVertexLocation and
+        // BaseVertexLocation and SV_InstanceID excludes StartInstanceLocation
+        // (Wine's test_vertex_id); WebGPU's builtins include them.
+        let (start_instance, base_vertex) = match d {
+            Draw11::Vertices { start_instance, start, .. } => (*start_instance, *start as i32),
+            Draw11::Indexed { start_instance, base_vertex, .. } => (*start_instance, *base_vertex),
+        };
+        let mut drv = [0u8; 32];
+        for (i, f) in [fit.scale[0], fit.scale[1], fit.offset[0], fit.offset[1]].iter().enumerate() {
+            drv[i * 4..i * 4 + 4].copy_from_slice(&f.to_le_bytes());
+        }
+        drv[16..20].copy_from_slice(&start_instance.to_le_bytes());
+        drv[20..24].copy_from_slice(&(base_vertex as u32).to_le_bytes());
+        let drv_off = self.driver11(drv)?;
+        let off0 = self.cb_offsets(S::Vertex, &p.g0)?;
+        let off1 = self.cb_offsets(S::Pixel, &p.g1)?;
+
+        // Vertex and index buffers.
+        let epoch = self.epoch;
+        let mut vbufs: Vec<(wgpu::Buffer, u64, u64)> = Vec::with_capacity(p.slots.len());
+        for (slot, _) in &p.slots {
+            if *slot == u32::MAX {
+                vbufs.push((self.d11.caches.zero_buffer.clone(), ZERO_BUFFER_ID, 0));
+                continue;
+            }
+            let b = self.d11.st.vbs[*slot as usize];
+            match self.objects.get_mut(&b.buffer.0) {
+                Some(Object::Buffer11(buf)) if buf.gpu.is_some() && (b.offset as u64) < buf.shadow.len() as u64 => {
+                    buf.last_use = epoch;
+                    vbufs.push((buf.gpu.clone().unwrap(), buf.gen, b.offset as u64));
+                }
+                _ => return skip(format!("vertex buffer slot {slot} is empty")),
+            }
+        }
+        let index = match d {
+            Draw11::Indexed { .. } => {
+                let (h, f, off) = self.d11.st.ib;
+                let f = match f {
+                    DxgiFormat::R16Uint => wgpu::IndexFormat::Uint16,
+                    DxgiFormat::R32Uint => wgpu::IndexFormat::Uint32,
+                    _ => return skip(format!("index format {f:?}")),
+                };
+                match self.objects.get_mut(&h.0) {
+                    Some(Object::Buffer11(buf)) if buf.gpu.is_some() => {
+                        buf.last_use = epoch;
+                        Some((buf.gpu.clone().unwrap(), buf.gen, off as u64, f))
+                    }
+                    _ => return skip("indexed draw without an index buffer"),
+                }
+            }
+            Draw11::Vertices { .. } => None,
+        };
+
+        // Indexed strips restart at the index format's maximum.
+        let strip =
+            matches!(p.key.topology, wgpu::PrimitiveTopology::TriangleStrip | wgpu::PrimitiveTopology::LineStrip);
+        let (pid, pipeline) = match index.as_ref().map(|i| i.3) {
+            Some(f) if strip => {
+                let key = PipelineKey { strip_index: Some(f), ..p.key.clone() };
+                self.render_pipeline11(&key, &p.vsv, p.psv.as_deref(), &p.g0.layout, &p.g1.layout)
+            }
+            _ => p.pipeline.clone(),
+        };
 
         // Record.
         self.ensure_pass11(targets);
@@ -1242,11 +1405,11 @@ impl Core {
         let driver = self.d11.caches.driver_group.clone();
         let (pass, pc) = (self.pass.as_mut().unwrap(), &mut self.pc);
         pc.set_pipeline(pass, pid, &pipeline);
-        pc.set_bind_group(pass, 0, g0.group.0, &g0.group.1, &g0.offsets);
-        pc.set_bind_group(pass, 1, g1.group.0, &g1.group.1, &g1.offsets);
+        pc.set_bind_group(pass, 0, p.g0.group.0, &p.g0.group.1, &off0);
+        pc.set_bind_group(pass, 1, p.g1.group.0, &p.g1.group.1, &off1);
         pc.set_bind_group(pass, 2, DRIVER_GROUP_ID, &driver, &[drv_off as u32]);
         for (i, (b, gen, off)) in vbufs.iter().enumerate() {
-            pc.set_vertex_buffer(pass, i as u32, if *gen == 0 { ZERO_BUFFER_ID } else { *gen }, b, *off);
+            pc.set_vertex_buffer(pass, i as u32, *gen, b, *off);
         }
         let min = vp.min_depth.clamp(0.0, 1.0);
         pc.set_viewport(pass, [fit.x, fit.y, fit.width, fit.height, min, vp.max_depth.clamp(min, 1.0)]);
@@ -1379,6 +1542,7 @@ impl Core {
         drv[4..8].copy_from_slice(&1f32.to_le_bytes());
         let drv_off = self.driver11(drv)?;
         let g0 = self.bind_stage11(S::Compute, &cs, &csv, 0, None)?;
+        let off0 = self.cb_offsets(S::Compute, &g0)?;
         let (empty, empty_group) = self.empty11();
         let key = (csv.id, g0.layout.id);
         let pipeline = match self.d11.caches.compute.get(&key) {
@@ -1410,7 +1574,7 @@ impl Core {
             timestamp_writes: None,
         });
         cp.set_pipeline(&pipeline);
-        cp.set_bind_group(0, &g0.group.1, &g0.offsets);
+        cp.set_bind_group(0, &g0.group.1, &off0);
         cp.set_bind_group(1, &empty_group.1, &[]);
         cp.set_bind_group(2, &driver, &[drv_off as u32]);
         cp.dispatch_workgroups(x.min(max), y.min(max), z.min(max));

@@ -96,6 +96,10 @@ pub struct Stats {
     /// Clears drawn as quads (partial or mid-pass).
     pub quad_clears: u64,
     pub presents: u64,
+    /// Render pass state commands (pipeline, bind group, buffers, viewport,
+    /// …) issued, and skipped because they would set what was set.
+    pub pass_commands: u64,
+    pub pass_commands_skipped: u64,
     pub errors: u64,
     /// Nanoseconds spent recording draws (decode excluded) and in
     /// `encoder.finish` + `queue.submit`. Zero in the browser build, where
@@ -283,7 +287,7 @@ impl Core {
     }
 
     pub fn stats(&self) -> Stats {
-        self.stats
+        Stats { pass_commands: self.pc.issued, pass_commands_skipped: self.pc.skipped, ..self.stats }
     }
 
     /// Messages about skipped commands and unsupported features (most
@@ -360,6 +364,7 @@ impl Core {
             Command::CreateBuffer { id, size, usage } => self.create_buffer(id, size, usage),
             Command::Destroy { id } => {
                 self.objects.remove(&id.0);
+                self.d11.dirty = d3d11::dirty::ALL;
             }
             Command::WriteBuffer { id, offset, data } => {
                 if let Some(bytes) = self.resolve(data, shared) {

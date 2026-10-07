@@ -4,7 +4,7 @@
 // render worker must never do: here it waits for slot space and, for
 // readbacks, for the fence the render worker completes after mapAsync.
 
-import init, { buildScene, buildPerf } from './pkg/d3dgpu_web.js';
+import init, { buildScene, buildPerf, buildPerf11 } from './pkg/d3dgpu_web.js';
 import * as P from './protocol.mjs';
 
 let ctrl, bytes;
@@ -75,7 +75,7 @@ onmessage = async (e) => {
     postMessage({ type: 'readback', name: m.name, ...rb });
   } else if (m.type === 'perf') {
     clearTimeout(demoTimer);
-    const data = buildPerf(m.draws, 2, m.width, m.height);
+    const data = (m.api === 'd3d11' ? buildPerf11 : buildPerf)(m.draws, 2, m.width, m.height);
     submit(data.batch(0), P.FIRST); // setup
     let frame = 0;
     const next = () => {

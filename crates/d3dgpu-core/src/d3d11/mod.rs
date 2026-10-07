@@ -28,7 +28,18 @@ use std::sync::Arc;
 use d3dgpu_proto::d3d11::*;
 use d3dgpu_proto::{Command, Handle, Rect};
 
-pub use draw::Caches11;
+pub use draw::{Caches11, Prepared};
+
+/// Parts of the derived draw state ([`Prepared`]) a command invalidates.
+pub mod dirty {
+    pub const TARGETS: u32 = 1;
+    pub const SHADERS: u32 = 2;
+    pub const RES_VS: u32 = 4;
+    pub const RES_PS: u32 = 8;
+    pub const VERTEX: u32 = 16;
+    pub const PIPELINE: u32 = 32;
+    pub const ALL: u32 = 63;
+}
 
 use crate::resources::{FastMap, Object};
 use crate::{Core, Pending, PendingKind, RawRead};
@@ -216,6 +227,9 @@ pub struct Device11 {
     pub pass: Option<Targets11>,
     pub clears: FastMap<u32, Clear11>,
     pub caches: Caches11,
+    pub prepared: Option<Arc<Prepared>>,
+    pub prepared_epoch: u64,
+    pub dirty: u32,
     pool: FastMap<(u64, u32), Vec<Pooled>>,
     /// Warnings already given (each is logged once).
     warned: std::collections::HashSet<String>,
@@ -228,6 +242,9 @@ impl Device11 {
             pass: None,
             clears: FastMap::default(),
             caches: Caches11::new(device, uniform_ring),
+            prepared: None,
+            prepared_epoch: 0,
+            dirty: dirty::ALL,
             pool: FastMap::default(),
             warned: Default::default(),
         }
@@ -236,6 +253,14 @@ impl Device11 {
 
 fn stage_index(s: Stage11) -> usize {
     s as usize
+}
+
+fn res_dirty(s: Stage11) -> u32 {
+    match s {
+        Stage11::Vertex => dirty::RES_VS,
+        Stage11::Pixel => dirty::RES_PS,
+        _ => 0,
+    }
 }
 
 impl Core {
@@ -262,13 +287,16 @@ impl Core {
                 self.objects.insert(id.0, Object::Sampler11(desc));
             }
             Command::CreateBlendState { id, desc } => {
-                self.objects.insert(id.0, Object::Blend11(desc));
+                let oid = self.id();
+                self.objects.insert(id.0, Object::Blend11(oid, desc));
             }
             Command::CreateDepthStencilState { id, desc } => {
-                self.objects.insert(id.0, Object::DepthStencil11(desc));
+                let oid = self.id();
+                self.objects.insert(id.0, Object::DepthStencil11(oid, desc));
             }
             Command::CreateRasterizerState { id, desc } => {
-                self.objects.insert(id.0, Object::Rasterizer11(desc));
+                let oid = self.id();
+                self.objects.insert(id.0, Object::Rasterizer11(oid, desc));
             }
             Command::CreateInputLayout { id, mut elements } => {
                 let mut next = [0u32; MAX_VBS];
@@ -286,8 +314,12 @@ impl Core {
                 let Some(bytes) = self.resolve(dxbc, shared) else { return };
                 self.create_shader11(id, stage, hash, bytes);
             }
-            Command::SetInputLayout(h) => self.d11.st.input_layout = h,
+            Command::SetInputLayout(h) => {
+                self.d11.st.input_layout = h;
+                self.d11.dirty |= dirty::VERTEX;
+            }
             Command::SetVertexBuffers { start, buffers } => {
+                self.d11.dirty |= dirty::VERTEX;
                 for (i, b) in buffers.into_iter().enumerate() {
                     if let Some(s) = self.d11.st.vbs.get_mut(start as usize + i) {
                         *s = b;
@@ -295,8 +327,14 @@ impl Core {
                 }
             }
             Command::SetIndexBuffer { buffer, format, offset } => self.d11.st.ib = (buffer, format, offset),
-            Command::SetPrimitiveTopology(t) => self.d11.st.topology = t,
-            Command::SetShader11 { stage, id } => self.d11.st.shaders[stage_index(stage)] = id,
+            Command::SetPrimitiveTopology(t) => {
+                self.d11.st.topology = t;
+                self.d11.dirty |= dirty::PIPELINE;
+            }
+            Command::SetShader11 { stage, id } => {
+                self.d11.st.shaders[stage_index(stage)] = id;
+                self.d11.dirty |= dirty::SHADERS;
+            }
             Command::SetConstantBuffers { stage, start, buffers } => {
                 let s = &mut self.d11.st.cbs[stage_index(stage)];
                 for (i, b) in buffers.into_iter().enumerate() {
@@ -306,12 +344,15 @@ impl Core {
                 }
             }
             Command::SetShaderResources { stage, start, views } => {
+                self.d11.dirty |= res_dirty(stage);
                 set_range(&mut self.d11.st.srvs[stage_index(stage)], start, &views)
             }
             Command::SetSamplers { stage, start, samplers } => {
+                self.d11.dirty |= res_dirty(stage);
                 set_range(&mut self.d11.st.samplers[stage_index(stage)], start, &samplers)
             }
             Command::SetUnorderedAccessViews { stage, start, views } => {
+                self.d11.dirty |= res_dirty(stage);
                 set_range(&mut self.d11.st.uavs[stage_index(stage)], start, &views)
             }
             Command::SetRenderTargets11 { rtvs, dsv } => {
@@ -321,18 +362,24 @@ impl Core {
                     st.rtvs[i] = v;
                 }
                 st.dsv = dsv;
+                self.d11.dirty |= dirty::TARGETS;
             }
             Command::SetBlendState { id, factor, sample_mask } => {
                 let st = &mut self.d11.st;
                 st.blend = id;
                 st.blend_factor = factor;
                 st.sample_mask = sample_mask;
+                self.d11.dirty |= dirty::PIPELINE;
             }
             Command::SetDepthStencilState { id, stencil_ref } => {
                 self.d11.st.depth_stencil = id;
                 self.d11.st.stencil_ref = stencil_ref;
+                self.d11.dirty |= dirty::PIPELINE;
             }
-            Command::SetRasterizerState(h) => self.d11.st.rasterizer = h,
+            Command::SetRasterizerState(h) => {
+                self.d11.st.rasterizer = h;
+                self.d11.dirty |= dirty::PIPELINE;
+            }
             Command::SetViewports(vps) => self.d11.st.viewport = vps.first().copied(),
             Command::SetScissorRects(rects) => self.d11.st.scissor = rects.first().copied().unwrap_or_default(),
             Command::Draw11 { vertex_count, start_vertex, instance_count, start_instance } => {
@@ -736,6 +783,8 @@ impl Core {
             let old = Pooled { gpu: b.gpu.replace(new_gpu).unwrap(), gen: b.gen, last_use: epoch };
             b.gen = new_gen;
             b.last_use = 0;
+            // Storage buffer bindings name the old buffer.
+            self.d11.dirty |= dirty::RES_VS | dirty::RES_PS;
             let list = self.d11.pool.entry(key).or_default();
             if list.len() < 8 {
                 list.push(old);

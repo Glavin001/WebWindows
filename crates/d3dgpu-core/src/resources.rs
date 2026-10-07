@@ -84,9 +84,10 @@ pub enum Object {
     Shader11(Arc<crate::d3d11::Shader11>),
     InputLayout11(Arc<crate::d3d11::InputLayout11>),
     Sampler11(d3dgpu_proto::d3d11::SamplerDesc11),
-    Blend11(Box<d3dgpu_proto::d3d11::BlendDesc11>),
-    DepthStencil11(d3dgpu_proto::d3d11::DepthStencilDesc11),
-    Rasterizer11(d3dgpu_proto::d3d11::RasterizerDesc11),
+    /// State objects, with an id that is never reused.
+    Blend11(u64, Box<d3dgpu_proto::d3d11::BlendDesc11>),
+    DepthStencil11(u64, d3dgpu_proto::d3d11::DepthStencilDesc11),
+    Rasterizer11(u64, d3dgpu_proto::d3d11::RasterizerDesc11),
 }
 
 /// A buffer filled from the CPU once per submission: everything allocated

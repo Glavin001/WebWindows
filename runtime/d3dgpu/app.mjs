@@ -56,12 +56,15 @@ if (test) {
   log(`${results.length - failed.length}/${results.length} scenes pass`);
 } else {
   const select = document.getElementById('scene');
-  for (const label of ['perf: 500 draws', 'perf: 2000 draws', 'perf: 5000 draws', ...names]) select.add(new Option(label));
+  const perf = [];
+  for (const api of ['d3d9', 'd3d11']) for (const n of [500, 2000, 5000]) perf.push(`perf ${api}: ${n} draws`);
+  for (const label of [...perf, ...names]) select.add(new Option(label));
   const start = () => {
     producer.postMessage({ type: 'stop' });
     const v = select.value;
-    if (v.startsWith('perf: ')) {
-      producer.postMessage({ type: 'perf', draws: parseInt(v.slice(6)), width: 640, height: 480 });
+    const p = /^perf (d3d9|d3d11): (\d+)/.exec(v);
+    if (p) {
+      producer.postMessage({ type: 'perf', api: p[1], draws: parseInt(p[2]), width: 640, height: 480 });
     } else {
       producer.postMessage({ type: 'scene', name: v, index: names.indexOf(v), width: 640, height: 480 });
     }

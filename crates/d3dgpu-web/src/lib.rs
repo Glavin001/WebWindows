@@ -270,3 +270,15 @@ pub fn build_perf(draws: u32, frames: u32, width: u32, height: u32) -> SceneData
     }
     SceneData { built: b.finish("perf") }
 }
+
+/// [`build_perf`] through the Direct3D 11 commands.
+#[wasm_bindgen(js_name = buildPerf11)]
+pub fn build_perf11(draws: u32, frames: u32, width: u32, height: u32) -> SceneData {
+    let mut b = d3dgpu_scenes::Builder::new_d3d11(width, height);
+    let assets = d3dgpu_scenes::perf::setup11(&mut b);
+    for f in 0..frames {
+        b.split();
+        d3dgpu_scenes::perf::frame11(&mut b, &assets, draws, f);
+    }
+    SceneData { built: b.finish("perf11") }
+}
