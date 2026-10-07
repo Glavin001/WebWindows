@@ -5,8 +5,9 @@
     "failures": 0
   },
   "class": {
-    "status": "crash",
-    "failures": 72
+    "status": "done",
+    "tests": 1926,
+    "failures": 50
   },
   "clipboard": {
     "status": "timeout",
