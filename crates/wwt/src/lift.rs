@@ -12,6 +12,28 @@ use crate::abi::{fault, flags as fl};
 use crate::discover::{CodeSource, Discovery};
 use crate::ir::*;
 
+/// Instructions the lifter turns into nothing but a fault: privileged ones,
+/// software interrupts, `hlt`, `cli`/`sti` and the undefined-instruction
+/// forms (see `lift_inst`). They are tested by the fault they raise, not by
+/// the instruction suite.
+pub fn only_faults(i: &Instruction) -> bool {
+    use Mnemonic as M;
+    i.is_privileged()
+        || matches!(
+            i.mnemonic(),
+            M::Int
+                | M::Int1
+                | M::Int3
+                | M::Into
+                | M::Ud0
+                | M::Ud1
+                | M::Ud2
+                | M::Hlt
+                | M::Cli
+                | M::Sti
+        )
+}
+
 mod fpu;
 mod simd;
 
