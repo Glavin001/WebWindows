@@ -97,7 +97,11 @@ pub mod flags {
     pub const SAR: u32 = 11;
     /// Multiplication: res = low part, b = 1 if the high part is significant.
     pub const MUL: u32 = 12;
-    pub const NUM_OPS: u32 = 13;
+    /// `sahf`: res = SF, ZF, AF, PF and CF in eflags bit positions, a = the
+    /// overflow flag (0 or 1), which `sahf` keeps. Apart from `EXPLICIT`,
+    /// so that reading the flags `sahf` sets does not read the old ones.
+    pub const SAHF: u32 = 13;
+    pub const NUM_OPS: u32 = 14;
 
     pub const fn kind(op: u32, width_bits: u32) -> u32 {
         let code = match width_bits {

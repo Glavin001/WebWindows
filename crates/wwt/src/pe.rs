@@ -245,6 +245,12 @@ impl PeFile {
         self.characteristics & IMAGE_FILE_DLL != 0
     }
 
+    /// One of Wine's own PE modules: Wine's build tools write this
+    /// signature into the DOS stub (and Wine's loader checks it).
+    pub fn is_wine_builtin(&self) -> bool {
+        self.data.get(0x40..0x50) == Some(b"Wine builtin DLL".as_slice())
+    }
+
     /// Converts an RVA to a file offset.
     pub fn rva_to_offset(&self, rva: u32) -> Option<usize> {
         if rva < self.size_of_headers {

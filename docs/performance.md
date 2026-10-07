@@ -86,9 +86,30 @@ What running real programs found that CoreMark could not:
   modules 26% smaller and SQLite's short run ~8% faster.
 - **`memmove`/`memset`** (12% of SQLite's time) now use WebAssembly's bulk
   memory operations (`crates/wwt/src/builtin.rs`).
-- **Calls between DLLs** remain the largest gap for API-heavy code: every
-  hop (program → msvcrt → kernelbase → ntdll) writes the registers back and
-  reloads them, and calls through the lookup.
+- **Calls are where API-heavy code loses time.** Every hop (program →
+  msvcrt → kernel32's `jmp [import]` thunk → kernelbase → ntdll) writes
+  registers back and reloads them. A microbenchmark put a `TlsGetValue`
+  call at 7.5x native, and replacing the address lookup with a direct call
+  changed little: the cost is the state traffic, not the call. Three
+  changes cut it (`CallAbi` in `crates/wwt/src/ir.rs`):
+  - `mov edi, edi`, the hot-patch prologue of every Windows API function,
+    was lifted as a copy, so every API call wrote `edi` back.
+  - **Wine's own DLLs follow the C calling convention**: no caller reads
+    the flags after a call, and callees preserve ebx, esi, edi and ebp.
+    The translator recognizes them by the "Wine builtin DLL" signature in
+    their DOS stub, and then neither writes the lazy flag state back at
+    calls and returns (so the flag computations before them become dead
+    code) nor reloads the preserved registers after calls. Constant TEB
+    offsets (`fs:[0x18]`) skip the memory check.
+  - **Programs are checked, not trusted** (`translate::prove_flags_abi`):
+    Delphi's runtime returns comparisons in the flags and MSVC's
+    `_aulldvrm` returns in ebx:ecx, so an `.exe` gets flag-free calls and
+    returns only if no code after any call in it reads the flags, and
+    calls skip the flags only for callees shown not to read them on entry
+    (imports likewise, except `_chkesp`). SQLite, Lua, CoreMark and
+    apibench all pass. Liveness had to become strong liveness (a dead
+    `shl eax, cl` no longer keeps the old flags alive), and flag-setting
+    instructions now define all of the lazy flag state.
 
 
 ## Results
@@ -169,8 +190,9 @@ Wine tier when they are (`tools/wine/build.sh`).
 * Running Binaryen's `wasm-opt` over the output (`wwt translate
   --wasm-opt`): V8 already does the local cleanups it would.
 * Treating flags, or `ecx`/`edx`, as dead at `ret` and at calls: no
-  measurable change, and it would break hand-written assembly that passes
-  values that way.
+  measurable change on CoreMark, and it would break hand-written assembly
+  that passes values that way. (On call-heavy programs the flags do
+  matter; see the suite section for the checked version.)
 * Dropping the register write-back on fault paths entirely: no measurable
   change once the code-write call was gone. Fault paths end in
   `unreachable`, and V8 keeps them out of the way.

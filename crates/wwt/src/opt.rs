@@ -415,6 +415,65 @@ pub const FAULT_SYNC: StateMask =
     !(1u64 << FK | 1u64 << FR | 1u64 << FA | 1u64 << FB | 1u64 << FC | 1u64 << CPU);
 pub const ALL_STATE: StateMask = !(1u64 << CPU);
 
+/// The import slot `v` was loaded from, when block `b` loads it from a
+/// constant address (`call [slot]`, `jmp [slot]`).
+pub fn slot_of(f: &Function, b: BlockId, v: V) -> Option<u32> {
+    let insts = &f.blocks[b as usize].insts;
+    let load = insts.iter().rev().find(|i| i.dst == Some(v))?;
+    let Op::Load { addr, mem } = &load.op else {
+        return None;
+    };
+    let base = insts.iter().rev().find(|i| i.dst == Some(*addr))?;
+    match base.op {
+        Op::Const(c) if mem.size == 4 => Some((c as u32).wrapping_add(mem.offset)),
+        _ => None,
+    }
+}
+
+/// State written back at the terminator of block `b`, when it writes back
+/// state (see `CallAbi`).
+pub fn term_sync(f: &Function, b: BlockId) -> StateMask {
+    let flags_dead = match &f.blocks[b as usize].term {
+        Term::Ret(_) => f.abi.flags_dead_at_ret,
+        Term::Call {
+            target: CallTarget::Direct(t),
+            ..
+        } => !f.abi.direct_callee_reads_flags(*t),
+        Term::Call {
+            target: CallTarget::Indirect(v),
+            ..
+        } => !f.abi.indirect_callee_reads_flags(slot_of(f, b, *v)),
+        // A jump to another function's code: it continues there, and
+        // returns to this function's caller. (An exit to the function's own
+        // entry is a re-entry at a loop header, see `osr`, where the flags
+        // may be live.)
+        Term::Exit(t) => *t != f.entry && !f.abi.direct_callee_reads_flags(*t),
+        // A tail jump through an import slot (an import stub): the import
+        // neither reads the flags (see `indirect_callee_reads_flags`) nor
+        // keeps them for its caller (system DLLs follow the C calling
+        // convention). Other indirect jumps may stay within the function.
+        Term::JmpInd(v) => {
+            slot_of(f, b, *v).is_some_and(|s| !f.abi.indirect_callee_reads_flags(Some(s)))
+        }
+        _ => false,
+    };
+    if flags_dead {
+        FAULT_SYNC
+    } else {
+        ALL_STATE
+    }
+}
+
+/// State a call leaves unchanged, which keeps its value across the call
+/// instead of being reloaded (see `CallAbi::callee_saved`).
+pub fn call_preserved(f: &Function) -> StateMask {
+    if f.abi.callee_saved {
+        1u64 << EBX | 1u64 << ESI | 1u64 << EDI | 1u64 << EBP
+    } else {
+        0
+    }
+}
+
 /// A dense bit set.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct BitSet(Vec<u64>);
@@ -589,20 +648,24 @@ fn term_live(
     let mut live = BitSet::new(ng);
     match &blk.term {
         Term::Call { cont, .. } => {
-            // State live after the call is reloaded; temporaries survive.
+            // State live after the call is reloaded (except what the call
+            // preserves); temporaries survive.
             let mut l = live_in[*cont as usize].clone();
+            let keep = call_preserved(f);
             for v in 0..NUM_STATE {
-                l.remove(v as usize);
+                if keep >> v & 1 == 0 {
+                    l.remove(v as usize);
+                }
             }
             live.union(&l);
-            add_mask(&mut live, dirty_end);
+            add_mask(&mut live, dirty_end & term_sync(f, b));
         }
         t => {
             for s in t.successors() {
                 live.union(&live_in[s as usize]);
             }
             if t.syncs() {
-                add_mask(&mut live, dirty_end);
+                add_mask(&mut live, dirty_end & term_sync(f, b));
             }
         }
     }
@@ -629,11 +692,21 @@ fn block_live_in(
     let mut live = term_live(f, b, dirty_end[b as usize], dense, live_in, ng);
     let trace = dirty_trace(blk, dirty_in[b as usize]);
     for (k, inst) in blk.insts.iter().enumerate().rev() {
+        // Strong liveness: a pure instruction whose result is dead does not
+        // make its operands live (a shift by a variable count reads the old
+        // flags, which matters only when its own flags are read).
+        let mut dead = false;
         if let Some(d) = inst.dst {
             let dd = dense[d as usize];
             if dd != u32::MAX {
+                dead = !live.contains(dd as usize)
+                    && !inst.op.has_side_effects()
+                    && !inst.op.may_fault();
                 live.remove(dd as usize);
             }
+        }
+        if dead {
+            continue;
         }
         for u in inst.op.uses() {
             let du = dense[u as usize];

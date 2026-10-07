@@ -943,7 +943,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     fn terminator(&mut self, x: BlockId) {
         let blk = &self.f.blocks[x as usize];
-        let dirty = self.a.dirty_end[x as usize];
+        let dirty = self.a.dirty_end[x as usize] & opt::term_sync(self.f, x);
         match blk.term.clone() {
             Term::Jump(t) => self.do_branch(x, t),
             Term::Branch { t, f, .. } if t == f => self.do_branch(x, t),
@@ -1048,7 +1048,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.emit(W::LocalGet(self.tmp_i32));
                 self.emit(W::Return);
                 self.emit(W::End);
-                let live = self.a.state_live_in(cont) & ALL_STATE;
+                let live = self.a.state_live_in(cont) & ALL_STATE & !opt::call_preserved(self.f);
                 self.reload(live);
                 self.do_branch(x, cont);
             }

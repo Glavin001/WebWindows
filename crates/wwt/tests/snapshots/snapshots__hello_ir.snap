@@ -26,10 +26,6 @@ function 0x401000:
   b1 @0x40130c:
     v68 = const 0x6c
     v70 = I32Add esp, v68
-    fk = const 0x201
-    fr = v70
-    fa = esp
-    fb = const 0x6c
     eax = ebp
     v72 = load4.trusted [v70]
     v73 = const 0x4
@@ -131,10 +127,6 @@ function 0x401000:
     v190 = const 0x6c
     v192 = I32Add esp, v190
     v195 = I32Add ebp, esi
-    fk = const 0x201
-    fr = v195
-    fa = ebp
-    fb = esi
     v196 = load4.trusted [v192]
     v197 = const 0x4
     v198 = I32Add v192, v197
@@ -519,13 +511,8 @@ function 0x401000:
     v637 = I32Add esp, v636
     store4.trusted [v637], edx
     v638 = const 0x2
-    v639 = edi
     v640 = I32Sub edi, v638
     edi = v640
-    fk = const 0x203
-    fr = v640
-    fa = v639
-    fb = const 0x2
     v643 = const 0x58
     v644 = I32Add esp, v643
     store4.trusted [v644], ecx
@@ -615,10 +602,6 @@ function 0x401320:
     ebx = const 0x0
     v62 = const 0xbc
     v64 = I32Sub v59, v62
-    fk = const 0x203
-    fr = v64
-    fa = v59
-    fb = const 0xbc
     v65 = const 0xfffffff5
     store4.trusted [v64], v65
     v67 = const 0x40403c
@@ -632,10 +615,6 @@ function 0x401320:
   b1 @0x401339:
     v72 = const 0x4
     v74 = I32Sub esp, v72
-    fk = const 0x203
-    fr = v74
-    fa = esp
-    fb = const 0x4
     ebp = eax
     v77 = const 0x34
     v78 = I32Add v74, v77
@@ -689,7 +668,6 @@ function 0x401320:
     v155 = const 0x1
     v157 = I32Add ebx, v155
     ebx = v157
-    fb = const 0x1
     v158 = const 0xff
     v159 = I32And eax, v158
     v162 = I32Add esp, v157
@@ -710,9 +688,6 @@ function 0x401320:
   b4 @0x4013d8:
     eax = const 0x14
     edi = const 0x0
-    fk = const 0x205
-    fr = const 0x0
-    fa = const 0x0
     v182 = const 0x4013e4
     v183 = const 0x4
     v184 = I32Sub esp, v183
@@ -810,10 +785,6 @@ function 0x401320:
     v296 = const 0x1
     v298 = I32Add v289, v296
     ebx = v298
-    fk = const 0x201
-    fr = v298
-    fa = v289
-    fb = const 0x1
     v301 = const 0xc
     v302 = I32Add esp, v301
     store4.trusted [v302], v286
@@ -842,10 +813,6 @@ function 0x401320:
     eax = const 0xa
     v326 = const 0x14
     v328 = I32Sub esp, v326
-    fk = const 0x203
-    fr = v328
-    fa = esp
-    fb = const 0x14
     v329 = const 0x401482
     v330 = const 0x4
     v331 = I32Sub v328, v330
@@ -854,11 +821,6 @@ function 0x401320:
     call 0x401000 ret=0x401482 -> b11
   b11 @0x401482:
     v332 = const 0x37
-    v334 = I32Sub eax, v332
-    fk = const 0x203
-    fr = v334
-    fa = eax
-    fb = const 0x37
     v353 = I32Ne eax, v332
     v336 = const 0xff
     v337 = I32And v353, v336

@@ -884,6 +884,80 @@ pub struct Function {
     pub blocks: Vec<Block>,
     /// Type of every vreg, including state vregs.
     pub vtypes: Vec<Ty>,
+    /// What the code may assume about state across calls and returns.
+    pub abi: CallAbi,
+}
+
+/// What a function may assume about the machine state across its calls and
+/// returns. The default assumes nothing: all state is written back at both.
+/// Compiled C never reads the arithmetic flags across a call or return and
+/// its callees preserve ebx, esi, edi and ebp; not all hand-written
+/// assembly does (Delphi's runtime returns comparison results in the
+/// flags, MSVC's `_aulldvrm` returns in ebx:ecx), so these are only assumed
+/// for code known or shown to rely on them nowhere.
+#[derive(Debug, Clone, Default)]
+pub struct CallAbi {
+    /// No caller reads the flags after this function returns: they are not
+    /// written back at returns.
+    pub flags_dead_at_ret: bool,
+    /// Which callees do not read the flags on entry: the flags are not
+    /// written back before calls to them.
+    pub flag_free_callees: FlagFreeCallees,
+    /// Callees preserve ebx, esi, edi and ebp, which keep their values in
+    /// locals across a call instead of being reloaded. (They are still
+    /// written back before it, for code that captures them: setjmp,
+    /// exception dispatch.)
+    pub callee_saved: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub enum FlagFreeCallees {
+    /// None known: always write the flags back.
+    #[default]
+    None,
+    /// Every callee.
+    All,
+    /// Direct calls to the functions listed, and indirect calls except
+    /// through the import slots listed.
+    Known(std::sync::Arc<FlagFree>),
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FlagFree {
+    /// Function entries that do not read the flags.
+    pub entries: std::collections::HashSet<u32>,
+    /// Import address table slots of functions that do (`call [slot]`).
+    pub reading_slots: std::collections::HashSet<u32>,
+}
+
+impl CallAbi {
+    /// The C calling convention, for code known to be compiled C.
+    pub fn c() -> CallAbi {
+        CallAbi {
+            flags_dead_at_ret: true,
+            flag_free_callees: FlagFreeCallees::All,
+            callee_saved: true,
+        }
+    }
+
+    /// Whether a direct call to `target` may read the flags on entry.
+    pub fn direct_callee_reads_flags(&self, target: u32) -> bool {
+        match &self.flag_free_callees {
+            FlagFreeCallees::None => true,
+            FlagFreeCallees::All => false,
+            FlagFreeCallees::Known(k) => !k.entries.contains(&target),
+        }
+    }
+
+    /// Whether an indirect call may read the flags on entry, given the
+    /// import slot it calls through when known.
+    pub fn indirect_callee_reads_flags(&self, slot: Option<u32>) -> bool {
+        match &self.flag_free_callees {
+            FlagFreeCallees::None => true,
+            FlagFreeCallees::All => false,
+            FlagFreeCallees::Known(k) => slot.is_some_and(|s| k.reading_slots.contains(&s)),
+        }
+    }
 }
 
 impl Function {
@@ -897,6 +971,7 @@ impl Function {
             entry,
             blocks: vec![],
             vtypes,
+            abi: CallAbi::default(),
         }
     }
 

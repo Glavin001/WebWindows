@@ -46,7 +46,7 @@ function 0x4013e0:
     esi = v84
     v85 = const 0x18
     v86 = I32Add v85, fsbase
-    v87 = load4 [v86]
+    v87 = load4.trusted [v86]
     eax = v87
     v91 = load4+0x4 [v87]
     edi = v91
@@ -59,11 +59,6 @@ function 0x4013e0:
     v440 = I32Ne v96, v439
     br v440 ? b3 : b4
   b3 @0x401180:
-    v104 = I32Sub edi, eax
-    fk = const 0x203
-    fr = v104
-    fa = edi
-    fb = eax
     v441 = I32Eq edi, eax
     br v441 ? b5 : b6
   b4 @0x4011a2:
@@ -72,11 +67,6 @@ function 0x4013e0:
     eax = v107
     ebx = const 0x0
     v110 = const 0x1
-    v112 = I32Sub v107, v110
-    fk = const 0x203
-    fr = v112
-    fa = v107
-    fb = const 0x1
     v442 = I32Eq v107, v110
     br v442 ? b7 : b8
   b5 @0x401310:
@@ -85,11 +75,6 @@ function 0x4013e0:
     eax = v115
     ebx = const 0x1
     v117 = const 0x1
-    v119 = I32Sub v115, v117
-    fk = const 0x203
-    fr = v119
-    fa = v115
-    fb = const 0x1
     v443 = I32Ne v115, v117
     br v443 ? b8 : b7
   b6 @0x401188:
@@ -114,9 +99,6 @@ function 0x4013e0:
     v132 = const 0x40d044
     v133 = load4.trusted [v132]
     eax = v133
-    fk = const 0x205
-    fr = v133
-    fa = v133
     v444 = I32Eqz v133
     br v444 ? b11 : b12
   b9 @0x401191:
@@ -129,11 +111,6 @@ function 0x4013e0:
     v142 = load4.trusted [v141]
     eax = v142
     v143 = const 0x1
-    v145 = I32Sub v142, v143
-    fk = const 0x203
-    fr = v145
-    fa = v142
-    fb = const 0x1
     v445 = I32Ne v142, v143
     br v445 ? b13 : b14
   b11 @0x401390:
@@ -180,11 +157,6 @@ function 0x4013e0:
     v174 = load4.trusted [v173]
     eax = v174
     v175 = const 0x1
-    v177 = I32Sub v174, v175
-    fk = const 0x203
-    fr = v177
-    fa = v174
-    fb = const 0x1
     v447 = I32Eq v174, v175
     br v447 ? b14 : b13
   b17 @0x401363:
@@ -196,9 +168,6 @@ function 0x4013e0:
     v182 = const 0x40a128
     v183 = load4.trusted [v182]
     eax = v183
-    fk = const 0x205
-    fr = v183
-    fa = v183
     v448 = I32Eqz v183
     br v448 ? b20 : b21
   b19 @0x401351:
@@ -245,21 +214,12 @@ function 0x4013e0:
     call [v214] ret=0x401216 -> b24
   b23 @0x401201:
     v218 = const 0xc
-    v219 = esp
     v220 = I32Sub esp, v218
     esp = v220
-    fk = const 0x203
-    fr = v220
-    fa = v219
-    fb = const 0xc
     jump b20
   b24 @0x401216:
     v221 = const 0x4
     v223 = I32Sub esp, v221
-    fk = const 0x203
-    fr = v223
-    fa = esp
-    fb = const 0x4
     v225 = const 0x40d07c
     store4.trusted [v225], eax
     v226 = const 0x401000
@@ -298,9 +258,6 @@ function 0x4013e0:
     v247 = load4.trusted [v246]
     ebx = v247
     ecx = eax
-    fk = const 0x205
-    fr = esi
-    fa = esi
     v451 = const 0x0
     v452 = I32LeS esi, v451
     br v452 ? b28 : b29
@@ -343,13 +300,8 @@ function 0x4013e0:
     v285 = I32Add esi, v283
     esi = v285
     v286 = const 0x4
-    v287 = ebx
     v288 = I32Add ebx, v286
     ebx = v288
-    fk = const 0x201
-    fr = v288
-    fa = v287
-    fb = const 0x4
     store4.trusted [esp], v282
     v291 = const 0x401278
     v292 = const 0x4
@@ -400,9 +352,6 @@ function 0x4013e0:
     ecx = v326
     v328 = const 0x40d010
     store4.trusted [v328], eax
-    fk = const 0x205
-    fr = v326
-    fa = v326
     v453 = I32Eqz v326
     br v453 ? b36 : b37
   b35 @0x401283:
@@ -438,9 +387,6 @@ function 0x4013e0:
     v359 = const 0x40d008
     v360 = load4.trusted [v359]
     edx = v360
-    fk = const 0x205
-    fr = v360
-    fa = v360
     v454 = I32Eqz v360
     br v454 ? b40 : b41
   b38 @0x401299:
@@ -496,10 +442,6 @@ function 0x4013e0:
     v409 = load4.trusted [v408]
     v412 = I32Add v409, v405
     edx = v412
-    fk = const 0x201
-    fr = v412
-    fa = v409
-    fb = v405
     jump b30
   b43 @0x401375:
     v413 = const 0x40d010

@@ -54,6 +54,11 @@ struct TranslateOpts {
     /// No re-entry at loop headers (see `wwt::osr`).
     #[arg(long)]
     no_osr: bool,
+    /// Whether the image is compiled C, whose code never reads the flags
+    /// across calls and returns, so they need not be written back there:
+    /// `auto` (Wine's own modules), `on` or `off`.
+    #[arg(long, default_value = "auto", value_parser = ["auto", "on", "off"])]
+    c_abi: String,
 }
 
 impl TranslateOpts {
@@ -69,6 +74,11 @@ impl TranslateOpts {
         c.inline = !self.no_inline;
         c.builtins = !self.no_builtins;
         c.codegen.osr = !self.no_osr;
+        c.c_abi = match self.c_abi.as_str() {
+            "on" => Some(true),
+            "off" => Some(false),
+            _ => None,
+        };
         c
     }
 
