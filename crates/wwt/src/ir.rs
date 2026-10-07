@@ -55,7 +55,9 @@ pub const MXCSR: V = 19;
 pub const XMM0: V = 20;
 /// The CPU struct pointer (the function's parameter). Never written.
 pub const CPU: V = 31;
-pub const NUM_STATE: u32 = 32;
+/// mm0..mm7 (MMX), as i64.
+pub const MM0: V = 32;
+pub const NUM_STATE: u32 = 48;
 
 pub const FLAG_STATE: [V; 5] = [FK, FR, FA, FB, FC];
 pub const GPRS: [V; 8] = [EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI];
@@ -77,6 +79,7 @@ pub fn state_home(v: V) -> Option<(u32, Ty)> {
         FPU_SW => (cpu::FPU_SW, Ty::I32),
         MXCSR => (cpu::MXCSR, Ty::I32),
         XMM0..=27 => (cpu::XMM + (v - XMM0) * 16, Ty::V128),
+        MM0..=39 => (cpu::MMX + (v - MM0) * 8, Ty::I64),
         _ => return None,
     })
 }
@@ -88,6 +91,7 @@ pub fn state_home_size(v: V) -> u32 {
         FPU_CW | FPU_SW => 2,
         _ => match state_home(v) {
             Some((_, Ty::V128)) => 16,
+            Some((_, Ty::I64)) => 8,
             _ => 4,
         },
     }
@@ -431,6 +435,153 @@ pub enum MathOp {
     Log2p1 = 9,
 }
 
+/// Lane shapes for 128-bit vector operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Lane {
+    I8,
+    I16,
+    I32,
+    I64,
+    F32,
+    F64,
+}
+
+impl Lane {
+    /// The scalar type of one lane.
+    pub fn scalar_ty(self) -> Ty {
+        match self {
+            Lane::I8 | Lane::I16 | Lane::I32 => Ty::I32,
+            Lane::I64 => Ty::I64,
+            Lane::F32 => Ty::F32,
+            Lane::F64 => Ty::F64,
+        }
+    }
+}
+
+/// Binary 128-bit vector operations, named after the WebAssembly SIMD
+/// instructions they become.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VBin {
+    I8x16Add,
+    I8x16Sub,
+    I8x16AddSatS,
+    I8x16AddSatU,
+    I8x16SubSatS,
+    I8x16SubSatU,
+    I8x16Eq,
+    I8x16GtS,
+    I8x16MinU,
+    I8x16MaxU,
+    I8x16AvgrU,
+    I8x16NarrowI16x8S,
+    I8x16NarrowI16x8U,
+    I16x8Add,
+    I16x8Sub,
+    I16x8AddSatS,
+    I16x8AddSatU,
+    I16x8SubSatS,
+    I16x8SubSatU,
+    I16x8Mul,
+    I16x8Eq,
+    I16x8GtS,
+    I16x8MinS,
+    I16x8MaxS,
+    I16x8AvgrU,
+    I16x8NarrowI32x4S,
+    I16x8NarrowI32x4U,
+    I32x4Add,
+    I32x4Sub,
+    I32x4Mul,
+    I32x4Eq,
+    I32x4GtS,
+    I32x4DotI16x8S,
+    I32x4ExtMulLowI16x8S,
+    I32x4ExtMulHighI16x8S,
+    I32x4ExtMulLowI16x8U,
+    I32x4ExtMulHighI16x8U,
+    I64x2Add,
+    I64x2Sub,
+    I64x2Eq,
+    I64x2ExtMulLowI32x4U,
+    F32x4Add,
+    F32x4Sub,
+    F32x4Mul,
+    F32x4Div,
+    F32x4Eq,
+    F32x4Ne,
+    F32x4Lt,
+    F32x4Le,
+    F32x4Pmin,
+    F32x4Pmax,
+    F64x2Add,
+    F64x2Sub,
+    F64x2Mul,
+    F64x2Div,
+    F64x2Eq,
+    F64x2Ne,
+    F64x2Lt,
+    F64x2Le,
+    F64x2Pmin,
+    F64x2Pmax,
+    V128And,
+    V128Or,
+    V128Xor,
+    /// a & !b
+    V128AndNot,
+}
+
+/// Unary 128-bit vector operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VUn {
+    V128Not,
+    F32x4Sqrt,
+    F64x2Sqrt,
+    F32x4Nearest,
+    F32x4Floor,
+    F32x4Ceil,
+    F32x4Trunc,
+    F64x2Nearest,
+    F64x2Floor,
+    F64x2Ceil,
+    F64x2Trunc,
+    F32x4ConvertI32x4S,
+    I32x4TruncSatF32x4S,
+    F64x2ConvertLowI32x4S,
+    I32x4TruncSatF64x2SZero,
+    F32x4DemoteF64x2Zero,
+    F64x2PromoteLowF32x4,
+    I16x8ExtAddPairwiseI8x16U,
+    I32x4ExtAddPairwiseI16x8U,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum VecOp {
+    Bin(VBin),
+    Un(VUn),
+    /// (v128, i32 count): the count is taken modulo the lane width.
+    Shl(Lane),
+    ShrS(Lane),
+    ShrU(Lane),
+    /// Lanes 0-15 pick from the first operand, 16-31 from the second.
+    Shuffle([u8; 16]),
+    Splat(Lane),
+    /// Small integer lanes are zero-extended.
+    Extract(Lane, u8),
+    Replace(Lane, u8),
+    Bitmask(Lane),
+    Zero,
+}
+
+impl VecOp {
+    pub fn result_ty(&self) -> Ty {
+        match self {
+            VecOp::Extract(l, _) => l.scalar_ty(),
+            VecOp::Bitmask(_) => Ty::I32,
+            _ => Ty::V128,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
     /// Constant; the bits are interpreted according to the destination type.
@@ -492,6 +643,8 @@ pub enum Op {
         a: V,
         b: V,
     },
+    /// A 128-bit vector operation.
+    Vec(VecOp, Vec<V>),
     /// Raises a fault when `cond` is non-zero, after writing back registers.
     FaultIf {
         cond: V,
@@ -521,6 +674,7 @@ impl Op {
             Op::MemFill { dst, val, len } => vec![*dst, *val, *len],
             Op::CallHelper(_, args) => args.clone(),
             Op::Math { a, b, .. } => vec![*a, *b],
+            Op::Vec(_, args) => args.clone(),
             Op::FaultIf { cond, info, .. } => vec![*cond, *info],
         }
     }
@@ -544,6 +698,7 @@ impl Op {
             Op::MemFill { dst, val, len } => vec![dst, val, len],
             Op::CallHelper(_, args) => args.iter_mut().collect(),
             Op::Math { a, b, .. } => vec![a, b],
+            Op::Vec(_, args) => args.iter_mut().collect(),
             Op::FaultIf { cond, info, .. } => vec![cond, info],
         }
     }
@@ -736,6 +891,7 @@ impl Function {
         let mut vtypes = vec![Ty::I32; NUM_STATE as usize];
         for i in 0..8 {
             vtypes[(XMM0 + i) as usize] = Ty::V128;
+            vtypes[(MM0 + i) as usize] = Ty::I64;
         }
         Function {
             entry,
@@ -920,6 +1076,16 @@ impl fmt::Display for Op {
                 write!(f, ")")
             }
             Op::Math { op, a, b } => write!(f, "math.{op:?}({}, {})", VName(*a), VName(*b)),
+            Op::Vec(op, args) => {
+                write!(f, "vec.{op:?}(")?;
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", VName(*a))?;
+                }
+                write!(f, ")")
+            }
             Op::FaultIf { cond, code, info } => {
                 write!(
                     f,

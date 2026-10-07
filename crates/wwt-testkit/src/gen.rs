@@ -169,6 +169,13 @@ const SKIP_MNEMONICS: &[Mnemonic] = &[
     Mnemonic::Fstpnce,
     Mnemonic::Fxsave,
     Mnemonic::Fxrstor,
+    Mnemonic::Maskmovq,
+    Mnemonic::Maskmovdqu,
+    Mnemonic::Prefetchnta,
+    Mnemonic::Prefetcht0,
+    Mnemonic::Prefetcht1,
+    Mnemonic::Prefetcht2,
+    Mnemonic::Pause,
 ];
 
 fn integer_features_ok(f: &[CpuidFeature]) -> bool {
@@ -312,6 +319,26 @@ const R8: [Register; 8] = [
     Register::DH,
     Register::BH,
 ];
+const XMM: [Register; 8] = [
+    Register::XMM0,
+    Register::XMM1,
+    Register::XMM2,
+    Register::XMM3,
+    Register::XMM4,
+    Register::XMM5,
+    Register::XMM6,
+    Register::XMM7,
+];
+const MM: [Register; 8] = [
+    Register::MM0,
+    Register::MM1,
+    Register::MM2,
+    Register::MM3,
+    Register::MM4,
+    Register::MM5,
+    Register::MM6,
+    Register::MM7,
+];
 const R16: [Register; 7] = [
     Register::AX,
     Register::CX,
@@ -342,6 +369,7 @@ struct Builder<'r> {
     pinned: [bool; 8],
     used: Vec<Register>,
     mem_patch: Vec<(u32, u32)>,
+    align: u32,
 }
 
 impl<'r> Builder<'r> {
@@ -365,11 +393,20 @@ impl<'r> Builder<'r> {
         self.pinned[n] = true;
     }
 
+    /// A memory operand whose address is a multiple of `align`.
+    fn memory_aligned(&mut self, size: u32, align: u32) -> MemoryOperand {
+        self.align = align;
+        let m = self.memory(size);
+        self.align = 1;
+        m
+    }
+
     /// A memory operand of `size` bytes inside the window, avoiding
     /// registers already used as plain operands.
     fn memory(&mut self, size: u32) -> MemoryOperand {
         let size = size.max(1);
-        let off = 0x40 + self.rng.below(0x100 - size.min(0x80) as u64) as u32;
+        let mut off = 0x40 + self.rng.below(0x100 - size.min(0x80) as u64) as u32;
+        off -= off % self.align.max(1);
         let target = MEM_BASE + off;
         let avoid: Vec<usize> = self.used.iter().map(|r| full32(*r).number()).collect();
         let candidates: Vec<Register> = [
@@ -444,6 +481,7 @@ fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Ca
         pinned: [false; 8],
         used: vec![],
         mem_patch: vec![],
+        align: 1,
     };
     b.pinned[4] = true;
     let mut ins = Instruction::default();
@@ -489,6 +527,8 @@ fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Ca
                 mem_op = Some(if k == K::mem_offs {
                     let off = 0x40 + b.rng.below(0x100) as u32;
                     MemoryOperand::with_displ((MEM_BASE + off) as u64, 4)
+                } else if group_of(code) == Some(Group::Sse) {
+                    b.memory_aligned(mem_size(code).max(1), 16)
                 } else {
                     b.memory(mem_size(code).max(1))
                 });
@@ -544,6 +584,26 @@ fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Ca
             K::br32_1 | K::br32_4 => {
                 ins.set_near_branch32(TGT);
                 OpKind::NearBranch32
+            }
+            K::xmm_reg | K::xmm_rm => {
+                let r = b.rng.pick(&XMM);
+                ins.set_op_register(i, r);
+                OpKind::Register
+            }
+            K::mm_reg | K::mm_rm => {
+                let r = b.rng.pick(&MM);
+                ins.set_op_register(i, r);
+                OpKind::Register
+            }
+            K::xmm_or_mem | K::mm_or_mem => {
+                if !allow_mem || b.rng.chance(50) {
+                    let r = b.rng.pick(if k == K::xmm_or_mem { &XMM } else { &MM });
+                    ins.set_op_register(i, r);
+                    OpKind::Register
+                } else {
+                    mem_op = Some(b.memory_aligned(mem_size(code).max(1), 16));
+                    OpKind::Memory
+                }
             }
             K::st0 => {
                 ins.set_op_register(i, Register::ST0);
@@ -615,7 +675,9 @@ fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Ca
         | M::Cmpsd
         | M::Scasb
         | M::Scasw
-        | M::Scasd => {
+        | M::Scasd
+            if ins.is_string_instruction() =>
+        {
             b.regs[6] = MEM_BASE + 0x80 + b.rng.below(8) as u32;
             b.regs[7] = MEM_BASE + 0x100 + b.rng.below(8) as u32;
             if b.rng.chance(15) {
@@ -633,6 +695,12 @@ fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Ca
             }
         }
         M::Xlatb => b.regs[3] = MEM_BASE + 0x40,
+        M::Ldmxcsr => {
+            // A valid MXCSR (reserved bits clear) with a random rounding mode.
+            let ea = mem_ea(&b)?;
+            let v = 0x1f80 | (b.rng.below(4) as u32) << 13;
+            b.mem_patch.push((ea - MEM_BASE, v));
+        }
         M::Loop | M::Loope | M::Loopne | M::Jecxz => {
             b.regs[1] = b.rng.pick(&[0, 1, 2, 3, 0xffff_ffff]);
         }
@@ -726,6 +794,9 @@ fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Ca
         return None;
     }
     let mut fx = None;
+    if group_of(code) == Some(Group::Sse) {
+        fx = Some(hex(&simd_state(b.rng)));
+    }
     if group_of(code) == Some(Group::X87) {
         fx = Some(hex(&fpu_state(b.rng, m)));
         if let Some(ea) = mem_ea(&b) {
@@ -774,6 +845,40 @@ fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Ca
         mem_patch: b.mem_patch,
         fx,
     })
+}
+
+/// FXSAVE image for SIMD cases: random XMM registers and MMX registers
+/// (x87 top 0, all registers valid), default MXCSR.
+pub fn simd_state(rng: &mut Rng) -> Vec<u8> {
+    let mut fx = crate::case::default_fx();
+    fx[4] = 0xff;
+    for i in 0..8 {
+        let mut v = [0u8; 16];
+        match rng.below(4) {
+            0 => {
+                for k in 0..4 {
+                    let f = nice_f64(rng) as f32;
+                    v[k * 4..k * 4 + 4].copy_from_slice(&f.to_bits().to_le_bytes());
+                }
+            }
+            1 => {
+                for k in 0..2 {
+                    let f = nice_f64(rng);
+                    v[k * 8..k * 8 + 8].copy_from_slice(&f.to_bits().to_le_bytes());
+                }
+            }
+            _ => {
+                for k in 0..4 {
+                    v[k * 4..k * 4 + 4].copy_from_slice(&rng.value().to_le_bytes());
+                }
+            }
+        }
+        fx[160 + i * 16..176 + i * 16].copy_from_slice(&v);
+        let mm = (rng.value() as u64) << 32 | rng.value() as u64;
+        fx[32 + i * 16..40 + i * 16].copy_from_slice(&mm.to_le_bytes());
+        fx[40 + i * 16..42 + i * 16].copy_from_slice(&0xffffu16.to_le_bytes());
+    }
+    fx
 }
 
 /// A double from a distribution that exercises signs, magnitudes,

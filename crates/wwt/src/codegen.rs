@@ -466,6 +466,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             self.get(v);
             match (ty, state_home_size(v)) {
                 (Ty::V128, _) => self.emit(W::V128Store(memarg(off, 4))),
+                (Ty::I64, _) => self.emit(W::I64Store(memarg(off, 3))),
                 (_, 2) => self.emit(W::I32Store16(memarg(off, 1))),
                 _ => self.emit(W::I32Store(memarg(off, 2))),
             }
@@ -484,6 +485,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             self.emit(W::LocalGet(0));
             match (ty, state_home_size(v)) {
                 (Ty::V128, _) => self.emit(W::V128Load(memarg(off, 4))),
+                (Ty::I64, _) => self.emit(W::I64Load(memarg(off, 3))),
                 (_, 2) => self.emit(W::I32Load16U(memarg(off, 1))),
                 _ => self.emit(W::I32Load(memarg(off, 2))),
             }
@@ -1202,6 +1204,16 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.get(*b);
                 self.emit(W::Call(F_MATH));
             }
+            Op::Vec(op, args) => {
+                if matches!(op, VecOp::Zero) {
+                    self.emit(W::V128Const(0));
+                } else {
+                    for &a in args {
+                        self.get(a);
+                    }
+                    self.emit(vec_instr(op));
+                }
+            }
             Op::FaultIf { cond, code, info } => {
                 self.get(*cond);
                 self.emit(W::If(BlockType::Empty));
@@ -1349,6 +1361,160 @@ fn cmpxchg_instr(ty: Ty, mem: &Mem) -> W<'static> {
         (_, 1) => W::I32AtomicRmw8CmpxchgU(ma),
         (_, 2) => W::I32AtomicRmw16CmpxchgU(ma),
         _ => W::I32AtomicRmwCmpxchg(ma),
+    }
+}
+
+fn vec_instr(op: &VecOp) -> W<'static> {
+    use Lane as L;
+    match op {
+        VecOp::Bin(b) => vbin_instr(*b),
+        VecOp::Un(u) => vun_instr(*u),
+        VecOp::Shl(l) => match l {
+            L::I8 => W::I8x16Shl,
+            L::I16 => W::I16x8Shl,
+            L::I32 => W::I32x4Shl,
+            _ => W::I64x2Shl,
+        },
+        VecOp::ShrS(l) => match l {
+            L::I8 => W::I8x16ShrS,
+            L::I16 => W::I16x8ShrS,
+            L::I32 => W::I32x4ShrS,
+            _ => W::I64x2ShrS,
+        },
+        VecOp::ShrU(l) => match l {
+            L::I8 => W::I8x16ShrU,
+            L::I16 => W::I16x8ShrU,
+            L::I32 => W::I32x4ShrU,
+            _ => W::I64x2ShrU,
+        },
+        VecOp::Shuffle(lanes) => W::I8x16Shuffle(*lanes),
+        VecOp::Splat(l) => match l {
+            L::I8 => W::I8x16Splat,
+            L::I16 => W::I16x8Splat,
+            L::I32 => W::I32x4Splat,
+            L::I64 => W::I64x2Splat,
+            L::F32 => W::F32x4Splat,
+            L::F64 => W::F64x2Splat,
+        },
+        VecOp::Extract(l, i) => match l {
+            L::I8 => W::I8x16ExtractLaneU(*i),
+            L::I16 => W::I16x8ExtractLaneU(*i),
+            L::I32 => W::I32x4ExtractLane(*i),
+            L::I64 => W::I64x2ExtractLane(*i),
+            L::F32 => W::F32x4ExtractLane(*i),
+            L::F64 => W::F64x2ExtractLane(*i),
+        },
+        VecOp::Replace(l, i) => match l {
+            L::I8 => W::I8x16ReplaceLane(*i),
+            L::I16 => W::I16x8ReplaceLane(*i),
+            L::I32 => W::I32x4ReplaceLane(*i),
+            L::I64 => W::I64x2ReplaceLane(*i),
+            L::F32 => W::F32x4ReplaceLane(*i),
+            L::F64 => W::F64x2ReplaceLane(*i),
+        },
+        VecOp::Bitmask(l) => match l {
+            L::I8 => W::I8x16Bitmask,
+            L::I16 => W::I16x8Bitmask,
+            L::I32 | L::F32 => W::I32x4Bitmask,
+            _ => W::I64x2Bitmask,
+        },
+        VecOp::Zero => W::V128Const(0),
+    }
+}
+
+fn vbin_instr(op: VBin) -> W<'static> {
+    use VBin::*;
+    match op {
+        I8x16Add => W::I8x16Add,
+        I8x16Sub => W::I8x16Sub,
+        I8x16AddSatS => W::I8x16AddSatS,
+        I8x16AddSatU => W::I8x16AddSatU,
+        I8x16SubSatS => W::I8x16SubSatS,
+        I8x16SubSatU => W::I8x16SubSatU,
+        I8x16Eq => W::I8x16Eq,
+        I8x16GtS => W::I8x16GtS,
+        I8x16MinU => W::I8x16MinU,
+        I8x16MaxU => W::I8x16MaxU,
+        I8x16AvgrU => W::I8x16AvgrU,
+        I8x16NarrowI16x8S => W::I8x16NarrowI16x8S,
+        I8x16NarrowI16x8U => W::I8x16NarrowI16x8U,
+        I16x8Add => W::I16x8Add,
+        I16x8Sub => W::I16x8Sub,
+        I16x8AddSatS => W::I16x8AddSatS,
+        I16x8AddSatU => W::I16x8AddSatU,
+        I16x8SubSatS => W::I16x8SubSatS,
+        I16x8SubSatU => W::I16x8SubSatU,
+        I16x8Mul => W::I16x8Mul,
+        I16x8Eq => W::I16x8Eq,
+        I16x8GtS => W::I16x8GtS,
+        I16x8MinS => W::I16x8MinS,
+        I16x8MaxS => W::I16x8MaxS,
+        I16x8AvgrU => W::I16x8AvgrU,
+        I16x8NarrowI32x4S => W::I16x8NarrowI32x4S,
+        I16x8NarrowI32x4U => W::I16x8NarrowI32x4U,
+        I32x4Add => W::I32x4Add,
+        I32x4Sub => W::I32x4Sub,
+        I32x4Mul => W::I32x4Mul,
+        I32x4Eq => W::I32x4Eq,
+        I32x4GtS => W::I32x4GtS,
+        I32x4DotI16x8S => W::I32x4DotI16x8S,
+        I32x4ExtMulLowI16x8S => W::I32x4ExtMulLowI16x8S,
+        I32x4ExtMulHighI16x8S => W::I32x4ExtMulHighI16x8S,
+        I32x4ExtMulLowI16x8U => W::I32x4ExtMulLowI16x8U,
+        I32x4ExtMulHighI16x8U => W::I32x4ExtMulHighI16x8U,
+        I64x2Add => W::I64x2Add,
+        I64x2Sub => W::I64x2Sub,
+        I64x2Eq => W::I64x2Eq,
+        I64x2ExtMulLowI32x4U => W::I64x2ExtMulLowI32x4U,
+        F32x4Add => W::F32x4Add,
+        F32x4Sub => W::F32x4Sub,
+        F32x4Mul => W::F32x4Mul,
+        F32x4Div => W::F32x4Div,
+        F32x4Eq => W::F32x4Eq,
+        F32x4Ne => W::F32x4Ne,
+        F32x4Lt => W::F32x4Lt,
+        F32x4Le => W::F32x4Le,
+        F32x4Pmin => W::F32x4PMin,
+        F32x4Pmax => W::F32x4PMax,
+        F64x2Add => W::F64x2Add,
+        F64x2Sub => W::F64x2Sub,
+        F64x2Mul => W::F64x2Mul,
+        F64x2Div => W::F64x2Div,
+        F64x2Eq => W::F64x2Eq,
+        F64x2Ne => W::F64x2Ne,
+        F64x2Lt => W::F64x2Lt,
+        F64x2Le => W::F64x2Le,
+        F64x2Pmin => W::F64x2PMin,
+        F64x2Pmax => W::F64x2PMax,
+        V128And => W::V128And,
+        V128Or => W::V128Or,
+        V128Xor => W::V128Xor,
+        V128AndNot => W::V128AndNot,
+    }
+}
+
+fn vun_instr(op: VUn) -> W<'static> {
+    use VUn::*;
+    match op {
+        V128Not => W::V128Not,
+        F32x4Sqrt => W::F32x4Sqrt,
+        F64x2Sqrt => W::F64x2Sqrt,
+        F32x4Nearest => W::F32x4Nearest,
+        F32x4Floor => W::F32x4Floor,
+        F32x4Ceil => W::F32x4Ceil,
+        F32x4Trunc => W::F32x4Trunc,
+        F64x2Nearest => W::F64x2Nearest,
+        F64x2Floor => W::F64x2Floor,
+        F64x2Ceil => W::F64x2Ceil,
+        F64x2Trunc => W::F64x2Trunc,
+        F32x4ConvertI32x4S => W::F32x4ConvertI32x4S,
+        I32x4TruncSatF32x4S => W::I32x4TruncSatF32x4S,
+        F64x2ConvertLowI32x4S => W::F64x2ConvertLowI32x4S,
+        I32x4TruncSatF64x2SZero => W::I32x4TruncSatF64x2SZero,
+        F32x4DemoteF64x2Zero => W::F32x4DemoteF64x2Zero,
+        F64x2PromoteLowF32x4 => W::F64x2PromoteLowF32x4,
+        I16x8ExtAddPairwiseI8x16U => W::I16x8ExtAddPairwiseI8x16U,
+        I32x4ExtAddPairwiseI16x8U => W::I32x4ExtAddPairwiseI16x8U,
     }
 }
 

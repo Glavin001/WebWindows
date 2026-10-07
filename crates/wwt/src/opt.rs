@@ -397,11 +397,11 @@ fn simplify_bin(op: BinOp, a: V, b: V, ca: Option<u64>, cb: Option<u64>) -> Opti
 // ---- Analysis -----------------------------------------------------------------
 
 /// State vregs as a bit mask.
-pub type StateMask = u32;
+pub type StateMask = u64;
 
 pub fn state_bit(v: V) -> StateMask {
     if v < NUM_STATE {
-        1 << v
+        1u64 << v
     } else {
         0
     }
@@ -409,8 +409,9 @@ pub fn state_bit(v: V) -> StateMask {
 
 /// State written back at fault points: everything except the lazy flag
 /// state, whose precision at faults we do not guarantee.
-pub const FAULT_SYNC: StateMask = !(1 << FK | 1 << FR | 1 << FA | 1 << FB | 1 << FC | 1 << CPU);
-pub const ALL_STATE: StateMask = !(1 << CPU);
+pub const FAULT_SYNC: StateMask =
+    !(1u64 << FK | 1u64 << FR | 1u64 << FA | 1u64 << FB | 1u64 << FC | 1u64 << CPU);
+pub const ALL_STATE: StateMask = !(1u64 << CPU);
 
 /// A dense bit set.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -462,7 +463,7 @@ impl Analysis {
         let mut m = 0;
         for v in 0..NUM_STATE {
             if self.is_live_in(b, v) {
-                m |= 1 << v;
+                m |= 1u64 << v;
             }
         }
         m
