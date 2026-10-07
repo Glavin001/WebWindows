@@ -1,8 +1,15 @@
 name: CI
 
+# Pull requests, and main once they merge (not every branch push).
 on:
-  push:
   pull_request:
+  push:
+    branches: [main]
+
+# A new push to a pull request cancels its run that is still going.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -104,20 +111,25 @@ jobs:
           sh native/wine-unix/build.sh
       # The static site (page, runtime, translator, Wine bundle) for Vercel
       # previews: tools/vercel-build.sh deploys these release assets.
+      # Named by the commit Vercel deploys: a pull request's head (its run
+      # checks out the merge with main) or main's commit. Not for forks,
+      # whose token cannot write releases.
       - name: Publish the site for Vercel previews
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
         env:
           GH_TOKEN: ${{ github.token }}
+          SITE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          SITE_BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
           node runtime/node/wine-bundle.mjs
           sh tools/site/build.sh target/site
-          branch=$(echo "$GITHUB_REF_NAME" | tr '/' '-')
-          tar czf "site-$GITHUB_SHA.tar.gz" -C target/site .
-          cp "site-$GITHUB_SHA.tar.gz" "site-latest-$branch.tar.gz"
+          branch=$(echo "$SITE_BRANCH" | tr '/' '-')
+          tar czf "site-$SITE_SHA.tar.gz" -C target/site .
+          cp "site-$SITE_SHA.tar.gz" "site-latest-$branch.tar.gz"
           gh release view site-preview > /dev/null 2>&1 ||
             gh release create site-preview --prerelease --title "Site previews" \
               --notes "Static sites CI builds for Vercel previews (tools/vercel-build.sh). Not a release."
-          gh release upload site-preview "site-$GITHUB_SHA.tar.gz" "site-latest-$branch.tar.gz" --clobber
+          gh release upload site-preview "site-$SITE_SHA.tar.gz" "site-latest-$branch.tar.gz" --clobber
           # Keep the ten newest commits' sites.
           gh release view site-preview --json assets \
             --jq '[.assets[] | select(.name | test("^site-[0-9a-f]{40}"))] | sort_by(.createdAt) | reverse | .[10:] | .[].name' |

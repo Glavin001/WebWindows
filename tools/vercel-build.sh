@@ -4,10 +4,11 @@
 # The site needs Wine's i386 DLLs (MinGW), Wine's Unix side (Emscripten) and
 # their translations, which CI builds; CI's wine job publishes the site
 # tools/site/build.sh assembles as assets of the "site-preview" release:
-# site-<commit>.tar.gz, and site-latest-<branch>.tar.gz. This deploys the
-# commit's site, waiting up to SITE_WAIT_MINUTES (default 25) for CI to
-# publish it, and otherwise the branch's latest (then main's), so a preview
-# always shows the newest working state.
+# site-<commit>.tar.gz, and site-latest-<branch>.tar.gz. CI runs for pull
+# requests and main, so for those this deploys the commit's site, waiting up
+# to SITE_WAIT_MINUTES (default 25) for CI to publish it. Otherwise (or when
+# it does not come) it deploys the branch's latest site, then main's, so a
+# preview always shows the newest working state.
 set -eu
 cd "$(dirname "$0")/.."
 repo=${SITE_REPO:-Glavin001/WebWindows}
@@ -15,6 +16,8 @@ base="https://github.com/$repo/releases/download/site-preview"
 sha=${VERCEL_GIT_COMMIT_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}
 branch=$(echo "${VERCEL_GIT_COMMIT_REF:-main}" | tr '/' '-')
 wait_s=$(( ${SITE_WAIT_MINUTES:-25} * 60 ))
+# A branch push without a pull request gets no CI run: nothing to wait for.
+if [ -z "${VERCEL_GIT_PULL_REQUEST_ID:-}" ] && [ "$branch" != main ]; then wait_s=0; fi
 
 fetch() { curl -sfL --retry 3 -o site.tar.gz "$base/$1"; }
 

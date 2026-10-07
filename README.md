@@ -51,10 +51,11 @@ node runtime/web/serve.mjs 8080
 # http://localhost:8080/runtime/web/
 ```
 
-Every push is also deployed as a Vercel preview: CI's wine job assembles
-the static site (`tools/site/build.sh`) and publishes it as an asset of the
-`site-preview` release, and the Vercel build (`vercel.json`,
-`tools/vercel-build.sh`) deploys it with the cross-origin isolation headers.
+CI runs for pull requests and for `main`. Each of those runs also feeds
+a Vercel preview: CI's wine job assembles the static site
+(`tools/site/build.sh`) and publishes it as an asset of the `site-preview`
+release, and the Vercel build (`vercel.json`, `tools/vercel-build.sh`)
+deploys it with the cross-origin isolation headers.
 
 The CLI also inspects and translates binaries:
 
