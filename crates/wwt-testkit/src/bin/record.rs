@@ -43,18 +43,35 @@ fn main() -> Result<()> {
             continue;
         }
         let outs = oracle::run(&cases)?;
-        let fixtures: Vec<Fixture> = cases.into_iter().zip(outs).map(|(case, out)| Fixture { case, out }).collect();
+        let fixtures: Vec<Fixture> = cases
+            .into_iter()
+            .zip(outs)
+            .map(|(case, out)| Fixture { case, out })
+            .collect();
         if check {
             let old = read_fixtures(&path)?;
-            let bad = old.iter().zip(&fixtures).filter(|(a, b)| a.out != b.out).count();
+            let bad = old
+                .iter()
+                .zip(&fixtures)
+                .filter(|(a, b)| a.out != b.out)
+                .count();
             if bad > 0 {
-                bail!("{}: {bad} of {} cases differ on this CPU", g.name(), old.len());
+                bail!(
+                    "{}: {bad} of {} cases differ on this CPU",
+                    g.name(),
+                    old.len()
+                );
             }
             eprintln!("{}: {} cases match this CPU", g.name(), old.len());
         } else {
             std::fs::create_dir_all(path.parent().unwrap())?;
             write_fixtures(&path, &fixtures)?;
-            eprintln!("{}: wrote {} cases to {}", g.name(), fixtures.len(), path.display());
+            eprintln!(
+                "{}: wrote {} cases to {}",
+                g.name(),
+                fixtures.len(),
+                path.display()
+            );
         }
     }
     Ok(())

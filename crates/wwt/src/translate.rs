@@ -234,7 +234,11 @@ pub fn translate_pe(pe: &PeFile, cfg: &Config, profile: &[u32]) -> Result<Transl
 }
 
 /// Fast mode: translates code reachable from `entries` in `src`.
-pub fn translate_region(src: &dyn CodeSource, entries: &[u32], cfg: &Config) -> Result<Translation> {
+pub fn translate_region(
+    src: &dyn CodeSource,
+    entries: &[u32],
+    cfg: &Config,
+) -> Result<Translation> {
     translate_region_with_known(src, entries, &[], cfg)
 }
 

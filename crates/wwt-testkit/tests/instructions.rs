@@ -6,11 +6,16 @@ use wwt_testkit::suite::{fixture_path, run_fixtures};
 fn run_group(group: &str) {
     let path = fixture_path(group);
     if !path.exists() {
-        eprintln!("no fixtures for {group}; record them with `cargo run -p wwt-testkit --bin record`");
+        eprintln!(
+            "no fixtures for {group}; record them with `cargo run -p wwt-testkit --bin record`"
+        );
         return;
     }
     let fixtures = read_fixtures(&path).unwrap();
-    for (name, cfg) in [("optimized", wwt::Config::default()), ("fast mode", wwt::Config::fast())] {
+    for (name, cfg) in [
+        ("optimized", wwt::Config::default()),
+        ("fast mode", wwt::Config::fast()),
+    ] {
         let summary = run_fixtures(&fixtures, &cfg).unwrap();
         let report = summary.report();
         eprintln!("{group} ({name}): {report}");

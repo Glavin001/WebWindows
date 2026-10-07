@@ -15,3 +15,5 @@ wat = "1.261"
 
 [dev-dependencies]
 wasmparser.workspace = true
+insta = "1"
+wasmprinter.workspace = true

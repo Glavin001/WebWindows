@@ -15,7 +15,8 @@ use crate::ir::*;
 pub fn is_fpu(i: &Instruction) -> bool {
     use iced_x86::CpuidFeature as C;
     let f = i.cpuid_features();
-    f.iter().any(|f| matches!(f, C::FPU | C::FPU287 | C::FPU387 | C::FPU287XL_ONLY))
+    f.iter()
+        .any(|f| matches!(f, C::FPU | C::FPU287 | C::FPU387 | C::FPU287XL_ONLY))
         || matches!(i.mnemonic(), Mnemonic::Wait)
 }
 
@@ -26,7 +27,10 @@ const C2: u32 = 1 << 10;
 const C3: u32 = 1 << 14;
 
 fn sti(r: Register) -> u32 {
-    assert!(r >= Register::ST0 && r <= Register::ST7, "not an x87 register: {r:?}");
+    assert!(
+        r >= Register::ST0 && r <= Register::ST7,
+        "not an x87 register: {r:?}"
+    );
     r as u32 - Register::ST0 as u32
 }
 
@@ -112,14 +116,38 @@ impl<'a> Lifter<'a> {
         let m = |l: &Self, size| l.mem(size, space);
         Some(match i.memory_size() {
             MemorySize::Float32 => {
-                let f = self.emit(Ty::F32, Op::Load { addr: a, mem: m(self, 4) });
+                let f = self.emit(
+                    Ty::F32,
+                    Op::Load {
+                        addr: a,
+                        mem: m(self, 4),
+                    },
+                );
                 self.un(UnOp::F64PromoteF32, f)
             }
-            MemorySize::Float64 => self.emit(Ty::F64, Op::Load { addr: a, mem: m(self, 8) }),
+            MemorySize::Float64 => self.emit(
+                Ty::F64,
+                Op::Load {
+                    addr: a,
+                    mem: m(self, 8),
+                },
+            ),
             MemorySize::Float80 => {
-                let lo = self.emit(Ty::I64, Op::Load { addr: a, mem: m(self, 8) });
+                let lo = self.emit(
+                    Ty::I64,
+                    Op::Load {
+                        addr: a,
+                        mem: m(self, 8),
+                    },
+                );
                 let a8 = self.bini(BinOp::I32Add, a, 8);
-                let hi = self.emit(Ty::I32, Op::Load { addr: a8, mem: m(self, 2) });
+                let hi = self.emit(
+                    Ty::I32,
+                    Op::Load {
+                        addr: a8,
+                        mem: m(self, 2),
+                    },
+                );
                 self.emit(Ty::F64, Op::CallHelper(Helper::F80ToF64, vec![lo, hi]))
             }
             MemorySize::Int16 => {
@@ -129,11 +157,23 @@ impl<'a> Lifter<'a> {
                 self.un(UnOp::F64ConvertI32S, v)
             }
             MemorySize::Int32 => {
-                let v = self.emit(Ty::I32, Op::Load { addr: a, mem: m(self, 4) });
+                let v = self.emit(
+                    Ty::I32,
+                    Op::Load {
+                        addr: a,
+                        mem: m(self, 4),
+                    },
+                );
                 self.un(UnOp::F64ConvertI32S, v)
             }
             MemorySize::Int64 => {
-                let v = self.emit(Ty::I64, Op::Load { addr: a, mem: m(self, 8) });
+                let v = self.emit(
+                    Ty::I64,
+                    Op::Load {
+                        addr: a,
+                        mem: m(self, 8),
+                    },
+                );
                 self.un(UnOp::F64ConvertI64S, v)
             }
             _ => return None,
@@ -173,20 +213,36 @@ impl<'a> Lifter<'a> {
             MemorySize::Float32 => {
                 let f = self.un(UnOp::F32DemoteF64, v);
                 let mm = mem(self, 4);
-                self.effect(Op::Store { addr: a, val: f, mem: mm });
+                self.effect(Op::Store {
+                    addr: a,
+                    val: f,
+                    mem: mm,
+                });
             }
             MemorySize::Float64 => {
                 let mm = mem(self, 8);
-                self.effect(Op::Store { addr: a, val: v, mem: mm });
+                self.effect(Op::Store {
+                    addr: a,
+                    val: v,
+                    mem: mm,
+                });
             }
             MemorySize::Float80 => {
                 let lo = self.emit(Ty::I64, Op::CallHelper(Helper::F64ToF80Lo, vec![v]));
                 let hi = self.emit(Ty::I32, Op::CallHelper(Helper::F64ToF80Hi, vec![v]));
                 let mm = mem(self, 8);
-                self.effect(Op::Store { addr: a, val: lo, mem: mm });
+                self.effect(Op::Store {
+                    addr: a,
+                    val: lo,
+                    mem: mm,
+                });
                 let a8 = self.bini(BinOp::I32Add, a, 8);
                 let mm = mem(self, 2);
-                self.effect(Op::Store { addr: a8, val: hi, mem: mm });
+                self.effect(Op::Store {
+                    addr: a8,
+                    val: hi,
+                    mem: mm,
+                });
             }
             MemorySize::Int16 | MemorySize::Int32 | MemorySize::Int64 => {
                 let size = i.memory_size().size() as u32;
@@ -217,13 +273,21 @@ impl<'a> Lifter<'a> {
                     let ind = self.c64(1u64 << 63);
                     let x = self.select(ok, x, ind);
                     let mm = mem(self, 8);
-                    self.effect(Op::Store { addr: a, val: x, mem: mm });
+                    self.effect(Op::Store {
+                        addr: a,
+                        val: x,
+                        mem: mm,
+                    });
                 } else {
                     let x = self.un(UnOp::I32TruncSatF64S, r);
                     let ind = self.c32(if size == 2 { 0x8000 } else { 0x8000_0000 });
                     let x = self.select(ok, x, ind);
                     let mm = mem(self, size);
-                    self.effect(Op::Store { addr: a, val: x, mem: mm });
+                    self.effect(Op::Store {
+                        addr: a,
+                        val: x,
+                        mem: mm,
+                    });
                 }
             }
             _ => return false,
@@ -353,7 +417,11 @@ impl<'a> Lifter<'a> {
                 }
             }
             M::Fxch => {
-                let j = if i.op_count() == 2 { sti(i.op1_register()) } else { 1 };
+                let j = if i.op_count() == 2 {
+                    sti(i.op1_register())
+                } else {
+                    1
+                };
                 let a = self.st(0);
                 let b = self.st(j);
                 self.set_st(0, b);
@@ -363,9 +431,24 @@ impl<'a> Lifter<'a> {
                 let z = self.c32(0);
                 self.set_cc(z, C1);
             }
-            M::Fadd | M::Faddp | M::Fsub | M::Fsubp | M::Fsubr | M::Fsubrp | M::Fmul | M::Fmulp
-            | M::Fdiv | M::Fdivp | M::Fdivr | M::Fdivrp | M::Fiadd | M::Fisub | M::Fisubr
-            | M::Fimul | M::Fidiv | M::Fidivr => {
+            M::Fadd
+            | M::Faddp
+            | M::Fsub
+            | M::Fsubp
+            | M::Fsubr
+            | M::Fsubrp
+            | M::Fmul
+            | M::Fmulp
+            | M::Fdiv
+            | M::Fdivp
+            | M::Fdivr
+            | M::Fdivrp
+            | M::Fiadd
+            | M::Fisub
+            | M::Fisubr
+            | M::Fimul
+            | M::Fidiv
+            | M::Fidivr => {
                 let (dst, a, b) = if i.op_count() == 0 {
                     // faddp with no operands: st(1) = st(1) op st(0)
                     (1, self.st(1), self.st(0))
@@ -398,7 +481,10 @@ impl<'a> Lifter<'a> {
                     _ => self.fbin(BinOp::F64Div, b, a),
                 };
                 self.set_st(dst, r);
-                if matches!(m, M::Faddp | M::Fsubp | M::Fsubrp | M::Fmulp | M::Fdivp | M::Fdivrp) {
+                if matches!(
+                    m,
+                    M::Faddp | M::Fsubp | M::Fsubrp | M::Fmulp | M::Fdivp | M::Fdivrp
+                ) {
                     self.fpop();
                 }
                 let z = self.c32(0);
@@ -458,8 +544,14 @@ impl<'a> Lifter<'a> {
                     self.fpop();
                 }
             }
-            M::Fcmovb | M::Fcmove | M::Fcmovbe | M::Fcmovu | M::Fcmovnb | M::Fcmovne
-            | M::Fcmovnbe | M::Fcmovnu => {
+            M::Fcmovb
+            | M::Fcmove
+            | M::Fcmovbe
+            | M::Fcmovu
+            | M::Fcmovnb
+            | M::Fcmovne
+            | M::Fcmovnbe
+            | M::Fcmovnu => {
                 let cc = match m {
                     M::Fcmovb => Cc::B,
                     M::Fcmove => Cc::E,
@@ -547,7 +639,14 @@ impl<'a> Lifter<'a> {
                         self.fpush(one);
                     }
                     M::Fsincos => {
-                        let c = self.emit(Ty::F64, Op::Math { op: MathOp::Cos, a: v, b: zero });
+                        let c = self.emit(
+                            Ty::F64,
+                            Op::Math {
+                                op: MathOp::Cos,
+                                a: v,
+                                b: zero,
+                            },
+                        );
                         self.set_st(0, r);
                         self.fpush(c);
                     }
@@ -563,23 +662,45 @@ impl<'a> Lifter<'a> {
                 let zero = self.f64c(0.0);
                 match m {
                     M::Fpatan => {
-                        let r = self.emit(Ty::F64, Op::Math { op: MathOp::Atan2, a: b, b: a });
+                        let r = self.emit(
+                            Ty::F64,
+                            Op::Math {
+                                op: MathOp::Atan2,
+                                a: b,
+                                b: a,
+                            },
+                        );
                         self.set_st(1, r);
                         self.fpop();
                     }
                     M::Fyl2x | M::Fyl2xp1 => {
-                        let op = if m == M::Fyl2x { MathOp::Log2 } else { MathOp::Log2p1 };
+                        let op = if m == M::Fyl2x {
+                            MathOp::Log2
+                        } else {
+                            MathOp::Log2p1
+                        };
                         let l = self.emit(Ty::F64, Op::Math { op, a, b: zero });
                         let r = self.fbin(BinOp::F64Mul, b, l);
                         self.set_st(1, r);
                         self.fpop();
                     }
                     M::Fscale => {
-                        let r = self.emit(Ty::F64, Op::Math { op: MathOp::Scale, a, b });
+                        let r = self.emit(
+                            Ty::F64,
+                            Op::Math {
+                                op: MathOp::Scale,
+                                a,
+                                b,
+                            },
+                        );
                         self.set_st(0, r);
                     }
                     _ => {
-                        let op = if m == M::Fprem { MathOp::Fmod } else { MathOp::Remainder };
+                        let op = if m == M::Fprem {
+                            MathOp::Fmod
+                        } else {
+                            MathOp::Remainder
+                        };
                         let r = self.emit(Ty::F64, Op::Math { op, a, b });
                         self.set_st(0, r);
                         // Quotient bits: C0 = q2, C3 = q1, C1 = q0; C2 = 0
@@ -673,7 +794,11 @@ impl<'a> Lifter<'a> {
                     let hi = self.emit(Ty::I32, Op::CallHelper(Helper::F64ToF80Hi, vec![v]));
                     let p = at(self, 28 + r * 10);
                     let mm = self.mem(8, sp);
-                    self.effect(Op::Store { addr: p, val: lo, mem: mm });
+                    self.effect(Op::Store {
+                        addr: p,
+                        val: lo,
+                        mem: mm,
+                    });
                     let p = at(self, 36 + r * 10);
                     self.store(p, hi, 2, sp);
                 }

@@ -384,7 +384,11 @@ impl<'a> Lifter<'a> {
         let seg = i.memory_segment();
         let space = match seg {
             Register::FS | Register::GS => {
-                let b = if seg == Register::FS { FS_BASE } else { GS_BASE };
+                let b = if seg == Register::FS {
+                    FS_BASE
+                } else {
+                    GS_BASE
+                };
                 a = self.bin(BinOp::I32Add, a, b);
                 Space::Guest
             }
@@ -508,7 +512,11 @@ impl<'a> Lifter<'a> {
             Loc::Mem { addr, mem } => {
                 let mut m = mem;
                 m.size = (w / 8) as u8;
-                self.effect(Op::Store { addr, val: v, mem: m });
+                self.effect(Op::Store {
+                    addr,
+                    val: v,
+                    mem: m,
+                });
             }
             Loc::Imm(_) => panic!("write to immediate"),
         }
@@ -541,19 +549,17 @@ impl<'a> Lifter<'a> {
 
     /// Sets the flag state only when `cond` is non-zero (shifts by a
     /// variable count leave flags alone when the count is zero).
-    fn set_flags_if(
-        &mut self,
-        cond: V,
-        op: u32,
-        w: u32,
-        res: V,
-        a: V,
-        b: Option<V>,
-        c: Option<V>,
-    ) {
+    fn set_flags_if(&mut self, cond: V, op: u32, w: u32, res: V, a: V, b: Option<V>, c: Option<V>) {
         let k = self.c32(fl::kind(op, w));
         self.emit_to(FK, Op::Select { cond, t: k, f: FK });
-        self.emit_to(FR, Op::Select { cond, t: res, f: FR });
+        self.emit_to(
+            FR,
+            Op::Select {
+                cond,
+                t: res,
+                f: FR,
+            },
+        );
         self.emit_to(FA, Op::Select { cond, t: a, f: FA });
         if let Some(b) = b {
             self.emit_to(FB, Op::Select { cond, t: b, f: FB });
@@ -695,8 +701,18 @@ impl<'a> Lifter<'a> {
             return self.lift_fpu(i);
         }
         match m {
-            M::Nop | M::Reservednop | M::Pause | M::Lfence | M::Mfence | M::Sfence | M::Prefetchnta
-            | M::Prefetcht0 | M::Prefetcht1 | M::Prefetcht2 | M::Prefetchw | M::Endbr32 => {}
+            M::Nop
+            | M::Reservednop
+            | M::Pause
+            | M::Lfence
+            | M::Mfence
+            | M::Sfence
+            | M::Prefetchnta
+            | M::Prefetcht0
+            | M::Prefetcht1
+            | M::Prefetcht2
+            | M::Prefetchw
+            | M::Endbr32 => {}
             M::Mov => self.lift_mov(i),
             M::Movzx | M::Movsx => {
                 let sw = self.op_width(i, 1);
@@ -786,7 +802,11 @@ impl<'a> Lifter<'a> {
                 let old_esp = self.copy(ESP);
                 for r in 0..8u32 {
                     let v = if r == ESP { old_esp } else { r };
-                    let v = if sz == 2 { self.mask(v, 16) } else { self.copy(v) };
+                    let v = if sz == 2 {
+                        self.mask(v, 16)
+                    } else {
+                        self.copy(v)
+                    };
                     self.push_val(v, sz);
                 }
             }
@@ -939,8 +959,20 @@ impl<'a> Lifter<'a> {
                 let s = self.bini(BinOp::I32Sub, ESP, size);
                 self.set_gpr(ESP, s);
             }
-            M::Movsb | M::Movsw | M::Movsd | M::Stosb | M::Stosw | M::Stosd | M::Lodsb
-            | M::Lodsw | M::Lodsd | M::Cmpsb | M::Cmpsw | M::Cmpsd | M::Scasb | M::Scasw
+            M::Movsb
+            | M::Movsw
+            | M::Movsd
+            | M::Stosb
+            | M::Stosw
+            | M::Stosd
+            | M::Lodsb
+            | M::Lodsw
+            | M::Lodsd
+            | M::Cmpsb
+            | M::Cmpsw
+            | M::Cmpsd
+            | M::Scasb
+            | M::Scasw
             | M::Scasd
                 if i.is_string_instruction() =>
             {
@@ -1035,7 +1067,11 @@ impl<'a> Lifter<'a> {
                 return false;
             }
             M::Int | M::Into | M::Int1 => {
-                let n = if m == M::Int { i.immediate8() as u32 } else { 4 };
+                let n = if m == M::Int {
+                    i.immediate8() as u32
+                } else {
+                    4
+                };
                 let v = self.c32(n);
                 self.store_native(v, 4, crate::abi::cpu::FAULT_ADDR);
                 self.terminate(Term::Fault {
@@ -1113,7 +1149,11 @@ impl<'a> Lifter<'a> {
             let v = self.load_native(Ty::I32, 2, crate::abi::cpu::SEG_SEL + idx * 2);
             let w = self.op_width(i, 0);
             let d = self.loc(i, 0);
-            self.write(d, v, w.min(16).max(if k0 == OpKind::Register { w } else { 16 }));
+            self.write(
+                d,
+                v,
+                w.min(16).max(if k0 == OpKind::Register { w } else { 16 }),
+            );
             return;
         }
         let w = self.op_width(i, 0);
@@ -1336,14 +1376,7 @@ impl<'a> Lifter<'a> {
         if !i.has_lock_prefix() || !matches!(d, Loc::Mem { .. }) {
             self.write(d, r, w);
         }
-        self.set_flags(
-            if inc { fl::INC } else { fl::DEC },
-            w,
-            r,
-            a,
-            None,
-            Some(cf),
-        );
+        self.set_flags(if inc { fl::INC } else { fl::DEC }, w, r, a, None, Some(cf));
     }
 
     /// Shift count operand masked to 5 bits.
@@ -1459,8 +1492,22 @@ impl<'a> Lifter<'a> {
             None => {
                 let nz = self.bini(BinOp::I32Ne, cnt, 0);
                 let k = self.c32(fl::EXPLICIT);
-                self.emit_to(FK, Op::Select { cond: nz, t: k, f: FK });
-                self.emit_to(FR, Op::Select { cond: nz, t: n, f: FR });
+                self.emit_to(
+                    FK,
+                    Op::Select {
+                        cond: nz,
+                        t: k,
+                        f: FK,
+                    },
+                );
+                self.emit_to(
+                    FR,
+                    Op::Select {
+                        cond: nz,
+                        t: n,
+                        f: FR,
+                    },
+                );
             }
         }
     }
@@ -1607,8 +1654,22 @@ impl<'a> Lifter<'a> {
             None => {
                 let nz = self.bini(BinOp::I32Ne, cnt, 0);
                 let k = self.c32(fl::EXPLICIT);
-                self.emit_to(FK, Op::Select { cond: nz, t: k, f: FK });
-                self.emit_to(FR, Op::Select { cond: nz, t: e, f: FR });
+                self.emit_to(
+                    FK,
+                    Op::Select {
+                        cond: nz,
+                        t: k,
+                        f: FK,
+                    },
+                );
+                self.emit_to(
+                    FR,
+                    Op::Select {
+                        cond: nz,
+                        t: e,
+                        f: FR,
+                    },
+                );
             }
         }
     }
@@ -1771,10 +1832,7 @@ impl<'a> Lifter<'a> {
             let lim = self.c64(width_mask(w) as u64);
             let bad = self.bin(BinOp::I64GtU, q, lim);
             self.fault_if(bad, fault::INTEGER_OVERFLOW, d);
-            (
-                self.un(UnOp::I32WrapI64, q),
-                self.un(UnOp::I32WrapI64, r),
-            )
+            (self.un(UnOp::I32WrapI64, q), self.un(UnOp::I32WrapI64, r))
         };
         match w {
             8 => {
@@ -2061,7 +2119,10 @@ impl<'a> Lifter<'a> {
         let w = size * 8;
         let rep = i.has_rep_prefix() || i.has_repe_prefix();
         let repne = i.has_repne_prefix();
-        let is_cmp = matches!(m, M::Cmpsb | M::Cmpsw | M::Cmpsd | M::Scasb | M::Scasw | M::Scasd);
+        let is_cmp = matches!(
+            m,
+            M::Cmpsb | M::Cmpsw | M::Cmpsd | M::Scasb | M::Scasw | M::Scasd
+        );
         // Source segment can be overridden (default DS); destination is ES.
         let src_seg = i.memory_segment();
         if !rep && !repne {
@@ -2076,7 +2137,11 @@ impl<'a> Lifter<'a> {
         self.terminate(Term::Jump(head));
         self.switch_to(head);
         let z = self.is_zero(ECX);
-        if !is_cmp && matches!(m, M::Movsb | M::Movsw | M::Movsd | M::Stosb | M::Stosw | M::Stosd)
+        if !is_cmp
+            && matches!(
+                m,
+                M::Movsb | M::Movsw | M::Movsd | M::Stosb | M::Stosw | M::Stosd
+            )
             && !matches!(src_seg, Register::FS | Register::GS)
         {
             // if ecx == 0 -> done; if fast-path ok -> fast; else body
@@ -2103,7 +2168,11 @@ impl<'a> Lifter<'a> {
                     self.copy(EAX)
                 };
                 let lo = self.bini(BinOp::I32And, v, 0xff);
-                let rep_ = self.bini(BinOp::I32Mul, lo, if size == 2 { 0x0101 } else { 0x0101_0101 });
+                let rep_ = self.bini(
+                    BinOp::I32Mul,
+                    lo,
+                    if size == 2 { 0x0101 } else { 0x0101_0101 },
+                );
                 let same = self.bin(BinOp::I32Eq, rep_, v);
                 self.bin(BinOp::I32And, fwd, same)
             };
@@ -2330,4 +2399,3 @@ impl<'a> Lifter<'a> {
         false
     }
 }
-

@@ -28,13 +28,18 @@ pub struct Summary {
 
 impl Summary {
     pub fn totals(&self) -> (usize, usize, usize) {
-        self.forms.values().fold((0, 0, 0), |(p, f, u), r| (p + r.pass, f + r.fail, u + r.unsupported))
+        self.forms.values().fold((0, 0, 0), |(p, f, u), r| {
+            (p + r.pass, f + r.fail, u + r.unsupported)
+        })
     }
     pub fn failing_forms(&self) -> Vec<(&String, &FormResult)> {
         self.forms.iter().filter(|(_, r)| r.fail > 0).collect()
     }
     pub fn unsupported_forms(&self) -> Vec<(&String, &FormResult)> {
-        self.forms.iter().filter(|(_, r)| r.unsupported > 0 && r.fail == 0).collect()
+        self.forms
+            .iter()
+            .filter(|(_, r)| r.unsupported > 0 && r.fail == 0)
+            .collect()
     }
     pub fn report(&self) -> String {
         let (p, f, u) = self.totals();
@@ -46,10 +51,18 @@ impl Summary {
             u
         );
         for (name, r) in self.failing_forms() {
-            s += &format!("  FAIL {name} ({}/{}): {}\n", r.fail, r.pass + r.fail, r.first_failure.as_deref().unwrap_or(""));
+            s += &format!(
+                "  FAIL {name} ({}/{}): {}\n",
+                r.fail,
+                r.pass + r.fail,
+                r.first_failure.as_deref().unwrap_or("")
+            );
         }
         for (name, r) in self.unsupported_forms() {
-            s += &format!("  UNSUPPORTED {name}: {}\n", r.first_failure.as_deref().unwrap_or(""));
+            s += &format!(
+                "  UNSUPPORTED {name}: {}\n",
+                r.first_failure.as_deref().unwrap_or("")
+            );
         }
         s
     }
@@ -75,7 +88,13 @@ pub fn run_fixtures(fixtures: &[Fixture], cfg: &wwt::Config) -> Result<Summary> 
                     } else {
                         e.fail += 1;
                         e.first_failure.get_or_insert_with(|| {
-                            format!("{} regs={:x?} flags={:#x}: {}", fx.case.code, fx.case.regs, fx.case.eflags, diffs.join("; "))
+                            format!(
+                                "{} regs={:x?} flags={:#x}: {}",
+                                fx.case.code,
+                                fx.case.regs,
+                                fx.case.eflags,
+                                diffs.join("; ")
+                            )
                         });
                     }
                 }

@@ -1,0 +1,10 @@
+---
+source: crates/wwt/tests/snapshots.rs
+expression: "format!(\"functions: {}\\nblocks: {}\\nx86 instructions: {}\\njump tables: {}\\nseeds: {:?}\\nunsupported: {}\",\nr.functions, r.blocks, r.x86_instructions, r.jump_tables, r.seeds,\nr.unsupported.len())"
+---
+functions: 140
+blocks: 1941
+x86 instructions: 7909
+jump tables: 1
+seeds: {"Call": 93, "DataScan": 26, "Entry": 1, "Relocation": 19, "TlsCallback": 2}
+unsupported: 0

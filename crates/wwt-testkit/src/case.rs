@@ -125,7 +125,8 @@ pub fn read_fixtures(path: &std::path::Path) -> std::io::Result<Vec<Fixture>> {
         flate2::read::GzDecoder::new(&raw[..]).read_to_string(&mut s)?;
         s
     } else {
-        String::from_utf8(raw).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
+        String::from_utf8(raw)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
     };
     Ok(text
         .lines()

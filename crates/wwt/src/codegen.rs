@@ -152,10 +152,9 @@ impl<'a> ModuleGen<'a> {
                 Some(i) => i,
                 None => {
                     self.helper_types.push(key.clone());
-                    types.ty().function(
-                        params.iter().map(|&t| val_type(t)),
-                        [val_type(ret)],
-                    );
+                    types
+                        .ty()
+                        .function(params.iter().map(|&t| val_type(t)), [val_type(ret)]);
                     self.helper_types.len() - 1
                 }
             };
@@ -1557,6 +1556,9 @@ mod tests {
     fn eflags_helper_first() {
         let cfg = super::CodegenConfig::default();
         let g = super::ModuleGen::new(&cfg, &[]);
-        assert_eq!(g.helper_func_index(crate::ir::Helper::Eflags), super::NUM_FUNC_IMPORTS);
+        assert_eq!(
+            g.helper_func_index(crate::ir::Helper::Eflags),
+            super::NUM_FUNC_IMPORTS
+        );
     }
 }
