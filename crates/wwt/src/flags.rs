@@ -289,3 +289,32 @@ pub fn operands(e: &E) -> u32 {
 pub fn all_kinds() -> impl Iterator<Item = u32> {
     (0..NUM_OPS).flat_map(|op| [8, 16, 32].into_iter().map(move |w| kind(op, w)))
 }
+
+/// Evaluates an expression for concrete operand values.
+pub fn eval(e: &E, fr: u32, fa: u32, fb: u32, fc: u32) -> u32 {
+    match e {
+        Fr => fr,
+        Fa => fa,
+        Fb => fb,
+        Fc => fc,
+        K(c) => *c,
+        Bin(op, a, b) => {
+            let x = eval(a, fr, fa, fb, fc) as u64;
+            let y = eval(b, fr, fa, fb, fc) as u64;
+            crate::opt::fold_bin(*op, x, y).expect("foldable flag op") as u32
+        }
+        Un(op, a) => {
+            let x = eval(a, fr, fa, fb, fc) as u64;
+            crate::opt::fold_un(*op, x).expect("foldable flag op") as u32
+        }
+    }
+}
+
+/// The arithmetic eflags for a lazy flag state, as the run-time helper
+/// computes them.
+pub fn eflags_of_state(fk: u32, fr: u32, fa: u32, fb: u32, fc: u32) -> u32 {
+    if op_of(fk) >= NUM_OPS || (fk >> 8 & 3) > 2 {
+        return fr & fl::ARITH;
+    }
+    eval(&eflags(fk), fr, fa, fb, fc)
+}

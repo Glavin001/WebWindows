@@ -166,7 +166,7 @@ fn emit_expr(f: &mut Function, out: &mut Vec<Inst>, e: &E, eip: u32) -> V {
 
 // ---- Simplification ----------------------------------------------------------
 
-fn fold_bin(op: BinOp, a: u64, b: u64) -> Option<u64> {
+pub(crate) fn fold_bin(op: BinOp, a: u64, b: u64) -> Option<u64> {
     use BinOp::*;
     let (x, y) = (a as u32, b as u32);
     let r32 = |v: u32| Some(v as u64);
@@ -209,7 +209,7 @@ fn fold_bin(op: BinOp, a: u64, b: u64) -> Option<u64> {
     }
 }
 
-fn fold_un(op: UnOp, a: u64) -> Option<u64> {
+pub(crate) fn fold_un(op: UnOp, a: u64) -> Option<u64> {
     use UnOp::*;
     let x = a as u32;
     Some(match op {
