@@ -446,9 +446,12 @@ export const SYSCALLS = {
         this.w64(buf, BigInt(Date.now()) * 10000n + 116444736000000000n);
         this.w64(buf + 8, BigInt(Date.now()) * 10000n + 116444736000000000n);
         return ret(Math.min(len, 48));
-      case 0x86: // SystemFirmwareTableInformation etc.
+      case 0x4c: // SystemFirmwareTableInformation etc.
       default:
         this.log(`NtQuerySystemInformation class ${hex(cls)} not implemented`);
+        // No length needed: callers that size a buffer from it (kernel32's
+        // firmware tables) then see the class as unavailable.
+        ret(0);
         return STATUS.INVALID_INFO_CLASS;
     }
   },
