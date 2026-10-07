@@ -24,6 +24,17 @@ opt-level = 2
 [profile.test]
 opt-level = 1
 
+# iced-x86 measures instruction lengths by subtracting buffer pointers
+# truncated to u32, which wraps (correctly) when the buffer straddles a 4 GB
+# address boundary. Overflow checks turn that into a panic in debug builds
+# (an intermittent "attempt to subtract with overflow" in the decoder,
+# depending on where the allocator puts the buffer).
+[profile.dev.package.iced-x86]
+overflow-checks = false
+
+[profile.test.package.iced-x86]
+overflow-checks = false
+
 [profile.release]
 opt-level = 3
 lto = "thin"
