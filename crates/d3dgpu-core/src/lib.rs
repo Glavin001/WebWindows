@@ -22,6 +22,7 @@
 //! ```
 
 mod convert;
+mod d3d11;
 mod draw;
 mod present;
 mod resources;
@@ -495,6 +496,7 @@ impl Core {
                     e.insert_debug_marker(text);
                 }
             }
+            other => self.command11(other, shared),
         }
     }
 
