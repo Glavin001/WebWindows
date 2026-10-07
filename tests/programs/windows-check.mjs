@@ -16,7 +16,9 @@ let bad = 0;
 let ran = 0;
 for (const r of results) {
   if (r.status !== 'pass') continue;
-  const exe = join(dir, `${r.name}-${r.opt}.exe`);
+  // Results name their executable (torture tests share names with ours and
+  // live in a subdirectory, which CI does not upload).
+  const exe = join(dir, r.exe ?? `${r.name}-${r.opt}.exe`);
   if (!existsSync(exe)) continue;
   const run = spawnSync(exe, [], { encoding: 'latin1', timeout: 20000 });
   ran++;
