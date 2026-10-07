@@ -5,7 +5,7 @@
 //! instructions with `iced-x86`, records basic-block leaders and function
 //! entries, and recovers jump tables behind indirect jumps.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use iced_x86::{
     Code, ConditionCode, Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind,
@@ -34,6 +34,11 @@ pub trait CodeSource {
     /// Whether a value stored at `va` can be assumed to stay constant, so a
     /// jump table there can be trusted (read-only data or code).
     fn is_readonly(&self, va: u64) -> bool;
+    /// The function holding `va` when the image describes its functions
+    /// (x86-64 `.pdata`): [begin, end).
+    fn function_range(&self, _va: u64) -> Option<(u64, u64)> {
+        None
+    }
 }
 
 impl CodeSource for Image {
@@ -45,6 +50,9 @@ impl CodeSource for Image {
     }
     fn is_readonly(&self, va: u64) -> bool {
         self.section_of(va).is_some_and(|s| !s.is_writable())
+    }
+    fn function_range(&self, va: u64) -> Option<(u64, u64)> {
+        Image::function_range(self, va)
     }
 }
 
@@ -99,6 +107,10 @@ pub struct Discovery {
     /// Function entries translated elsewhere (fast mode): treated as
     /// functions but not decoded or translated again.
     pub external: BTreeSet<u64>,
+    /// Data addresses the decoded code refers to (RIP-relative and absolute
+    /// memory operands, `lea`), filled before tables are read without a
+    /// bound: a table ends where code refers to the next thing.
+    pub data_refs: HashSet<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -169,6 +181,88 @@ impl Discovery {
     pub fn explore(&mut self, src: &dyn CodeSource) {
         let mut work: VecDeque<u64> = self.leaders.iter().copied().collect();
         let mut done: BTreeSet<u64> = BTreeSet::new();
+        // Indirect jumps whose table bound was not found when first seen.
+        let mut deferred: Vec<(u64, Instruction)> = vec![];
+        loop {
+            self.explore_from(src, &mut work, &mut done, &mut deferred);
+            if deferred.is_empty() {
+                break;
+            }
+            // With more code decoded, the range checks may be visible now.
+            // Only when none of the waiting tables resolves are the rest read
+            // without a bound (up to where entries stop being code): their
+            // targets are guesses, and a wrong one decodes data as code.
+            let pending = std::mem::take(&mut deferred);
+            let mut found = false;
+            for unbounded in [false, true] {
+                if unbounded {
+                    self.collect_data_refs();
+                }
+                for &(va, inst) in &pending {
+                    if self.jump_tables.contains_key(&va) {
+                        continue;
+                    }
+                    if let Some(jt) = self.jump_table(src, va, &inst, unbounded) {
+                        for &t in &jt.targets {
+                            self.leaders.insert(t);
+                            work.push_back(t);
+                        }
+                        self.jump_tables.insert(va, jt);
+                        found = true;
+                    }
+                }
+                if found {
+                    break;
+                }
+            }
+            deferred = pending
+                .into_iter()
+                .filter(|(va, _)| !self.jump_tables.contains_key(va))
+                .collect();
+            if !found {
+                // Anything left is not a table.
+                break;
+            }
+        }
+    }
+
+    fn collect_data_refs(&mut self) {
+        let mut refs = HashSet::new();
+        for i in self.insts.values() {
+            for k in 0..i.op_count() {
+                // RIP-relative, or absolute (32-bit tables: `[table + i*4]`).
+                if i.op_kind(k) == OpKind::Memory
+                    && (i.memory_base() == Register::None
+                        || (matches!(i.memory_base(), Register::RIP | Register::EIP)
+                            && i.memory_index() == Register::None))
+                {
+                    refs.insert(i.memory_displacement64());
+                }
+            }
+        }
+        self.data_refs = refs;
+    }
+
+    fn jump_table(
+        &self,
+        src: &dyn CodeSource,
+        va: u64,
+        inst: &Instruction,
+        unbounded: bool,
+    ) -> Option<JumpTable> {
+        match self.mode {
+            Mode::X86 => find_jump_table(self, src, va, inst, unbounded),
+            Mode::X64 => find_jump_table64(self, src, va, inst, unbounded),
+        }
+    }
+
+    fn explore_from(
+        &mut self,
+        src: &dyn CodeSource,
+        work: &mut VecDeque<u64>,
+        done: &mut BTreeSet<u64>,
+        deferred: &mut Vec<(u64, Instruction)>,
+    ) {
         while let Some(start) = work.pop_front() {
             if !done.insert(start) || self.external.contains(&start) {
                 continue;
@@ -230,15 +324,17 @@ impl Discovery {
                     }
                     FlowControl::IndirectCall => push(self, next, false),
                     FlowControl::IndirectBranch => {
-                        let jt = match self.mode {
-                            Mode::X86 => find_jump_table(self, src, va, &inst),
-                            Mode::X64 => find_jump_table64(self, src, va, &inst),
-                        };
-                        if let Some(jt) = jt {
-                            for &t in &jt.targets {
-                                push(self, t, false);
+                        // A table whose range check is not decoded yet (its
+                        // dispatch block reached first through a branch)
+                        // waits; see below.
+                        match self.jump_table(src, va, &inst, false) {
+                            Some(jt) => {
+                                for &t in &jt.targets {
+                                    push(self, t, false);
+                                }
+                                self.jump_tables.insert(va, jt);
                             }
-                            self.jump_tables.insert(va, jt);
+                            None => deferred.push((va, inst)),
                         }
                     }
                     FlowControl::Return => {}
@@ -279,9 +375,43 @@ impl Discovery {
         }
     }
 
+    /// Whether `va` falls inside (not at the start of) a decoded instruction.
+    fn inside_inst(&self, va: u64) -> bool {
+        (1..15u64).any(|back| {
+            va.checked_sub(back)
+                .and_then(|a| self.insts.get(&a))
+                .is_some_and(|i| i.next_ip() > va)
+        })
+    }
+
     /// Finds the instruction that ends just before `va` in linear order.
     fn prev_inst(&self, va: u64) -> Option<Instruction> {
-        (1..=15u64).find_map(|back| {
+        // Several decodings can end at `va` when code was also decoded from
+        // a wrong address (the tail bytes of a real instruction read as
+        // another one). The real one has the longest run of instructions
+        // before it.
+        let mut best: Option<(usize, Instruction)> = None;
+        for c in self.prev_candidates(va) {
+            let mut depth = 0;
+            let mut at = c.ip();
+            while depth < 8 {
+                match self.prev_candidates(at).next() {
+                    Some(p) => {
+                        at = p.ip();
+                        depth += 1;
+                    }
+                    None => break,
+                }
+            }
+            if best.as_ref().is_none_or(|(d, _)| depth > *d) {
+                best = Some((depth, c));
+            }
+        }
+        best.map(|(_, i)| i)
+    }
+
+    fn prev_candidates(&self, va: u64) -> impl Iterator<Item = Instruction> + '_ {
+        (1..=15u64).filter_map(move |back| {
             let a = va.checked_sub(back)?;
             self.insts.get(&a).filter(|i| i.next_ip() == va).copied()
         })
@@ -409,6 +539,7 @@ fn find_jump_table(
     src: &dyn CodeSource,
     jmp_va: u64,
     jmp: &Instruction,
+    unbounded: bool,
 ) -> Option<JumpTable> {
     // Collect the block's instructions leading up to the jump, walking back
     // through fall-through predecessors.
@@ -440,7 +571,22 @@ fn find_jump_table(
     if !src.is_readonly(base) && !src.is_code(base) {
         return None;
     }
-    let bound = find_bound(&insts);
+    let index = match &rest[0] {
+        Sym::Mul(r, 4) => match **r {
+            Sym::Reg(r) => Some(r),
+            _ => None,
+        },
+        _ => None,
+    };
+    let bound = find_bound(&insts).or_else(|| guard_bound(d, &insts, jidx, index?));
+    if bound.is_none() && !unbounded {
+        return None;
+    }
+    let extent = if bound.is_none() {
+        function_extent(d, src, jmp_va)
+    } else {
+        None
+    };
     let limit = bound.unwrap_or(1024).min(4096) as u64;
     let mut targets = vec![];
     let jmp_section_code = src.is_code(jmp_va);
@@ -452,8 +598,14 @@ fn find_jump_table(
         if !src.is_code(t) || !jmp_section_code {
             break;
         }
-        // Without a known bound, stop where another table or code starts.
-        if bound.is_none() && k > 0 && (base + k * 4 == t || d.functions.contains(&(base + k * 4)))
+        // Without a known bound, stop where another table or code starts,
+        // or at a target outside the jump's function.
+        if bound.is_none()
+            && ((k > 0
+                && (base + k * 4 == t
+                    || d.functions.contains(&(base + k * 4))
+                    || d.data_refs.contains(&(base + k * 4))))
+                || extent.is_some_and(|(lo, hi)| t < lo || t >= hi))
         {
             break;
         }
@@ -528,15 +680,32 @@ fn find_jump_table64(
     src: &dyn CodeSource,
     jmp_va: u64,
     jmp: &Instruction,
+    unbounded: bool,
 ) -> Option<JumpTable> {
     let insts = block_before(d, jmp_va, jmp);
     let jidx = insts.len() - 1;
-    let bound = find_bound(&insts);
-    let limit = bound.unwrap_or(1024).min(4096) as u64;
-    let jmp_section_code = src.is_code(jmp_va);
-    if !jmp_section_code {
+    if !src.is_code(jmp_va) {
         return None;
     }
+    // The table's bound, from a check of `index` before instruction `at`.
+    // With none, the entries end where a target leaves the jump's own
+    // function: reading on would take the next table's entries, relative to
+    // another base, as code addresses.
+    let bounds = |index: Register, at: usize| {
+        let bound = find_bound(&insts).or_else(|| guard_bound(d, &insts, at, index));
+        if bound.is_none() && !unbounded {
+            return None;
+        }
+        let range = if bound.is_none() {
+            function_extent(d, src, jmp_va)
+        } else {
+            None
+        };
+        Some((bound, range))
+    };
+    let in_range = |t: u64, bound: Option<u32>, range: Option<(u64, u64)>| {
+        range.is_none_or(|(lo, hi)| t >= lo && t < hi) && (bound.is_some() || !d.inside_inst(t))
+    };
     let mut targets = vec![];
     if jmp.op0_kind() == OpKind::Memory {
         if jmp.memory_base() != Register::None
@@ -545,6 +714,8 @@ fn find_jump_table64(
         {
             return None;
         }
+        let (bound, range) = bounds(jmp.memory_index(), jidx)?;
+        let limit = bound.unwrap_or(1024).min(4096) as u64;
         let base = jmp.memory_displacement64();
         if !src.is_readonly(base) && !src.is_code(base) {
             return None;
@@ -553,10 +724,13 @@ fn find_jump_table64(
             let Some(t) = src.read_u64(base + k * 8) else {
                 break;
             };
-            if !src.is_code(t) {
+            if !src.is_code(t) || !in_range(t, bound, range) {
                 break;
             }
-            if bound.is_none() && k > 0 && d.functions.contains(&(base + k * 8)) {
+            if bound.is_none()
+                && k > 0
+                && (d.functions.contains(&(base + k * 8)) || d.data_refs.contains(&(base + k * 8)))
+            {
                 break;
             }
             targets.push(t);
@@ -600,16 +774,21 @@ fn find_jump_table64(
         if !src.is_readonly(base) && !src.is_code(base) {
             return None;
         }
+        let (bound, range) = bounds(load.memory_index(), lidx)?;
+        let limit = bound.unwrap_or(1024).min(4096) as u64;
         for k in 0..limit {
             let Some(e) = src.read_u32(base + k * 4) else {
                 break;
             };
             // GCC's entries are signed offsets from the table.
             let t = x.wrapping_add(e as i32 as i64 as u64);
-            if !src.is_code(t) {
+            if !src.is_code(t) || !in_range(t, bound, range) {
                 break;
             }
-            if bound.is_none() && k > 0 && d.functions.contains(&(base + k * 4)) {
+            if bound.is_none()
+                && k > 0
+                && (d.functions.contains(&(base + k * 4)) || d.data_refs.contains(&(base + k * 4)))
+            {
                 break;
             }
             targets.push(t);
@@ -627,12 +806,9 @@ fn find_jump_table64(
 fn find_bound(insts: &[Instruction]) -> Option<u32> {
     for w in insts.windows(2).rev() {
         let (c, j) = (&w[0], &w[1]);
-        if c.mnemonic() == Mnemonic::Cmp
-            && matches!(
-                c.op1_kind(),
-                OpKind::Immediate32 | OpKind::Immediate8to32 | OpKind::Immediate8
-            )
-        {
+        if c.mnemonic() == Mnemonic::Cmp && is_immediate(c.op1_kind()) {
+            // The compare's own width: `cmp ax, 0x35` bounds a table indexed
+            // by a zero-extended 16-bit value.
             let imm = c.immediate(1) as u32;
             return match j.condition_code() {
                 ConditionCode::a => imm.checked_add(1),
@@ -642,6 +818,99 @@ fn find_bound(insts: &[Instruction]) -> Option<u32> {
         }
     }
     None
+}
+
+/// The extent of the function holding `va`: its `.pdata` range when the
+/// image has one, otherwise from the closest known function entry at or
+/// before `va` to the next one.
+fn function_extent(d: &Discovery, src: &dyn CodeSource, va: u64) -> Option<(u64, u64)> {
+    src.function_range(va).or_else(|| {
+        let lo = *d.functions.range(..=va).next_back()?;
+        let hi = d
+            .functions
+            .range(va + 1..)
+            .next()
+            .copied()
+            .unwrap_or(u64::MAX);
+        Some((lo, hi))
+    })
+}
+
+/// The bound of a table whose dispatch block (`insts`) is reached by a
+/// branch rather than by falling through from its range check (`cmp i, N;
+/// jbe block` elsewhere, typically a little earlier): looks back up to 64
+/// instructions for that guard. It counts only when it checks `index`, the
+/// register the table load at `insts[at]` uses, and nothing in the block
+/// changes that register first (a call clobbers the volatile ones), other
+/// than extending it in place (`mov eax, eax`).
+fn guard_bound(d: &Discovery, insts: &[Instruction], at: usize, index: Register) -> Option<u32> {
+    let full = index.full_register();
+    let volatile = [
+        Register::RAX,
+        Register::RCX,
+        Register::RDX,
+        Register::R8,
+        Register::R9,
+        Register::R10,
+        Register::R11,
+        Register::EAX,
+        Register::ECX,
+        Register::EDX,
+    ];
+    for i in &insts[..at] {
+        if i.flow_control() == FlowControl::Call && volatile.contains(&full) {
+            return None;
+        }
+        let writes = i.op_count() > 0
+            && i.op0_kind() == OpKind::Register
+            && i.op0_register().full_register() == full
+            && !matches!(i.mnemonic(), Mnemonic::Cmp | Mnemonic::Test);
+        let extends = matches!(
+            i.mnemonic(),
+            Mnemonic::Mov | Mnemonic::Movzx | Mnemonic::Movsxd
+        ) && i.op1_kind() == OpKind::Register
+            && i.op1_register().full_register() == full;
+        if writes && !extends {
+            return None;
+        }
+    }
+    let block = insts[0].ip();
+    let mut va = block;
+    for _ in 0..64 {
+        let j = d.prev_inst(va)?;
+        va = j.ip();
+        if j.flow_control() != FlowControl::ConditionalBranch || j.near_branch_target() != block {
+            continue;
+        }
+        let c = d.prev_inst(va)?;
+        if c.mnemonic() != Mnemonic::Cmp
+            || c.op0_kind() != OpKind::Register
+            || c.op0_register().full_register() != full
+            || !is_immediate(c.op1_kind())
+        {
+            return None;
+        }
+        let imm = c.immediate(1) as u32;
+        return match j.condition_code() {
+            ConditionCode::be => imm.checked_add(1),
+            ConditionCode::b => Some(imm),
+            _ => None,
+        };
+    }
+    None
+}
+
+fn is_immediate(k: OpKind) -> bool {
+    matches!(
+        k,
+        OpKind::Immediate8
+            | OpKind::Immediate16
+            | OpKind::Immediate8to16
+            | OpKind::Immediate32
+            | OpKind::Immediate8to32
+            | OpKind::Immediate32to64
+            | OpKind::Immediate8to64
+    )
 }
 
 /// Scans a data range for 32-bit values that point at valid instruction

@@ -151,6 +151,9 @@ pub struct PeFile {
     /// x86-64: RVAs of the function starts in `.pdata` (chained entries,
     /// which describe parts of a function, left out).
     pub pdata: Vec<u32>,
+    /// x86-64: every `.pdata` entry's [begin, end) RVAs, chained ones
+    /// included, sorted by begin.
+    pub pdata_ranges: Vec<(u32, u32)>,
 }
 
 fn rd_u64(d: &[u8], off: usize) -> Result<u64> {
@@ -279,6 +282,7 @@ impl PeFile {
             reloc_types: vec![],
             tls: None,
             pdata: vec![],
+            pdata_ranges: vec![],
         };
         if dirs[DIR_IMPORT].0 != 0 {
             pe.imports = pe.parse_imports(dirs[DIR_IMPORT].0).context("imports")?;
@@ -309,7 +313,7 @@ impl PeFile {
             pe.tls = Some(pe.parse_tls(dirs[DIR_TLS].0).context("tls")?);
         }
         if wide && dirs[DIR_EXCEPTION].0 != 0 {
-            pe.pdata = pe
+            (pe.pdata, pe.pdata_ranges) = pe
                 .parse_pdata(dirs[DIR_EXCEPTION].0, dirs[DIR_EXCEPTION].1)
                 .context("pdata")?;
         }
@@ -403,15 +407,22 @@ impl PeFile {
     }
 
     /// `.pdata`: 12-byte RUNTIME_FUNCTION entries (begin, end, unwind info).
-    fn parse_pdata(&self, dir_rva: u32, dir_size: u32) -> Result<Vec<u32>> {
+    /// Returns the function starts and every entry's range.
+    #[allow(clippy::type_complexity)]
+    fn parse_pdata(&self, dir_rva: u32, dir_size: u32) -> Result<(Vec<u32>, Vec<(u32, u32)>)> {
         const UNW_FLAG_CHAININFO: u8 = 4;
         let mut out = vec![];
+        let mut ranges = vec![];
         for k in 0..dir_size / 12 {
             let e = dir_rva + k * 12;
             let begin = self.u32_at_rva(e)?;
+            let end = self.u32_at_rva(e + 4)?;
             let unwind = self.u32_at_rva(e + 8)?;
             if begin == 0 {
                 continue;
+            }
+            if end > begin {
+                ranges.push((begin, end));
             }
             // An odd unwind RVA points at another RUNTIME_FUNCTION (a
             // chained entry); otherwise check the UNWIND_INFO flags.
@@ -428,7 +439,8 @@ impl PeFile {
         }
         out.sort_unstable();
         out.dedup();
-        Ok(out)
+        ranges.sort_unstable();
+        Ok((out, ranges))
     }
 
     pub fn is_dll(&self) -> bool {
@@ -663,6 +675,11 @@ impl PeFile {
             base: self.image_base,
             bytes: self.load_image(self.image_base)?,
             sections: self.sections.clone(),
+            functions: self
+                .pdata_ranges
+                .iter()
+                .map(|&(b, e)| (self.image_base + b as u64, self.image_base + e as u64))
+                .collect(),
         })
     }
 }
@@ -673,6 +690,8 @@ pub struct Image {
     pub base: u64,
     pub bytes: Vec<u8>,
     pub sections: Vec<Section>,
+    /// x86-64: the `.pdata` function ranges (absolute, sorted).
+    pub functions: Vec<(u64, u64)>,
 }
 
 impl Image {
@@ -687,6 +706,12 @@ impl Image {
         self.sections
             .iter()
             .any(|s| s.is_executable() && s.contains_rva(rva))
+    }
+    /// The `.pdata` range holding `va` (x86-64).
+    pub fn function_range(&self, va: u64) -> Option<(u64, u64)> {
+        let i = self.functions.partition_point(|&(b, _)| b <= va);
+        let &(b, e) = self.functions.get(i.checked_sub(1)?)?;
+        (va < e).then_some((b, e))
     }
     /// Bytes from `va` to the end of its section (or image).
     pub fn bytes_from(&self, va: u64) -> &[u8] {

@@ -132,6 +132,13 @@ impl<'a> ModuleGen<'a> {
         }
     }
 
+    /// Sets whether code addresses are 64-bit (by default, whether the
+    /// first function is x86-64 code on a 64-bit memory).
+    pub fn with_code64(mut self, code64: bool) -> Self {
+        self.code64 = code64;
+        self
+    }
+
     /// Disables direct calls between the module's functions (for modules
     /// whose functions share entry addresses, like instruction tests).
     pub fn without_direct_calls(mut self) -> Self {

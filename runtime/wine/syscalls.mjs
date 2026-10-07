@@ -16,6 +16,9 @@ import {
   PAGE_READWRITE, PAGE_READONLY, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_WRITECOPY,
 } from './vm.mjs';
 
+/** The Unix-library handle of DLLs whose Unix calls are not implemented. */
+export const STUB_UNIXLIB = 0x3000;
+
 export const STATUS = {
   DLL_NOT_FOUND: 0xc0000135,
   SUCCESS: 0,
@@ -223,6 +226,15 @@ export const SYSCALLS = {
       const img = this.images.get(addr);
       if (this.unix && img && /\\win32u\.dll$/i.test(img.path)) {
         this.w32(buf, WIN32U_UNIXLIB);
+        this.w32(buf + 4, 0);
+        return STATUS.SUCCESS;
+      }
+      // DLLs that refuse to load without a Unix library get one whose
+      // calls all fail (STATUS_NOT_IMPLEMENTED), so that programs importing
+      // them start: ws2_32 (sockets; a page has none) and crypt32 (the
+      // system's certificate stores).
+      if (img && /\\(ws2_32|crypt32)\.dll$/i.test(img.path)) {
+        this.w32(buf, STUB_UNIXLIB);
         this.w32(buf + 4, 0);
         return STATUS.SUCCESS;
       }
@@ -606,6 +618,17 @@ export const SYSCALLS = {
         this.w64(buf + 40, size);
         this.w32(buf + 48, f.dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
         return done(56);
+      case 68: // FileStatInformation (the CRT's stat): id, four times, sizes, attributes, tag, links, access
+        if (len < 72) return STATUS.INFO_LENGTH_MISMATCH;
+        this.m.u8.fill(0, buf, buf + 72);
+        this.w64(buf, 0);
+        writeTimes(this, buf + 8);
+        this.w64(buf + 40, (size + 4095) & ~4095);
+        this.w64(buf + 48, size);
+        this.w32(buf + 56, f.dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
+        this.w32(buf + 64, 1);
+        this.w32(buf + 68, 0x1f01ff); // FILE_ALL_ACCESS
+        return done(72);
       case 35: // FileAttributeTagInformation
         this.w32(buf, f.dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
         this.w32(buf + 4, 0);
@@ -702,9 +725,14 @@ export const SYSCALLS = {
     if (!dir || dir.type !== 'file') return STATUS.INVALID_HANDLE;
     if (!dir.dir) return STATUS.INVALID_PARAMETER;
     // FILE_INFORMATION_CLASS -> offset of FileName (and of FileId, if any).
-    const LAYOUT = { 1: [64], 2: [68], 3: [94], 12: [12], 37: [104, 96], 38: [80, 72] };
+    // 60/63 (FileIdExtd[Both]DirectoryInformation, which Wine 11's
+    // FindFirstFileEx asks for) have a 128-bit FileId; the low half is set.
+    const LAYOUT = { 1: [64], 2: [68], 3: [94], 12: [12], 37: [104, 96], 38: [80, 72], 60: [88, 72], 63: [114, 72] };
     const layout = LAYOUT[cls];
-    if (!layout) return STATUS.INVALID_INFO_CLASS;
+    if (!layout) {
+      this.log(`NtQueryDirectoryFile class ${cls} not implemented`);
+      return STATUS.INVALID_INFO_CLASS;
+    }
     // The listing is taken on the first call (or a restart), with its mask.
     if (restart || !dir.listing) {
       const mask = pmask ? this.ustr(pmask) : '*';

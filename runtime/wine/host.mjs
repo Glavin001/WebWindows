@@ -22,8 +22,8 @@
 
 import { ProcessExit, hex } from '../runtime.mjs';
 import { mapImage } from '../pe.mjs';
-import { VirtualMemory, MEM_IMAGE, MEM_PRIVATE, PAGE_READWRITE, PAGE_EXECUTE_READ, PAGE_READONLY } from './vm.mjs';
-import { SYSCALLS, STATUS } from './syscalls.mjs';
+import { VirtualMemory, MEM_IMAGE, MEM_MAPPED, MEM_PRIVATE, PAGE_READWRITE, PAGE_EXECUTE_READ, PAGE_READONLY } from './vm.mjs';
+import { SYSCALLS, STATUS, STUB_UNIXLIB } from './syscalls.mjs';
 import { HANDLE_ROUTED, WIN32U_UNIXLIB } from './unix.mjs';
 
 import layout from './layout.json' with { type: 'json' };
@@ -90,7 +90,9 @@ export function rebaseImage(bytes, info, base) {
   const dv0 = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const opt = dv0.getUint32(0x3c, true) + 24;
   if (info.characteristics & 0x0001) return null; // IMAGE_FILE_RELOCS_STRIPPED
-  const out = bytes.slice();
+  // A copy with its own buffer: Node's small file buffers are views into a
+  // shared pool, and Buffer#slice does not copy.
+  const out = new Uint8Array(bytes);
   const dv = new DataView(out.buffer);
   const offsetOf = (rva) => {
     if (rva < info.sizeOfHeaders) return rva;
@@ -398,11 +400,13 @@ export class WineHost {
     this.exe = exe;
 
     // PEB, TEB, process parameters.
-    // The page after the PEB holds the debug channels (as Wine's Unix side
-    // leaves them; ntdll's __wine_dbg_get_channel_flags reads them there).
-    this.peb = this.alloc(0x2000, PAGE_READWRITE, 'PEB');
+    // The debug channels follow the PEB (as Wine's Unix side leaves them;
+    // ntdll's __wine_dbg_get_channel_flags reads them one page per 4 bytes
+    // of pointer size after it: +0x1000 on i386, +0x2000 on x86-64).
+    const debugAt = 0x1000 * (this.ps / 4);
+    this.peb = this.alloc(debugAt + 0x1000, PAGE_READWRITE, 'PEB');
     this.buildPeb(exe);
-    this.writeDebugOptions(this.peb + 0x1000, this.debug);
+    this.writeDebugOptions(this.peb + debugAt, this.debug);
     this.teb = this.alloc(0x2000, PAGE_READWRITE, 'TEB');
     this.cpu = m.newCpu();
     this.buildTeb(this.teb, exe.info);
@@ -540,7 +544,35 @@ export class WineHost {
     this.wptr(p + P.HeapDeCommitTotalFreeThreshold, 0x10000);
     this.wptr(p + P.HeapDeCommitFreeBlockThreshold, 0x1000);
     this.wptr(p + P.ActiveProcessAffinityMask, 1);
-    // An empty API set map (version 6): no api-ms-win-* redirections yet.
+    this.wptr(p + P.ApiSetMap, this.loadApiSet());
+    this.wptr(p + P.ProcessParameters, this.buildParams());
+  }
+
+  /**
+   * The API set map (api-ms-win-* names to DLLs, e.g. the Universal CRT's
+   * api-ms-win-crt-* to ucrtbase): as Wine's Unix loader does, the
+   * `.apiset` section of apisetschema.dll mapped as a file. Without that
+   * DLL, an empty map (version 6).
+   */
+  loadApiSet() {
+    const file = this.fileAt('c:\\windows\\system32\\apisetschema.dll');
+    if (file) {
+      const info = parsePe(file);
+      const dv = new DataView(file.buffer, file.byteOffset, file.byteLength);
+      const pe = dv.getUint32(0x3c, true);
+      const first = pe + 24 + dv.getUint16(pe + 20, true);
+      for (let i = 0; i < info.sections.length; i++) {
+        const sec = first + i * 40;
+        const name = String.fromCharCode(...file.subarray(sec, sec + 8)).replace(/\0+$/, '');
+        const s = info.sections[i];
+        if (name !== '.apiset' || dv.getUint32(s.raw_offset, true) !== 6) continue;
+        const size = Math.ceil(file.length / 0x1000) * 0x1000;
+        const base = this.vm.reserve(0, size, { type: MEM_MAPPED, prot: PAGE_READONLY, name: 'apisetschema.dll' });
+        this.vm.commit(base, size, PAGE_READONLY);
+        this.m.u8.set(file, base);
+        return base + s.raw_offset;
+      }
+    }
     const api = this.alloc(0x1000, PAGE_READONLY, 'ApiSetMap');
     this.w32(api + 0, 6); // Version
     this.w32(api + 4, 28); // Size
@@ -549,8 +581,7 @@ export class WineHost {
     this.w32(api + 16, 28); // EntryOffset
     this.w32(api + 20, 28); // HashOffset
     this.w32(api + 24, 31); // HashFactor
-    this.wptr(p + P.ApiSetMap, api);
-    this.wptr(p + P.ProcessParameters, this.buildParams());
+    return api;
   }
 
   buildParams() {
@@ -836,7 +867,7 @@ export class WineHost {
     } else if (handle === WIN32U_UNIXLIB && this.unix) {
       status = this.unix.win32uUnixCall(code, args);
     } else {
-      this.log(`unix call to unknown library ${hex(handle)} code ${code}`);
+      if (handle !== STUB_UNIXLIB) this.log(`unix call to unknown library ${hex(handle)} code ${code}`);
     }
     m.setReg(cpu, EAX, status >>> 0);
     m.setReg(cpu, ESP, esp + 20);
@@ -871,7 +902,7 @@ export class WineHost {
     let status = STATUS.NOT_IMPLEMENTED;
     if (handle === 0x1000) status = this.ntdllUnixCall(code, args);
     else if (handle === WIN32U_UNIXLIB && this.unix) status = this.unix.win32uUnixCall(code, args);
-    else this.log(`unix call to unknown library ${hex(handle)} code ${code}`);
+    else if (handle !== STUB_UNIXLIB) this.log(`unix call to unknown library ${hex(handle)} code ${code}`);
     m.setReg(cpu, EAX, status >>> 0);
     m.setSp(cpu, rsp + 8);
     return ret;

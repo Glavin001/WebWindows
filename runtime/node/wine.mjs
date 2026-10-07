@@ -10,6 +10,10 @@
 //                     "500:click 20,80; 900:text Hi; 1200:key Enter"
 //                     (click/rclick/move X,Y; key CODE as in KeyboardEvent.code;
 //                     text types letters, digits and spaces)
+//   --dir DIR         DIR is C:\app (as a folder chosen in the browser): the
+//                     program runs from there (from C:\app if it lives
+//                     elsewhere), and files it creates or changes there are
+//                     written back to DIR when it exits
 //
 // Wine's PE DLLs come from WINE_BUILD (default /opt/wine-build) and its NLS
 // files from WINE_SRC; translations are cached in target/wine-cache.
@@ -20,7 +24,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Machine, GuestFault, hex } from '../runtime.mjs';
@@ -76,6 +80,7 @@ let unixTrace = false;
 let screenshot = null;
 let runFor = Infinity;
 let script = [];
+let appDir = null;
 // Wine's Unix side compiled with Emscripten (native/wine-unix): on when built,
 // unless --no-unix. 64-bit programs use its wasm64 build (ARCH=x86_64).
 let unixDir = join(root, 'target/wine-unix');
@@ -92,6 +97,7 @@ while (args[0]?.startsWith('--')) {
   // ... or once it has run this long (programs with timers never go idle).
   else if (a === '--run-for') runFor = Number(args.shift());
   else if (a === '--input') script = parseInput(args.shift());
+  else if (a === '--dir') appDir = resolve(args.shift());
 }
 
 /** "ms:action args; ..." -> [{at, push(display)}], in time order. */
@@ -163,8 +169,41 @@ for (const f of readdirSync(join(wineSrc, 'nls'))) {
   if (f.endsWith('.nls')) files.set(`${sys32}\\${f.toLowerCase()}`, readFileSync(join(wineSrc, 'nls', f)));
 }
 files.set('c:\\windows\\globalization\\sorting\\sortdefault.nls', files.get(`${sys32}\\sortdefault.nls`));
-const exeDos = `c:\\${basename(exe).toLowerCase()}`;
+// The program: at C:\, or with --dir in C:\app, next to the folder's files.
+const appFiles = new Map(); // DOS path -> [host path, original bytes]
+let exeWin = `C:\\${basename(exe)}`;
+if (appDir) {
+  const walk = (dir, rel) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const r = rel ? `${rel}\\${e.name}` : e.name;
+      if (e.isDirectory()) walk(join(dir, e.name), r);
+      else if (e.isFile()) {
+        const bytes = readFileSync(join(dir, e.name));
+        // A copy: the program's writes change the file's bytes in place.
+        appFiles.set(`c:\\app\\${r.toLowerCase()}`, [join(dir, e.name), Buffer.from(bytes)]);
+        files.set(`c:\\app\\${r.toLowerCase()}`, bytes);
+      }
+    }
+  };
+  walk(appDir, '');
+  const rel = relative(appDir, resolve(exe));
+  exeWin = `C:\\app\\${rel.startsWith('..') ? basename(exe) : rel.replaceAll('/', '\\')}`;
+}
+const exeDos = exeWin.toLowerCase();
 files.set(exeDos, readFileSync(exe));
+
+/** --dir: writes the files the program created or changed in C:\app back to the folder. */
+function syncBack() {
+  if (!appDir) return;
+  for (const [dos, bytes] of files) {
+    if (!dos.startsWith('c:\\app\\') || dos === exeDos) continue;
+    const old = appFiles.get(dos);
+    if (old && Buffer.compare(old[1], Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length)) === 0) continue;
+    const host = old ? old[0] : join(appDir, ...dos.slice('c:\\app\\'.length).split('\\'));
+    mkdirSync(dirname(host), { recursive: true });
+    writeFileSync(host, bytes);
+  }
+}
 
 mkdirSync(cacheDir, { recursive: true });
 const abi = JSON.parse(execFileSync(wwt(), ['abi']).toString());
@@ -246,8 +285,8 @@ if (existsSync(tw)) {
 const host = new WineHost(machine, {
   translate,
   files,
-  argv: [`C:\\${basename(exe)}`, ...args],
-  exePath: `C:\\${basename(exe)}`,
+  argv: [exeWin, ...args],
+  exePath: exeWin,
   stdout: (b) => stdout(b),
   stderr: (b) => stderr(b),
   trace,
@@ -256,6 +295,7 @@ const host = new WineHost(machine, {
 });
 host.boot(`${sys32}\\ntdll.dll`, exeDos);
 const r = host.run();
+syncBack();
 if (host.unimplemented.size) {
   stderr(`unimplemented syscalls: ${[...host.unimplemented.keys()].join(', ')}\n`);
 }

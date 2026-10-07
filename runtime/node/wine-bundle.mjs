@@ -39,6 +39,8 @@ const DLLS = ['ntdll', 'kernelbase', 'kernel32', 'msvcrt', 'ucrtbase'];
 const GUI_DLLS = [
   'advapi32', 'sechost', 'user32', 'gdi32', 'win32u', 'imm32', 'combase', 'comctl32', 'coml2', 'cryptbase',
   'ole32', 'rpcrt4', 'uxtheme', 'comdlg32', 'shcore', 'shell32', 'shlwapi', 'comctl32_v6', 'oleaut32',
+  // Networking and cryptography (PuTTY, curl), loaded by programs, not by Wine.
+  'ws2_32', 'crypt32', 'dnsapi', 'nsi', 'iphlpapi', 'secur32', 'bcrypt', 'normaliz', 'wldap32',
 ];
 // MinGW's default DLL base, and where the bundle moves those DLLs to.
 const DEFAULT_BASE = x64 ? 0x1_8000_0000 : 0x10000000;
@@ -82,6 +84,15 @@ for (const d of [...DLLS, ...(withUnix ? GUI_DLLS : [])]) {
 for (const n of NLS) {
   copyFileSync(join(wineSrc, 'nls', `${n}.nls`), join(out, `${n}.nls`));
   manifest.nls.push(`${n}.nls`);
+}
+// The API set map (api-ms-win-crt-* and the like to their DLLs), read as a
+// file at boot, not loaded as code.
+manifest.system32 = [];
+if (existsSync(dllPath('apisetschema'))) {
+  copyFileSync(dllPath('apisetschema'), join(out, 'apisetschema.dll'));
+  manifest.system32.push('apisetschema.dll');
+} else {
+  console.warn(`no API set map: ${dllPath('apisetschema')} not built (tools/wine/build.sh apisetschema)`);
 }
 
 if (withUnix) {

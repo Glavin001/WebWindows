@@ -88,7 +88,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
       files.set(`${sys32}\\${name}`, new Uint8Array(pe));
       compiled.set(`${sys32}\\${name}`, mod);
     }),
-    ...manifest.nls.map(async (n) => {
+    ...[...manifest.nls, ...(manifest.system32 ?? [])].map(async (n) => {
       files.set(`${sys32}\\${n}`, new Uint8Array(await (await fetch(new URL(n, base))).arrayBuffer()));
     }),
   ]);

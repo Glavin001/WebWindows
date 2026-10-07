@@ -309,6 +309,57 @@ console programs and Wine's Notepad and Minesweeper in both builds.
 Fixing the layouts also corrected the i386 `SystemBasicInformation`, which
 had been written one field off (a 256 KB page size).
 
+### Real programs
+
+`tests/wine/apps.mjs` runs published Windows programs, the 32-bit and the
+64-bit build of each where both exist (`sh tools/apps/fetch.sh` downloads
+them into `target/apps`), with a folder as `C:\app` (`wine.mjs --dir`, which
+writes the files a program creates or changes back to the folder):
+
+| Program | x86 | x64 |
+| --- | --- | --- |
+| NASM 2.16.03: assemble a file (macros, `%rep`, AVX, RIP-relative), byte-identical to native NASM | pass | pass |
+| ndisasm: disassemble it | pass | pass |
+| 7-Zip 23.01 `7za`: create an LZMA2 archive, test it, extract it | pass | pass |
+| PuTTY 0.85: the configuration dialog (tree view, combo box, list box) | pass | pass |
+| plink 0.85 `-V` | pass | pass |
+| SQLite 3.53 shell: tables, recursive CTE, indexes, JSON, math | — | pass |
+| curl 8.22 (MinGW, LibreSSL, nghttp2/3, libssh2): `-V`, a `file://` download | — | pass |
+| trurl: parse a URL | — | pass |
+
+What these needed, on top of the hello-world programs:
+
+* **The API set map.** MSVC-built programs import the Universal CRT as
+  `api-ms-win-crt-*`. The host now maps `apisetschema.dll`'s `.apiset`
+  section as the PEB's `ApiSetMap`, as Wine's Unix loader does, instead of
+  an empty map (both architectures; the bundles ship the DLL).
+* **More of Wine:** `ws2_32`, `crypt32`, `dnsapi`, `nsi`, `iphlpapi`,
+  `secur32`, `bcrypt`, `normaliz` and `wldap32` (built for both, in the
+  bundles). Their Unix libraries (sockets, GnuTLS) are not ported:
+  `ws2_32` and `crypt32` get a stub library handle, so they load and fail
+  the calls that need the Unix side.
+* **File information:** `FileStatInformation` (SQLite) and the
+  `FileIdExtdBothDirectoryInformation` listing (7-Zip).
+* **64-bit Wine's debug channels** sit at PEB + 0x2000 (PEB + 0x1000 on
+  i386), so x64 `err:` messages now show.
+* **Jump tables.** curl's translation was 83 MB with single functions of
+  several MB, enough for V8's optimizing compiler to run out of zone memory:
+  table reads ran on into the next table or into code. Discovery now reads
+  a table only to its bound: a `cmp`/`ja` before the jump, or a guard of
+  the same index register on a branch to the dispatch block (`cmp ecx, N;
+  jbe dispatch`); without one, the table is deferred until the rest of the
+  image is explored and then stops at the function's end (`.pdata` on x64),
+  at the next function or referenced datum, or at a target inside another
+  instruction. curl is now 30 MB (largest function 358 KB), the x64
+  `msvcrt` went from 9.9 MB to 4.3 MB, and the Wine DLLs on both
+  architectures still translate with no unsupported instructions outside
+  `ntdll`'s and `win32u`'s `syscall` stubs (which never run).
+
+Two limits found here belong to work in progress elsewhere: 7-Zip
+extracting into a subfolder needs directory creation, and updating an
+existing archive needs file rename and delete (the Wine-runtime file
+system work).
+
 ## Not done yet
 
 * **64-bit Wine's tests:** kernel32, user32 and gdi32 conformance tests
