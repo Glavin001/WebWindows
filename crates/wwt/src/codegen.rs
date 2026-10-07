@@ -194,8 +194,16 @@ impl<'a> ModuleGen<'a> {
             EntityType::Function(T_CODE_WRITE),
         );
         imp.import(imports::MODULE, imports::MATH, EntityType::Function(T_MATH));
-        imp.import(imports::MODULE, imports::SIN, EntityType::Function(T_F64_F64));
-        imp.import(imports::MODULE, imports::COS, EntityType::Function(T_F64_F64));
+        imp.import(
+            imports::MODULE,
+            imports::SIN,
+            EntityType::Function(T_F64_F64),
+        );
+        imp.import(
+            imports::MODULE,
+            imports::COS,
+            EntityType::Function(T_F64_F64),
+        );
         imp.import(
             imports::MODULE,
             imports::MEMORY,
@@ -1250,11 +1258,15 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let fi = self.m.helper_func_index(*h);
                 self.emit(W::Call(fi));
             }
-            Op::Math { op: MathOp::Sin, a, .. } => {
+            Op::Math {
+                op: MathOp::Sin, a, ..
+            } => {
                 self.get(*a);
                 self.emit(W::Call(F_SIN));
             }
-            Op::Math { op: MathOp::Cos, a, .. } => {
+            Op::Math {
+                op: MathOp::Cos, a, ..
+            } => {
                 self.get(*a);
                 self.emit(W::Call(F_COS));
             }

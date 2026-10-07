@@ -411,9 +411,13 @@ impl PeFile {
     pub fn function_symbols(&self) -> std::collections::BTreeMap<u32, String> {
         let mut out = std::collections::BTreeMap::new();
         let d = &self.data;
-        let Ok(pe_off) = rd_u32(d, 0x3c) else { return out };
+        let Ok(pe_off) = rd_u32(d, 0x3c) else {
+            return out;
+        };
         let coff = pe_off as usize + 4;
-        let (Ok(table), Ok(count)) = (rd_u32(d, coff + 8), rd_u32(d, coff + 12)) else { return out };
+        let (Ok(table), Ok(count)) = (rd_u32(d, coff + 8), rd_u32(d, coff + 12)) else {
+            return out;
+        };
         let (table, count) = (table as usize, count as usize);
         if table == 0 || table.saturating_add(count.saturating_mul(18)) > d.len() {
             return out;
@@ -428,8 +432,12 @@ impl PeFile {
             let aux = d[s + 17] as usize;
             if section > 0 && ty & 0x30 == 0x20 {
                 let raw = if d[s..s + 4] == [0; 4] {
-                    let off = strings + u32::from_le_bytes(d[s + 4..s + 8].try_into().unwrap()) as usize;
-                    let end = d.get(off..).and_then(|t| t.iter().position(|&b| b == 0)).map(|n| off + n);
+                    let off =
+                        strings + u32::from_le_bytes(d[s + 4..s + 8].try_into().unwrap()) as usize;
+                    let end = d
+                        .get(off..)
+                        .and_then(|t| t.iter().position(|&b| b == 0))
+                        .map(|n| off + n);
                     end.map(|e| &d[off..e]).unwrap_or(&[])
                 } else {
                     let n = d[s..s + 8].iter().position(|&b| b == 0).unwrap_or(8);
@@ -438,7 +446,8 @@ impl PeFile {
                 if let Some(sec) = self.sections.get(section as usize - 1) {
                     let name = String::from_utf8_lossy(raw);
                     let name = name.strip_prefix('_').unwrap_or(&name).to_string();
-                    out.entry(self.image_base + sec.virtual_address + value).or_insert(name);
+                    out.entry(self.image_base + sec.virtual_address + value)
+                        .or_insert(name);
                 }
             }
             i += 1 + aux;
