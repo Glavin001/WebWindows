@@ -1492,7 +1492,13 @@ impl<'a> Lifter<'a> {
                 return false;
             }
             M::Loop | M::Loope | M::Loopne => {
-                let n = self.aopi(BinOp::I32Sub, ECX, 1);
+                // In 64-bit code the 0x67 prefix counts in ecx.
+                let n = if self.x64() && i.op_code().address_size() == 32 {
+                    let c = self.r32(ECX);
+                    self.bini(BinOp::I32Sub, c, 1)
+                } else {
+                    self.aopi(BinOp::I32Sub, ECX, 1)
+                };
                 self.set_gpr(ECX, n);
                 let nz = self.aopi(BinOp::I32Ne, n, 0);
                 let c = match m {
@@ -1893,6 +1899,7 @@ impl<'a> Lifter<'a> {
             self.shift_count(i, w)
         };
         if known == Some(0) {
+            self.shift_by_zero(d, w);
             return;
         }
         let a = self.read(d, w);
@@ -1925,6 +1932,7 @@ impl<'a> Lifter<'a> {
             self.shift_count(i, w)
         };
         if known == Some(0) {
+            self.shift_by_zero(d, w);
             return;
         }
         let a = self.read(d, w);
@@ -1962,6 +1970,16 @@ impl<'a> Lifter<'a> {
             (cf, self.bin(BinOp::I32Xor, cf, s2))
         };
         self.update_cf_of(cf, of, cnt, known);
+    }
+
+    /// A shift or rotate by a count of zero changes nothing, except that a
+    /// 32-bit register destination in 64-bit code is still written, which
+    /// zero-extends it.
+    fn shift_by_zero(&mut self, d: Loc, w: u32) {
+        if let (true, 32, Loc::Reg(r)) = (self.x64(), w, d) {
+            let v = self.read_reg(r);
+            self.write_reg(r, v);
+        }
     }
 
     /// Replaces CF and OF in the flag state, keeping the other flags. When
@@ -2008,6 +2026,7 @@ impl<'a> Lifter<'a> {
             self.shift_count(i, w)
         };
         if known == Some(0) {
+            self.shift_by_zero(d, w);
             return;
         }
         if w == 64 {
@@ -2108,6 +2127,10 @@ impl<'a> Lifter<'a> {
             let c = self.bin(BinOp::I64ShrU, a, nm1);
             (r, self.wlow_bit(c, 64))
         };
+        // A zero count (from cl) leaves the destination alone; CF and OF
+        // are then kept by `update_cf_of`.
+        let is0 = self.un(UnOp::I64Eqz, n);
+        let r = self.select(is0, a, r);
         self.write(d, r, 64);
         let msb = self.wsign(r, 64);
         let of = if rcl {
@@ -2213,6 +2236,7 @@ impl<'a> Lifter<'a> {
             }
         };
         if known == Some(0) {
+            self.shift_by_zero(d, w);
             return;
         }
         if w == 64 {
@@ -2760,11 +2784,19 @@ impl<'a> Lifter<'a> {
                     let k = self.c32(31);
                     self.bin(BinOp::I32Sub, k, c)
                 };
-                // Destination unchanged when the source is zero.
+                // Destination unchanged when the source is zero (in 64-bit
+                // code not even zero-extended).
                 let z = self.is_zero(src);
-                let old = self.read_reg(r);
-                let v = self.select(z, old, idx);
-                self.write_reg(r, v);
+                if self.x64() && w == 32 {
+                    let full = self.gpr(r);
+                    let idx = self.zext64(idx);
+                    let v = self.select(z, full, idx);
+                    self.set_gpr(full, v);
+                } else {
+                    let old = self.read_reg(r);
+                    let v = self.select(z, old, idx);
+                    self.write_reg(r, v);
+                }
                 self.set_flags(fl::LOGIC, w, src, src, None, None);
             }
             M::Popcnt => {
@@ -2859,8 +2891,20 @@ impl<'a> Lifter<'a> {
             _ => {
                 let old = self.read(d, w);
                 let eq = self.wop(BinOp::I32Eq, w, old, acc);
-                let nv = self.select(eq, src, old);
-                self.write(d, nv, w);
+                match d {
+                    // A 32-bit register destination is only written (and
+                    // zero-extended) on success.
+                    Loc::Reg(r) if keep_rax => {
+                        let full = self.gpr(r);
+                        let z = self.zext64(src);
+                        let nv = self.select(eq, z, full);
+                        self.set_gpr(full, nv);
+                    }
+                    _ => {
+                        let nv = self.select(eq, src, old);
+                        self.write(d, nv, w);
+                    }
+                }
                 // On success the accumulator keeps its value, which may just
                 // have been written if the destination is the accumulator.
                 if keep_rax {
@@ -2966,8 +3010,19 @@ impl<'a> Lifter<'a> {
         let k = self.c64(32);
         let hi = self.bin(BinOp::I64ShrU, old, k);
         let hi = self.un(UnOp::I32WrapI64, hi);
-        self.set_gpr(EAX, lo);
-        self.set_gpr(EDX, hi);
+        if self.x64() {
+            // edx:eax are written (zero-extending rdx and rax) only on
+            // failure.
+            let lo = self.zext64(lo);
+            let hi = self.zext64(hi);
+            let lo = self.select(eq, EAX, lo);
+            let hi = self.select(eq, EDX, hi);
+            self.set_gpr(EAX, lo);
+            self.set_gpr(EDX, hi);
+        } else {
+            self.set_gpr(EAX, lo);
+            self.set_gpr(EDX, hi);
+        }
         // ZF = success; other flags preserved.
         let e = self.eflags();
         let k = self.bini(BinOp::I32And, e, !fl::ZF);
@@ -3051,9 +3106,36 @@ impl<'a> Lifter<'a> {
         );
         // Source segment can be overridden (default DS); destination is ES.
         let src_seg = i.memory_segment();
+        // In 64-bit code the 0x67 prefix selects esi, edi and ecx.
+        let a32 = self.x64()
+            && i.op_kinds().any(|k| {
+                matches!(
+                    k,
+                    OpKind::MemorySegESI | OpKind::MemorySegEDI | OpKind::MemoryESEDI
+                )
+            });
         if !rep && !repne {
-            self.string_iter(m, size, src_seg);
+            self.string_iter(m, size, src_seg, a32);
             return true;
+        }
+        if a32 {
+            // Intel CPUs zero-extend ecx, and edi/esi for movs and stos,
+            // even when the count is zero (the instruction suite treats the
+            // zero-count case as model-specific).
+            let mut regs = vec![ECX];
+            if matches!(m, M::Movsb | M::Movsw | M::Movsd | M::Movsq) {
+                regs.push(ESI);
+            }
+            if matches!(
+                m,
+                M::Movsb | M::Movsw | M::Movsd | M::Movsq | M::Stosb | M::Stosw | M::Stosd | M::Stosq
+            ) {
+                regs.push(EDI);
+            }
+            for r in regs {
+                let v = self.r32(r);
+                self.set_gpr(r, v);
+            }
         }
         // Fast paths: rep movs/stos forward without harmful overlap.
         let head = self.new_block();
@@ -3062,12 +3144,16 @@ impl<'a> Lifter<'a> {
         let done = self.new_block();
         self.terminate(Term::Jump(head));
         self.switch_to(head);
-        let z = if self.x64() {
+        let z = if a32 {
+            let c = self.r32(ECX);
+            self.is_zero(c)
+        } else if self.x64() {
             self.un(UnOp::I64Eqz, ECX)
         } else {
             self.is_zero(ECX)
         };
         if !is_cmp
+            && !a32
             && matches!(
                 m,
                 M::Movsb
@@ -3153,8 +3239,13 @@ impl<'a> Lifter<'a> {
             });
         }
         self.switch_to(body);
-        self.string_iter(m, size, src_seg);
-        let n = self.aopi(BinOp::I32Sub, ECX, 1);
+        self.string_iter(m, size, src_seg, a32);
+        let n = if a32 {
+            let c = self.r32(ECX);
+            self.bini(BinOp::I32Sub, c, 1)
+        } else {
+            self.aopi(BinOp::I32Sub, ECX, 1)
+        };
         self.set_gpr(ECX, n);
         if is_cmp {
             // Continue while ecx != 0 and ZF matches the prefix.
@@ -3178,19 +3269,49 @@ impl<'a> Lifter<'a> {
     }
 
     /// One iteration of a string instruction, updating esi/edi by ±size.
-    fn string_iter(&mut self, m: Mnemonic, size: u32, src_seg: Register) {
+    /// `a32`: 32-bit addressing in 64-bit code (esi/edi, zero-extended).
+    fn string_iter(&mut self, m: Mnemonic, size: u32, src_seg: Register, a32: bool) {
         use Mnemonic as M;
         let w = size * 8;
         // step = df ? -size : size
-        let neg = self.ac((size as u64).wrapping_neg());
-        let pos = self.ac(size as u64);
+        let (neg, pos) = if a32 {
+            (self.c32(size.wrapping_neg()), self.c32(size))
+        } else {
+            (self.ac((size as u64).wrapping_neg()), self.ac(size as u64))
+        };
         let step = self.select(DF, neg, pos);
+        let ptr = |l: &mut Self, r: V| -> V {
+            if a32 {
+                let x = l.r32(r);
+                l.zext64(x)
+            } else {
+                l.copy(r)
+            }
+        };
         let src_addr = |l: &mut Self| -> V {
             match src_seg {
+                Register::FS if a32 => {
+                    let s = ptr(l, ESI);
+                    l.aop(BinOp::I32Add, s, FS_BASE)
+                }
+                Register::GS if a32 => {
+                    let s = ptr(l, ESI);
+                    l.aop(BinOp::I32Add, s, GS_BASE)
+                }
                 Register::FS => l.aop(BinOp::I32Add, ESI, FS_BASE),
                 Register::GS => l.aop(BinOp::I32Add, ESI, GS_BASE),
-                _ => l.copy(ESI),
+                _ => ptr(l, ESI),
             }
+        };
+        // esi/edi += step (a 32-bit register write with 0x67).
+        let advance = |l: &mut Self, r: V| {
+            let n = if a32 {
+                let x = l.r32(r);
+                l.bin(BinOp::I32Add, x, step)
+            } else {
+                l.aop(BinOp::I32Add, r, step)
+            };
+            l.set_gpr(r, n);
         };
         let acc = match size {
             1 => Register::AL,
@@ -3202,50 +3323,43 @@ impl<'a> Lifter<'a> {
             M::Movsb | M::Movsw | M::Movsd | M::Movsq => {
                 let s = src_addr(self);
                 let v = self.load(s, size, Space::Guest);
-                let d = self.copy(EDI);
+                let d = ptr(self, EDI);
                 self.store(d, v, size, Space::Guest);
-                let ns = self.aop(BinOp::I32Add, ESI, step);
-                self.set_gpr(ESI, ns);
-                let nd = self.aop(BinOp::I32Add, EDI, step);
-                self.set_gpr(EDI, nd);
+                advance(self, ESI);
+                advance(self, EDI);
             }
             M::Stosb | M::Stosw | M::Stosd | M::Stosq => {
                 let v = self.read_reg(acc);
-                let d = self.copy(EDI);
+                let d = ptr(self, EDI);
                 self.store(d, v, size, Space::Guest);
-                let nd = self.aop(BinOp::I32Add, EDI, step);
-                self.set_gpr(EDI, nd);
+                advance(self, EDI);
             }
             M::Lodsb | M::Lodsw | M::Lodsd | M::Lodsq => {
                 let s = src_addr(self);
                 let v = self.load(s, size, Space::Guest);
                 self.write_reg(acc, v);
-                let ns = self.aop(BinOp::I32Add, ESI, step);
-                self.set_gpr(ESI, ns);
+                advance(self, ESI);
             }
             M::Cmpsb | M::Cmpsw | M::Cmpsd | M::Cmpsq => {
                 let s = src_addr(self);
                 let a = self.load(s, size, Space::Guest);
-                let d = self.copy(EDI);
+                let d = ptr(self, EDI);
                 let b = self.load(d, size, Space::Guest);
                 let r = self.wop(BinOp::I32Sub, w, a, b);
                 let r = self.mask(r, w);
                 self.set_flags(fl::SUB, w, r, a, Some(b), None);
-                let ns = self.aop(BinOp::I32Add, ESI, step);
-                self.set_gpr(ESI, ns);
-                let nd = self.aop(BinOp::I32Add, EDI, step);
-                self.set_gpr(EDI, nd);
+                advance(self, ESI);
+                advance(self, EDI);
             }
             _ => {
                 // scas: compare accumulator with [edi].
                 let a = self.read_reg(acc);
-                let d = self.copy(EDI);
+                let d = ptr(self, EDI);
                 let b = self.load(d, size, Space::Guest);
                 let r = self.wop(BinOp::I32Sub, w, a, b);
                 let r = self.mask(r, w);
                 self.set_flags(fl::SUB, w, r, a, Some(b), None);
-                let nd = self.aop(BinOp::I32Add, EDI, step);
-                self.set_gpr(EDI, nd);
+                advance(self, EDI);
             }
         }
     }

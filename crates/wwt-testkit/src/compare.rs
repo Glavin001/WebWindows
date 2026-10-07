@@ -43,15 +43,22 @@ pub struct Mask {
     pub eflags: u32,
     /// Whether the destination is undefined (skip registers and memory).
     pub skip_result: bool,
+    /// Registers (bit n for register n) compared in their low 32 bits only.
+    pub low32_only: u32,
 }
 
 pub fn mask_for(case: &Case) -> Mask {
     let code = case.code_bytes();
-    let mut d = Decoder::with_ip(32, &code, INS as u64, DecoderOptions::NONE);
+    let mut d = Decoder::with_ip(case.bitness(), &code, INS as u64, DecoderOptions::NONE);
     let mut undefined = 0u32;
     let mut skip_result = false;
+    let mut low32_only = 0;
     while d.can_decode() {
         let i = d.decode();
+        if zero_count_rep32(&i, case) {
+            // rcx, rsi, rdi
+            low32_only |= 0xc2;
+        }
         let (u, skip) = undefined_flags(&i, case);
         let written = if shift_count_zero(&i, case) {
             0
@@ -64,7 +71,23 @@ pub fn mask_for(case: &Case) -> Mask {
     Mask {
         eflags: (CF | PF | AF | ZF | SF | OF | DF) & !undefined,
         skip_result,
+        low32_only,
     }
+}
+
+/// A rep string instruction with 32-bit addressing (0x67) in 64-bit code
+/// and a zero count: whether the upper halves of rcx, rsi and rdi are
+/// cleared depends on the CPU's string microcode.
+fn zero_count_rep32(i: &iced_x86::Instruction, case: &Case) -> bool {
+    case.x64
+        && (i.has_rep_prefix() || i.has_repne_prefix())
+        && case.regs[1] as u32 == 0
+        && i.op_kinds().any(|k| {
+            matches!(
+                k,
+                OpKind::MemorySegESI | OpKind::MemorySegEDI | OpKind::MemoryESEDI
+            )
+        })
 }
 
 /// Flags an instruction leaves undefined for this case's inputs, and
@@ -88,10 +111,10 @@ pub fn undefined_flags(i: &iced_x86::Instruction, case: &Case) -> (u32, bool) {
         } else {
             match i.op_kind(count_op) {
                 OpKind::Immediate8 => i.immediate8() as u32,
-                _ => case.regs[1] & 0xff,
+                _ => case.regs[1] as u32 & 0xff,
             }
         };
-        let c = raw & 31;
+        let c = raw & count_mask(w);
         if c != 1 {
             undefined |= OF;
         }
@@ -125,9 +148,22 @@ fn shift_count_zero(i: &iced_x86::Instruction, case: &Case) -> bool {
     }
     let raw = match i.op_kind(count_op) {
         OpKind::Immediate8 => i.immediate8() as u32,
-        _ => case.regs[1] & 0xff,
+        _ => case.regs[1] as u32 & 0xff,
     };
-    raw & 31 == 0
+    let w = match i.op0_kind() {
+        OpKind::Register => i.op0_register().size() as u32 * 8,
+        _ => i.memory_size().size() as u32 * 8,
+    };
+    raw & count_mask(w) == 0
+}
+
+/// Shift and rotate counts are masked to 5 bits, or 6 for 64-bit operands.
+fn count_mask(w: u32) -> u32 {
+    if w == 64 {
+        63
+    } else {
+        31
+    }
 }
 
 pub fn rflags_read(i: &iced_x86::Instruction) -> u32 {
@@ -144,13 +180,26 @@ pub fn compare(case: &Case, want: &Outcome, got: &Outcome) -> Vec<String> {
     }
     if !mask.skip_result {
         const NAMES: [&str; 8] = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"];
-        for r in 0..8 {
-            if want.regs[r] != got.regs[r] {
-                diffs.push(format!(
-                    "{}: want {:#010x} got {:#010x}",
-                    NAMES[r], want.regs[r], got.regs[r]
-                ));
+        const NAMES64: [&str; 16] = [
+            "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12",
+            "r13", "r14", "r15",
+        ];
+        for r in 0..want.regs.len().max(got.regs.len()) {
+            let (w, g) = (want.regs.get(r), got.regs.get(r));
+            let (w, g) = (w.copied().unwrap_or(0), g.copied().unwrap_or(0));
+            let m = if mask.low32_only >> r & 1 != 0 {
+                0xffff_ffff
+            } else {
+                u64::MAX
+            };
+            if w & m == g & m {
+                continue;
             }
+            diffs.push(if case.x64 {
+                format!("{}: want {w:#018x} got {g:#018x}", NAMES64[r])
+            } else {
+                format!("{}: want {w:#010x} got {g:#010x}", NAMES[r])
+            });
         }
         if want.mem != got.mem {
             diffs.push(format!("memory: want {:x?} got {:x?}", want.mem, got.mem));
@@ -176,6 +225,7 @@ pub fn compare(case: &Case, want: &Outcome, got: &Outcome) -> Vec<String> {
             g,
             &case.form,
             crate::exec::is_simd_case(case),
+            case.x64,
         ));
     }
     diffs

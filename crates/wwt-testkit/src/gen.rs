@@ -19,6 +19,10 @@ pub enum Group {
     Fusion,
     X87,
     Sse,
+    /// The x86-64 groups (see [`crate::gen64`]).
+    Integer64,
+    Fusion64,
+    Sse64,
 }
 
 impl Group {
@@ -28,10 +32,25 @@ impl Group {
             Group::Fusion => "fusion",
             Group::X87 => "x87",
             Group::Sse => "sse",
+            Group::Integer64 => "integer64",
+            Group::Fusion64 => "fusion64",
+            Group::Sse64 => "sse64",
         }
     }
-    pub fn all() -> [Group; 4] {
-        [Group::Integer, Group::Fusion, Group::X87, Group::Sse]
+    pub fn all() -> [Group; 7] {
+        [
+            Group::Integer,
+            Group::Fusion,
+            Group::X87,
+            Group::Sse,
+            Group::Integer64,
+            Group::Fusion64,
+            Group::Sse64,
+        ]
+    }
+    /// Whether the group's cases are x86-64 code.
+    pub fn x64(self) -> bool {
+        matches!(self, Group::Integer64 | Group::Fusion64 | Group::Sse64)
     }
 }
 
@@ -58,6 +77,33 @@ impl Rng {
     pub fn pick<T: Copy>(&mut self, xs: &[T]) -> T {
         xs[self.below(xs.len() as u64) as usize]
     }
+    /// A 64-bit value biased toward edge cases, including zero- and
+    /// sign-extended 32-bit values.
+    pub fn value64(&mut self) -> u64 {
+        match self.below(12) {
+            0 => self.pick(&[
+                0,
+                1,
+                2,
+                u64::MAX,
+                1 << 63,
+                i64::MAX as u64,
+                0xffff_ffff,
+                0x8000_0000,
+                0x7fff_ffff,
+                0x1_0000_0000,
+                0xffff_ffff_8000_0000,
+                0xff,
+                0xffff,
+            ]),
+            1 => self.below(64),
+            2 => self.below(64).wrapping_neg(),
+            3 => 1 << self.below(64),
+            4 => self.value() as u64,
+            5 => self.value() as i32 as u64,
+            _ => self.next(),
+        }
+    }
     /// A 32-bit value biased toward edge cases.
     pub fn value(&mut self) -> u32 {
         match self.below(10) {
@@ -83,7 +129,7 @@ impl Rng {
     }
 }
 
-const SKIP_MNEMONICS: &[Mnemonic] = &[
+pub(crate) const SKIP_MNEMONICS: &[Mnemonic] = &[
     Mnemonic::Int,
     Mnemonic::Int1,
     Mnemonic::Int3,
@@ -178,7 +224,7 @@ const SKIP_MNEMONICS: &[Mnemonic] = &[
     Mnemonic::Pause,
 ];
 
-fn integer_features_ok(f: &[CpuidFeature]) -> bool {
+pub(crate) fn integer_features_ok(f: &[CpuidFeature]) -> bool {
     f.iter().all(|f| {
         matches!(
             f,
@@ -304,6 +350,11 @@ pub fn group_of(code: Code) -> Option<Group> {
 }
 
 pub fn forms(group: Group) -> Vec<Code> {
+    if group.x64() {
+        return Code::values()
+            .filter(|&c| crate::gen64::group_of64(c) == Some(group))
+            .collect();
+    }
     Code::values()
         .filter(|&c| group_of(c) == Some(group))
         .collect()
@@ -450,21 +501,22 @@ impl<'r> Builder<'r> {
     }
 }
 
-/// Generates `n` cases for one instruction form.
-pub fn cases_for(code: Code, n: usize, rng: &mut Rng) -> Vec<Case> {
+/// Generates `n` cases for one instruction form of `group`.
+pub fn cases_for(group: Group, code: Code, n: usize, rng: &mut Rng) -> Vec<Case> {
     let mut out = vec![];
     let mut attempts = 0;
     while out.len() < n && attempts < n * 4 {
         attempts += 1;
-        if let Some(c) = one_case(code, rng) {
+        let c = if group.x64() {
+            crate::gen64::one_case_at(code, rng, INS, true)
+        } else {
+            one_case_at(code, rng, INS, true)
+        };
+        if let Some(c) = c {
             out.push(c);
         }
     }
     out
-}
-
-fn one_case(code: Code, rng: &mut Rng) -> Option<Case> {
-    one_case_at(code, rng, INS, true)
 }
 
 fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Case> {
@@ -847,7 +899,8 @@ fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Ca
     Some(Case {
         form: format!("{code:?}"),
         code: hex(&bytes),
-        regs: b.regs,
+        x64: false,
+        regs: b.regs.iter().map(|&r| r as u64).collect(),
         eflags,
         mem_seed: b.rng.next(),
         mem_patch: b.mem_patch,
@@ -861,32 +914,39 @@ pub fn simd_state(rng: &mut Rng) -> Vec<u8> {
     let mut fx = crate::case::default_fx();
     fx[4] = 0xff;
     for i in 0..8 {
-        let mut v = [0u8; 16];
-        match rng.below(4) {
-            0 => {
-                for k in 0..4 {
-                    let f = nice_f64(rng) as f32;
-                    v[k * 4..k * 4 + 4].copy_from_slice(&f.to_bits().to_le_bytes());
-                }
-            }
-            1 => {
-                for k in 0..2 {
-                    let f = nice_f64(rng);
-                    v[k * 8..k * 8 + 8].copy_from_slice(&f.to_bits().to_le_bytes());
-                }
-            }
-            _ => {
-                for k in 0..4 {
-                    v[k * 4..k * 4 + 4].copy_from_slice(&rng.value().to_le_bytes());
-                }
-            }
-        }
+        let v = xmm_value(rng);
         fx[160 + i * 16..176 + i * 16].copy_from_slice(&v);
         let mm = (rng.value() as u64) << 32 | rng.value() as u64;
         fx[32 + i * 16..40 + i * 16].copy_from_slice(&mm.to_le_bytes());
         fx[40 + i * 16..42 + i * 16].copy_from_slice(&0xffffu16.to_le_bytes());
     }
     fx
+}
+
+/// Random contents for an XMM register: four floats, two doubles or
+/// integers.
+pub fn xmm_value(rng: &mut Rng) -> [u8; 16] {
+    let mut v = [0u8; 16];
+    match rng.below(4) {
+        0 => {
+            for k in 0..4 {
+                let f = nice_f64(rng) as f32;
+                v[k * 4..k * 4 + 4].copy_from_slice(&f.to_bits().to_le_bytes());
+            }
+        }
+        1 => {
+            for k in 0..2 {
+                let f = nice_f64(rng);
+                v[k * 8..k * 8 + 8].copy_from_slice(&f.to_bits().to_le_bytes());
+            }
+        }
+        _ => {
+            for k in 0..4 {
+                v[k * 4..k * 4 + 4].copy_from_slice(&rng.value().to_le_bytes());
+            }
+        }
+    }
+    v
 }
 
 /// A double from a distribution that exercises signs, magnitudes,
@@ -977,6 +1037,9 @@ pub fn fpu_state(rng: &mut Rng, m: Mnemonic) -> Vec<u8> {
 /// Hand-written cases for forms the generator skips.
 pub fn extra_cases(group: Group, rng: &mut Rng) -> Vec<Case> {
     let mut out = vec![];
+    if group.x64() {
+        return crate::gen64::extra_cases(group, rng);
+    }
     if group == Group::Fusion {
         return fusion_cases(4000, rng);
     }
@@ -991,7 +1054,8 @@ pub fn extra_cases(group: Group, rng: &mut Rng) -> Vec<Case> {
             out.push(Case {
                 form: "Wait".into(),
                 code: "9b".into(),
-                regs,
+                x64: false,
+                regs: regs.iter().map(|&r| r as u64).collect(),
                 eflags: 2,
                 mem_seed: rng.next(),
                 mem_patch: vec![],
@@ -1017,7 +1081,8 @@ pub fn extra_cases(group: Group, rng: &mut Rng) -> Vec<Case> {
         out.push(Case {
             form: "Enterd_imm16_imm8".into(),
             code: hex(&enc.take_buffer()),
-            regs,
+            x64: false,
+            regs: regs.iter().map(|&r| r as u64).collect(),
             eflags: 2,
             mem_seed: rng.next(),
             mem_patch: vec![],
@@ -1029,8 +1094,22 @@ pub fn extra_cases(group: Group, rng: &mut Rng) -> Vec<Case> {
 
 /// Flag producer/consumer pairs.
 pub fn fusion_cases(n: usize, rng: &mut Rng) -> Vec<Case> {
+    fusion_cases_in(Group::Integer, n, rng)
+}
+
+/// Flag producer/consumer pairs from the forms of `ints` (32-bit or x86-64
+/// integer instructions).
+pub(crate) fn fusion_cases_in(ints: Group, n: usize, rng: &mut Rng) -> Vec<Case> {
     use Mnemonic as M;
-    let ints = forms(Group::Integer);
+    let x64 = ints.x64();
+    let one = |code, rng: &mut Rng, ip, allow_mem| {
+        if x64 {
+            crate::gen64::one_case_at(code, rng, ip, allow_mem)
+        } else {
+            one_case_at(code, rng, ip, allow_mem)
+        }
+    };
+    let ints = forms(ints);
     let producers: Vec<Code> = ints
         .iter()
         .copied()
@@ -1073,7 +1152,7 @@ pub fn fusion_cases(n: usize, rng: &mut Rng) -> Vec<Case> {
                 || m.starts_with("Cmov")
                 || matches!(
                     c.mnemonic(),
-                    M::Adc | M::Sbb | M::Lahf | M::Pushfd | M::Rcl | M::Inc
+                    M::Adc | M::Sbb | M::Lahf | M::Pushfd | M::Pushfq | M::Rcl | M::Inc
                 )
         })
         .collect();
@@ -1081,11 +1160,11 @@ pub fn fusion_cases(n: usize, rng: &mut Rng) -> Vec<Case> {
     while out.len() < n {
         let p = rng.pick(&producers);
         let c = rng.pick(&consumers);
-        let Some(mut first) = one_case_at(p, rng, INS, true) else {
+        let Some(mut first) = one(p, rng, INS, true) else {
             continue;
         };
         let len1 = first.code.len() as u32 / 2;
-        let Some(second) = one_case_at(c, rng, INS + len1, false) else {
+        let Some(second) = one(c, rng, INS + len1, false) else {
             continue;
         };
         if len1 + second.code.len() as u32 / 2 > 15 {
@@ -1095,8 +1174,12 @@ pub fn fusion_cases(n: usize, rng: &mut Rng) -> Vec<Case> {
         first.code.push_str(&second.code);
         // Skip pairs whose consumer reads flags the producer left undefined.
         let bytes = first.code_bytes();
-        let mut d =
-            iced_x86::Decoder::with_ip(32, &bytes, INS as u64, iced_x86::DecoderOptions::NONE);
+        let mut d = iced_x86::Decoder::with_ip(
+            first.bitness(),
+            &bytes,
+            INS as u64,
+            iced_x86::DecoderOptions::NONE,
+        );
         let i1 = d.decode();
         let i2 = d.decode();
         let (undef, _) = crate::compare::undefined_flags(&i1, &first);

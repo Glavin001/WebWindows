@@ -3,10 +3,12 @@
 use crate::case::unhex;
 
 /// Differences between two FXSAVE images. x87 registers are compared after
-/// conversion to f64, which is the precision the translator keeps.
-pub fn compare_fx(want: &str, got: &str, form: &str, simd: bool) -> Vec<String> {
+/// conversion to f64, which is the precision the translator keeps. x86-64
+/// images (`x64`) also hold xmm8-15.
+pub fn compare_fx(want: &str, got: &str, form: &str, simd: bool, x64: bool) -> Vec<String> {
+    let nxmm = if x64 { 16 } else { 8 };
     if simd {
-        return compare_simd(&unhex(want), &unhex(got), form);
+        return compare_simd(&unhex(want), &unhex(got), form, nxmm);
     }
     // Transcendental results may differ in the last bits from the CPU's.
     let approx = [
@@ -58,7 +60,7 @@ pub fn compare_fx(want: &str, got: &str, form: &str, simd: bool) -> Vec<String> 
     if mx(&w) != mx(&g) {
         d.push(format!("mxcsr: want {:#x} got {:#x}", mx(&w), mx(&g)));
     }
-    for i in 0..8 {
+    for i in 0..nxmm {
         let (a, b) = (
             &w[160 + i * 16..176 + i * 16],
             &g[160 + i * 16..176 + i * 16],
@@ -74,8 +76,9 @@ pub fn compare_fx(want: &str, got: &str, form: &str, simd: bool) -> Vec<String> 
     d
 }
 
-/// MMX/SSE state: MMX registers (x87 mantissas), tag word, XMM, MXCSR.
-fn compare_simd(w: &[u8], g: &[u8], form: &str) -> Vec<String> {
+/// MMX/SSE state: MMX registers (x87 mantissas), tag word, the first
+/// `nxmm` XMM registers, MXCSR.
+fn compare_simd(w: &[u8], g: &[u8], form: &str, nxmm: usize) -> Vec<String> {
     // rcp/rsqrt are 12-bit approximations on x86 (and differ between
     // vendors); the translator computes them exactly.
     let approx_lanes = if form.starts_with("Rcpps") || form.starts_with("Rsqrtps") {
@@ -103,7 +106,7 @@ fn compare_simd(w: &[u8], g: &[u8], form: &str) -> Vec<String> {
     if mx(w) != mx(g) {
         d.push(format!("mxcsr: want {:#x} got {:#x}", mx(w), mx(g)));
     }
-    for i in 0..8 {
+    for i in 0..nxmm {
         let (a, b) = (
             &w[160 + i * 16..176 + i * 16],
             &g[160 + i * 16..176 + i * 16],

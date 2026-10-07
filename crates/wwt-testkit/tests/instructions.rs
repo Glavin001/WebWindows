@@ -43,3 +43,18 @@ fn x87() {
 fn sse() {
     run_group("sse");
 }
+
+#[test]
+fn integer64() {
+    run_group("integer64");
+}
+
+#[test]
+fn fusion64() {
+    run_group("fusion64");
+}
+
+#[test]
+fn sse64() {
+    run_group("sse64");
+}
