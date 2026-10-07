@@ -11,6 +11,7 @@ members = [
     "crates/d3dgpu-core",
     "crates/d3dgpu-scenes",
     "crates/d3dgpu-web",
+    "crates/d3dgpu-dxbc",
 ]
 
 [workspace.package]

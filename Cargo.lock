@@ -450,6 +450,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "d3dgpu-dxbc"
+version = "0.1.0"
+dependencies = [
+ "naga",
+]
+
+[[package]]
 name = "d3dgpu-emu"
 version = "0.1.0"
 dependencies = [
