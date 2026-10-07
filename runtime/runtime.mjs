@@ -30,6 +30,38 @@ export class ProcessExit extends Error {
   }
 }
 
+/** Floating-point operations WebAssembly lacks (x87 transcendentals). */
+export function hostMath(op, a, b) {
+  switch (op) {
+    case 0: return Math.sin(a);
+    case 1: return Math.cos(a);
+    case 2: return Math.tan(a);
+    case 3: return Math.atan2(a, b);
+    case 4: return Math.log2(a);
+    case 5: return Math.pow(2, a) - 1;
+    case 6: return a % b;
+    case 7: return ieeeRemainder(a, b);
+    case 8: return a * Math.pow(2, Math.trunc(b));
+    case 9: return Math.log1p(a) / Math.LN2;
+    default: return NaN;
+  }
+}
+
+/** IEEE 754 remainder, exact (quotient rounded to nearest, ties to even). */
+function ieeeRemainder(a, b) {
+  if (Number.isNaN(a) || Number.isNaN(b) || !Number.isFinite(a) || b === 0) return NaN;
+  if (!Number.isFinite(b)) return a;
+  const ab = Math.abs(b);
+  let r = ab < Number.MAX_VALUE / 2 ? Math.abs(a) % (2 * ab) : Math.abs(a);
+  let odd = false;
+  if (r >= ab) {
+    r -= ab;
+    odd = true;
+  }
+  if (r > ab - r || (r === ab - r && odd)) r -= ab;
+  return a < 0 || Object.is(a, -0) ? -r : r;
+}
+
 export function hex(v) {
   return '0x' + (v >>> 0).toString(16).padStart(8, '0');
 }
@@ -155,6 +187,7 @@ export class Machine {
       code_bitmap: this.codeBitmap,
       fault: (cpu, code, eip, info) => this.fault(cpu, code, eip, info),
       code_write: (cpu, addr) => this.codeWrite(cpu, addr),
+      math: hostMath,
     };
     const instance = await WebAssembly.instantiate(module, { env });
     for (let i = 0; i < addrs.length; i++) this.register(addrs[i], base + i);

@@ -139,6 +139,23 @@ const SKIP_MNEMONICS: &[Mnemonic] = &[
     Mnemonic::Rdpkru,
     Mnemonic::Wrpkru,
     Mnemonic::Xgetbv,
+    // x87 forms whose results include instruction pointers or BCD.
+    Mnemonic::Fbld,
+    Mnemonic::Fbstp,
+    Mnemonic::Fnsave,
+    Mnemonic::Frstor,
+    Mnemonic::Fnstenv,
+    Mnemonic::Fldenv,
+    Mnemonic::Fnsetpm,
+    Mnemonic::Fneni,
+    Mnemonic::Fndisi,
+    Mnemonic::Frstpm,
+    Mnemonic::Fstdw,
+    Mnemonic::Fstsg,
+    Mnemonic::Ffreep,
+    Mnemonic::Fstpnce,
+    Mnemonic::Fxsave,
+    Mnemonic::Fxrstor,
 ];
 
 fn integer_features_ok(f: &[CpuidFeature]) -> bool {
@@ -465,6 +482,16 @@ fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Ca
                 ins.set_near_branch32(TGT);
                 OpKind::NearBranch32
             }
+            K::st0 => {
+                ins.set_op_register(i, Register::ST0);
+                OpKind::Register
+            }
+            K::sti_opcode => {
+                // st(7) is kept empty so pushes do not overflow.
+                let r = b.rng.pick(&[Register::ST0, Register::ST1, Register::ST2, Register::ST3, Register::ST4, Register::ST5, Register::ST6]);
+                ins.set_op_register(i, r);
+                OpKind::Register
+            }
             K::seg_rSI => OpKind::MemorySegESI,
             K::es_rDI => OpKind::MemoryESEDI,
             K::seg_rDI => OpKind::MemorySegEDI,
@@ -593,6 +620,44 @@ fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Ca
     if back.code() != code || back.len() != len {
         return None;
     }
+    let mut fx = None;
+    if group_of(code) == Some(Group::X87) {
+        fx = Some(hex(&fpu_state(b.rng, m)));
+        if let Some(ea) = mem_ea(&b) {
+            let off = ea - MEM_BASE;
+            match code.op_code().memory_size() {
+                iced_x86::MemorySize::Float80 => {
+                    let v = nice_f64(b.rng).to_bits();
+                    let e = wwt::fpu::f64_to_f80(f64::from_bits(v));
+                    b.mem_patch.push((off, u32::from_le_bytes(e[0..4].try_into().unwrap())));
+                    b.mem_patch.push((off + 4, u32::from_le_bytes(e[4..8].try_into().unwrap())));
+                    let hi = u16::from_le_bytes([e[8], e[9]]) as u32;
+                    b.mem_patch.push((off + 8, hi | 0x5a5a_0000));
+                }
+                iced_x86::MemorySize::Float64 => {
+                    let v = nice_f64(b.rng).to_bits();
+                    b.mem_patch.push((off, v as u32));
+                    b.mem_patch.push((off + 4, (v >> 32) as u32));
+                }
+                iced_x86::MemorySize::Float32 => {
+                    let v = (nice_f64(b.rng) as f32).to_bits();
+                    b.mem_patch.push((off, v));
+                }
+                iced_x86::MemorySize::Int64 => {
+                    // Keep 64-bit integers exactly representable as f64.
+                    let v = (b.rng.next() as i64) >> b.rng.pick(&[11u32, 20, 40, 60]);
+                    b.mem_patch.push((off, v as u32));
+                    b.mem_patch.push((off + 4, (v >> 32) as u32));
+                }
+                iced_x86::MemorySize::UInt16 if m == Mnemonic::Fldcw => {
+                    // A control word with all exceptions masked.
+                    let cw = 0x037f | (b.rng.below(4) as u32) << 10 | (b.rng.pick(&[2u32, 3])) << 8;
+                    b.mem_patch.push((off, cw | 0xa5a5_0000));
+                }
+                _ => {}
+            }
+        }
+    }
     Some(Case {
         form: format!("{code:?}"),
         code: hex(&bytes),
@@ -600,8 +665,70 @@ fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Ca
         eflags,
         mem_seed: b.rng.next(),
         mem_patch: b.mem_patch,
-        fx: None,
+        fx,
     })
+}
+
+/// A double from a distribution that exercises signs, magnitudes,
+/// integers, halves (rounding ties) and the occasional special value.
+pub fn nice_f64(rng: &mut Rng) -> f64 {
+    match rng.below(12) {
+        0 => rng.pick(&[0.0, -0.0, 1.0, -1.0, 0.5, -0.5, 1.5, 2.5, -2.5, 3.0]),
+        1 => rng.pick(&[f64::INFINITY, f64::NEG_INFINITY, 1e300, -1e-300, 65536.0, -2147483648.0, 2147483647.0]),
+        2 => (rng.below(2000) as f64 - 1000.0) / 2.0,
+        3 => (rng.next() as i32) as f64,
+        4 => std::f64::consts::PI * (rng.below(9) as f64 - 4.0) / 4.0,
+        _ => {
+            let mant = (rng.next() >> 12) as f64 / (1u64 << 52) as f64 + 1.0;
+            let e = rng.below(80) as i32 - 40;
+            let s = if rng.chance(50) { -1.0 } else { 1.0 };
+            s * mant * 2f64.powi(e)
+        }
+    }
+}
+
+/// An FXSAVE image with random register contents. Precision control is
+/// double (so hardware rounds like f64), with a random rounding mode; st(7)
+/// is left empty so pushes do not overflow.
+pub fn fpu_state(rng: &mut Rng, m: Mnemonic) -> Vec<u8> {
+    let mut fx = crate::case::default_fx();
+    // Only integer stores and frndint honor the rounding mode (arithmetic
+    // always rounds to nearest, as WebAssembly does).
+    let honors_rc = matches!(m, Mnemonic::Fist | Mnemonic::Fistp | Mnemonic::Frndint);
+    let rc = if honors_rc && rng.chance(50) { rng.below(4) as u16 } else { 0 };
+    let cw: u16 = 0x027f | rc << 10;
+    fx[0..2].copy_from_slice(&cw.to_le_bytes());
+    let top = rng.below(8) as u16;
+    fx[2..4].copy_from_slice(&(top << 11).to_le_bytes());
+    let empty_phys = (top + 7) & 7;
+    let mut tag = 0xffu8 & !(1 << empty_phys);
+    if m == Mnemonic::Fxam && rng.chance(25) {
+        tag &= !(1 << top); // st(0) empty
+    }
+    fx[4] = tag;
+    for i in 0..8 {
+        let phys = (top + i as u16) & 7;
+        if tag >> phys & 1 == 0 {
+            continue;
+        }
+        let v = if matches!(m, Mnemonic::Fsin | Mnemonic::Fcos | Mnemonic::Fsincos | Mnemonic::Fptan) {
+            (rng.below(2000) as f64 - 1000.0) / 300.0
+        } else if matches!(m, Mnemonic::Fprem | Mnemonic::Fprem1) && i < 2 {
+            // Keep the quotient below 2^60 so the CPU reduces completely.
+            let x = nice_f64(rng);
+            let x = if x.is_finite() && x != 0.0 { x.clamp(-1e15, 1e15) } else { 3.25 };
+            if i == 1 && x.abs() < 1e-3 { x.signum() * (1.0 + x.abs()) } else { x }
+        } else if m == Mnemonic::Fyl2xp1 && i == 0 {
+            // Defined only for |x| < 1 - sqrt(2)/2.
+            (rng.below(2000) as f64 - 1000.0) / 3500.0
+        } else if m == Mnemonic::F2xm1 {
+            (rng.below(2000) as f64 - 1000.0) / 1001.0
+        } else {
+            nice_f64(rng)
+        };
+        fx[32 + i * 16..42 + i * 16].copy_from_slice(&wwt::fpu::f64_to_f80(v));
+    }
+    fx
 }
 
 /// Hand-written cases for forms the generator skips.

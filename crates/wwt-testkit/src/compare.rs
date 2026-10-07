@@ -165,7 +165,7 @@ pub fn compare(case: &Case, want: &Outcome, got: &Outcome) -> Vec<String> {
         ));
     }
     if let (Some(w), Some(g)) = (&want.fx, &got.fx) {
-        diffs.extend(crate::fpucmp::compare_fx(w, g));
+        diffs.extend(crate::fpucmp::compare_fx(w, g, &case.form));
     }
     diffs
 }

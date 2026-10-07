@@ -101,6 +101,7 @@ impl Executor {
             },
         );
         let code_write = Func::wrap(&mut store, |_cpu: i32, _addr: i32| {});
+        let math = Func::wrap(&mut store, |op: i32, a: f64, b: f64| -> f64 { host_math(op as u32, a, b) });
         let g = |store: &mut Store<State>, v: u32| {
             Global::new(store, GlobalType::new(ValType::I32, Mutability::Const), Val::I32(v as i32))
         };
@@ -120,6 +121,7 @@ impl Executor {
                     "code_bitmap" => g(&mut store, CODE_BITMAP)?.into(),
                     "fault" => fault_fn.into(),
                     "code_write" => code_write.into(),
+                    "math" => math.into(),
                     n => return Err(anyhow!("unexpected import {n}")),
                 })
             })
@@ -232,4 +234,44 @@ fn save_fx(m: &SharedMemory) -> Vec<u8> {
         fx[160 + i as usize * 16..176 + i as usize * 16].copy_from_slice(&b);
     }
     fx
+}
+
+/// The host math functions (`env.math`), as the browser runtime provides
+/// them with `Math`.
+pub fn host_math(op: u32, a: f64, b: f64) -> f64 {
+    match op {
+        0 => a.sin(),
+        1 => a.cos(),
+        2 => a.tan(),
+        3 => a.atan2(b),
+        4 => a.log2(),
+        5 => a.exp2() - 1.0,
+        6 => a % b,
+        7 => ieee_remainder(a, b),
+        8 => a * 2f64.powi(b.trunc().clamp(-3000.0, 3000.0) as i32),
+        9 => a.ln_1p() / std::f64::consts::LN_2,
+        _ => f64::NAN,
+    }
+}
+
+/// IEEE 754 remainder (quotient rounded to nearest, ties to even), exact.
+pub fn ieee_remainder(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() || a.is_infinite() || b == 0.0 {
+        return f64::NAN;
+    }
+    if b.is_infinite() {
+        return a;
+    }
+    let ab = b.abs();
+    // r = |a| mod 2|b| (exact), then fold into [-|b|/2, |b|/2].
+    let mut r = if ab < f64::MAX / 2.0 { a.abs() % (2.0 * ab) } else { a.abs() };
+    let mut odd = false;
+    if r >= ab {
+        r -= ab;
+        odd = true;
+    }
+    if r > ab - r || (r == ab - r && odd) {
+        r -= ab;
+    }
+    if a.is_sign_negative() { -r } else { r }
 }
