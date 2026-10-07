@@ -673,7 +673,11 @@ impl<'a> Lifter<'a> {
     /// the TEB segment has a base (fs), so loads do not change addressing.
     fn load_segment(&mut self, idx: u32, v: V) {
         let sel = self.bini(BinOp::I32And, v, 0xffff);
-        let allowed: &[u32] = if idx == 2 { &[0x2b] } else { &[0, 0x23, 0x2b, 0x53] };
+        let allowed: &[u32] = if idx == 2 {
+            &[0x2b]
+        } else {
+            &[0, 0x23, 0x2b, 0x53]
+        };
         let mut ok = self.c32(0);
         for &a in allowed {
             let e = self.bini(BinOp::I32Eq, sel, a);
