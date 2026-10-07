@@ -121,7 +121,13 @@ function perfProfile(title, args) {
   // V8 writes its jitdump, and perf its per-function objects, to the
   // working directory: a temporary one, with relative paths in the command
   // made absolute.
-  const absArgs = args.map((x) => (!x.startsWith('-') && !isAbsolute(x) && existsSync(x) ? resolve(x) : x));
+  // Paths relative to the repository (also the HOST side of HOST=GUEST
+  // arguments, as wine.mjs's --file takes) still work from the temp dir.
+  const abs = (x) => (!x.startsWith('-') && !isAbsolute(x) && existsSync(x) ? resolve(x) : x);
+  const absArgs = args.map((x) => {
+    const eq = x.indexOf('=');
+    return eq > 0 && !existsSync(x) ? abs(x.slice(0, eq)) + x.slice(eq) : abs(x);
+  });
   const r = spawnSync(perf, ['record', '-k', 'mono', '-e', 'cpu-clock', '-F', '2000', '-o', raw, '--', process.execPath, '--perf-prof', ...absArgs], {
     cwd: dir,
     encoding: 'utf8',
