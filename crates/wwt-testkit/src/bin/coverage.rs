@@ -38,7 +38,8 @@ fn main() -> Result<()> {
         let img = pe.image()?;
         let cfg = wwt::Config::default();
         let mut d = wwt::translate::discover_pe(&pe, &img, &[], &cfg);
-        let t = wwt::translate::translate_discovered(&img, &mut d, &cfg, None)?;
+        let t =
+            wwt::translate::translate_discovered(&img, &mut d, &cfg, None, &Default::default())?;
         let refused: BTreeSet<u32> = t.report.unsupported.iter().map(|(va, _)| *va).collect();
         for (va, i) in &d.insts {
             let form = format!("{:?}", i.code());
