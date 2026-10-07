@@ -104,7 +104,24 @@ Wine tier when they are (`tools/wine/build.sh`).
 * Dropping the register write-back on fault paths entirely: no measurable
   change once the code-write call was gone. Fault paths end in
   `unreachable`, and V8 keeps them out of the way.
-* Making the store map's address a constant as well: under 1%.
+* Making the store map's address a constant as well: under 1% on its own.
+* Inlining callees that make calls themselves: −3% (bigger functions,
+  more register pressure in V8).
+* An available-checks dataflow across blocks, in place of the per-block
+  and dominator-tree facts: it removes about a fifth of the checks in
+  `core_bench_state`, but none on hot paths (−1%, noise). The checks that
+  remain hot are on pointers that change every iteration (list traversal,
+  byte scanning), which no static fact covers.
+
+### Where the rest of the gap is
+
+With every check off, CoreMark would run at ~76% of Emscripten. The checks
+themselves cost ~19% (`ab.mjs`: ~12% guest-limit checks on loads, ~2%
+store map, the rest their interaction). The other ~24% comes from x86
+semantics carried into WebAssembly. `push`/`pop` and arguments go through
+guest memory even after inlining. The sort's comparator calls go through
+the address lookup and `call_indirect`. Partial-register writes and flags
+add work.
 
 ### Emscripten's CRC rewrite
 
@@ -265,9 +282,9 @@ In rough order of expected gain:
    could be devirtualized from a run-time profile. Calls that remain would
    benefit from per-function summaries of the registers read and written,
    so a call writes back and reloads only what the callee uses.
-3. **Load checks across blocks and out of loops.** An available-checks
-   dataflow instead of the per-block and dominator-tree facts used now,
-   then range checks hoisted out of counted loops.
+3. **Load checks in loops.** Range checks hoisted out of counted loops
+   (a pointer advancing by a known stride), which is where the remaining
+   hot checks are. Cross-block facts alone didn't help (see above).
 
 ## Goal
 
