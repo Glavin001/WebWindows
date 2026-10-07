@@ -95,9 +95,8 @@ function 0x404400:
     v145 = I32Add ebp, v144
     store4.trusted [v145], v137
     v147 = load1s [ebx]
-    v148 = v147
-    eax = v148
-    v2848 = I32Eqz v148
+    eax = v147
+    v2848 = I32Eqz v147
     br v2848 ? b2 : b3
   b2 @0x4045d3:
     v153 = const 0xcc
@@ -114,15 +113,15 @@ function 0x404400:
     v160 = const 0x4
     v161 = I32Add v158, v160
     esi = v159
-    v162 = load4.trusted+0x4 [v158]
+    v162 = load4.trusted+0x8 [v155]
     v163 = const 0x4
     v164 = I32Add v161, v163
     edi = v162
-    v165 = load4.trusted+0x4 [v161]
+    v165 = load4.trusted+0x8 [v158]
     v166 = const 0x4
     v167 = I32Add v164, v166
     ebp = v165
-    v168 = load4.trusted+0x4 [v164]
+    v168 = load4.trusted+0x8 [v161]
     v169 = const 0x4
     v170 = I32Add v167, v169
     esp = v170
@@ -2128,7 +2127,7 @@ function 0x404400:
     v1954 = I32Sub esp, v1953
     store4.trusted [v1954], v1952
     esp = v1954
-    call 0x407760 ret=0x404cd8 -> b142
+    jump b188
   b118 @0x40462e:
     v1957 = const 0xffffffa8
     v1958 = I32Add ebp, v1957
@@ -3085,3 +3084,65 @@ function 0x404400:
     v2847 = I32Add ecx, v2846
     ebx = v2847
     jump b181
+  b188 @0x407760:
+    v2963 = const 0x4
+    v2964 = I32Sub esp, v2963
+    store4.trusted [v2964], ebp
+    esp = v2964
+    eax = const 0x0
+    ebp = v2964
+    v2971 = load4.trusted+0xc [v2964]
+    edx = v2971
+    v2975 = load4.trusted+0x8 [v2964]
+    ecx = v2975
+    fk = const 0x205
+    fr = v2971
+    fa = v2971
+    v3006 = const 0x0
+    v3007 = I32Ne v2971, v3006
+    br v3007 ? b189 : b190
+  b189 @0x40777f:
+    v2982 = const 0x1
+    v2983 = I32Shl eax, v2982
+    v2984 = I32Add ecx, v2983
+    v2985 = const 0x0
+    v2986 = load2 [v2984]
+    v2988 = const 0xffff
+    v2989 = I32And v2986, v2988
+    fk = const 0x103
+    fr = v2989
+    fa = v2986
+    fb = const 0x0
+    v3008 = I32Ne v2986, v2985
+    br v3008 ? b191 : b192
+  b190 @0x40776f:
+    jump b193
+  b191 @0x407778:
+    v2991 = const 0x1
+    v2993 = I32Add eax, v2991
+    eax = v2993
+    v2996 = I32Sub edx, v2993
+    fk = const 0x203
+    fr = v2996
+    fa = edx
+    fb = v2993
+    v3009 = I32Eq edx, v2993
+    br v3009 ? b193 : b189
+  b192 @0x407786:
+    edx = eax
+    jump b193
+  b193 @0x407788:
+    eax = edx
+    v3000 = load4.trusted [esp]
+    v3001 = const 0x4
+    v3002 = I32Add esp, v3001
+    ebp = v3000
+    v3003 = load4.trusted [v3002]
+    v3004 = const 0x4
+    v3005 = I32Add v3002, v3004
+    esp = v3005
+    v3010 = const 0x404cd8
+    v3011 = I32Eq v3003, v3010
+    br v3011 ? b142 : b194
+  b194 @0x407788:
+    jmp v3003

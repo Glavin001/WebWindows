@@ -150,6 +150,20 @@ pub mod store_map {
     pub const EDGE: u8 = 2;
 }
 
+/// Where the runtime puts its tables, as offsets from the guest limit (the
+/// start of the native region). Modules translated for a known guest limit
+/// (`CodegenConfig::guest_limit`) use these as constant addresses instead
+/// of reading the `lookup_l1`, `zero_l2` and `store_map` imports; the
+/// runtime checks that its layout matches before loading such a module.
+pub mod native_layout {
+    /// First level of the address lookup: one u32 per 4 KB page.
+    pub const LOOKUP_L1: u32 = 0;
+    /// The empty second level.
+    pub const ZERO_L2: u32 = 0x40_0000;
+    /// The store map: one byte per 4 KB page.
+    pub const STORE_MAP: u32 = 0x40_4000;
+}
+
 /// Names of the module imports every translated module expects.
 pub mod imports {
     pub const MODULE: &str = "env";
@@ -182,6 +196,7 @@ struct AbiJson {
     fault: std::collections::BTreeMap<&'static str, u32>,
     stop_address: u32,
     null_limit: u32,
+    native_layout: std::collections::BTreeMap<&'static str, u32>,
     funcs_section: &'static str,
     meta_section: &'static str,
 }
@@ -251,6 +266,13 @@ pub fn abi_json() -> String {
         fault,
         stop_address: addr::STOP,
         null_limit: addr::NULL_LIMIT,
+        native_layout: [
+            ("LOOKUP_L1", native_layout::LOOKUP_L1),
+            ("ZERO_L2", native_layout::ZERO_L2),
+            ("STORE_MAP", native_layout::STORE_MAP),
+        ]
+        .into_iter()
+        .collect(),
         funcs_section: FUNCS_SECTION,
         meta_section: META_SECTION,
     })

@@ -45,6 +45,9 @@ struct TranslateOpts {
     /// at run time.
     #[arg(long)]
     guest_limit_mb: Option<u32>,
+    /// Do not inline small leaf functions into their callers.
+    #[arg(long)]
+    no_inline: bool,
 }
 
 impl TranslateOpts {
@@ -57,6 +60,7 @@ impl TranslateOpts {
         c.codegen.smc_checks = !self.no_smc_checks;
         c.lift.strict_ordering = self.strict_ordering;
         c.codegen.guest_limit = self.guest_limit_mb.map(|mb| mb << 20);
+        c.inline = !self.no_inline;
         c
     }
 

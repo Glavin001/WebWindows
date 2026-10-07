@@ -26,6 +26,8 @@ pub struct Config {
     pub opt_level: u32,
     /// Scan data sections for code pointers when the file has no relocations.
     pub scan_data: bool,
+    /// Inline small leaf functions into their callers (opt level 1).
+    pub inline: bool,
 }
 
 impl Default for Config {
@@ -35,6 +37,7 @@ impl Default for Config {
             codegen: CodegenConfig::default(),
             opt_level: 1,
             scan_data: true,
+            inline: true,
         }
     }
 }
@@ -312,6 +315,11 @@ pub fn translate_discovered(
             opt::optimize(&mut f, cfg.opt_level);
             report.blocks += f.blocks.len();
             funcs.push(f);
+        }
+    }
+    if cfg.opt_level > 0 && cfg.inline {
+        for i in crate::inline::inline_leaves(&mut funcs) {
+            opt::optimize(&mut funcs[i], cfg.opt_level);
         }
     }
     funcs.sort_by_key(|f| f.entry);

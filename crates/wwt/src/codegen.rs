@@ -17,7 +17,7 @@ use wasm_encoder::{
     NameMap, NameSection, RefType, TableType, TypeSection, ValType,
 };
 
-use crate::abi::{self, addr::NULL_LIMIT, cpu, fault, imports, store_map};
+use crate::abi::{self, addr::NULL_LIMIT, cpu, fault, imports, native_layout, store_map};
 use crate::flags::{self, E};
 use crate::ir::*;
 use crate::opt::{self, Analysis, StateMask, ALL_STATE, FAULT_SYNC};
@@ -583,16 +583,37 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     // ---- Lookup --------------------------------------------------------------
 
+    /// With the value on the stack as an index into one of the runtime's
+    /// tables (`global` names its base), returns the memory offset to
+    /// access it with: the table's constant address when the guest limit is
+    /// known at translation time, else 0 after adding the imported base.
+    fn native_table(&mut self, global: u32) -> u32 {
+        match self.m.cfg.guest_limit {
+            Some(l) => {
+                let off = match global {
+                    G_LOOKUP_L1 => native_layout::LOOKUP_L1,
+                    G_ZERO_L2 => native_layout::ZERO_L2,
+                    _ => native_layout::STORE_MAP,
+                };
+                l + off
+            }
+            None => {
+                self.emit(W::GlobalGet(global));
+                self.emit(W::I32Add);
+                0
+            }
+        }
+    }
+
     /// Pushes the table index for the address in local `t`.
     fn lookup_index(&mut self, t: u32) {
-        self.emit(W::GlobalGet(G_LOOKUP_L1));
         self.emit(W::LocalGet(t));
         self.emit(W::I32Const(12));
         self.emit(W::I32ShrU);
         self.emit(W::I32Const(2));
         self.emit(W::I32Shl);
-        self.emit(W::I32Add);
-        self.emit(W::I32Load(memarg(0, 2)));
+        let o = self.native_table(G_LOOKUP_L1);
+        self.emit(W::I32Load(memarg(o, 2)));
         self.emit(W::LocalGet(t));
         self.emit(W::I32Const(0xfff));
         self.emit(W::I32And);
@@ -1129,9 +1150,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(W::LocalGet(a));
         self.emit(W::I32Const(12));
         self.emit(W::I32ShrU);
-        self.emit(W::GlobalGet(G_STORE_MAP));
-        self.emit(W::I32Add);
-        self.emit(W::I32Load8U(memarg(0, 0)));
+        let o = self.native_table(G_STORE_MAP);
+        self.emit(W::I32Load8U(memarg(o, 0)));
     }
 
     /// Invalidates the translations of the page a store hits if it holds
@@ -1149,9 +1169,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(W::I32Const(12));
         self.emit(W::I32ShrU);
         self.emit(W::LocalTee(a));
-        self.emit(W::GlobalGet(G_STORE_MAP));
-        self.emit(W::I32Add);
-        self.emit(W::I32Load8U(memarg(0, 0)));
+        let o = self.native_table(G_STORE_MAP);
+        self.emit(W::I32Load8U(memarg(o, 0)));
         self.emit(W::LocalTee(self.tmp_map));
         self.emit(W::I32Const(store_map::CODE as i32));
         self.emit(W::I32And);
@@ -1160,18 +1179,19 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(W::LocalGet(a));
         self.emit(W::I32Const(2));
         self.emit(W::I32Shl);
-        self.emit(W::GlobalGet(G_LOOKUP_L1));
-        self.emit(W::I32Add);
-        self.emit(W::GlobalGet(G_ZERO_L2));
-        self.emit(W::I32Store(memarg(0, 2)));
+        let o = self.native_table(G_LOOKUP_L1);
+        match self.m.cfg.guest_limit {
+            Some(l) => self.emit(W::I32Const((l + native_layout::ZERO_L2) as i32)),
+            None => self.emit(W::GlobalGet(G_ZERO_L2)),
+        }
+        self.emit(W::I32Store(memarg(o, 2)));
         // store_map[page] &= ~CODE
         self.emit(W::LocalGet(a));
-        self.emit(W::GlobalGet(G_STORE_MAP));
-        self.emit(W::I32Add);
+        let o = self.native_table(G_STORE_MAP);
         self.emit(W::LocalGet(self.tmp_map));
         self.emit(W::I32Const(!(store_map::CODE as i32)));
         self.emit(W::I32And);
-        self.emit(W::I32Store8(memarg(0, 0)));
+        self.emit(W::I32Store8(memarg(o, 0)));
         self.emit(W::End);
     }
 

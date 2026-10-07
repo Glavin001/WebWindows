@@ -205,6 +205,17 @@ export class Machine {
       throw new Error(`${name}: ABI version ${meta.abi_version}, runtime expects ${this.abi.version}`);
     }
     // Translated with the guest limit as a constant in its memory checks.
+    // Such a module also uses the native tables' addresses as constants
+    // (wwt::abi::native_layout).
+    const layout = this.abi.native_layout;
+    if (
+      meta?.guest_limit !== undefined &&
+      (this.l1 !== this.guestLimit + layout.LOOKUP_L1 ||
+        this.zeroL2 !== this.guestLimit + layout.ZERO_L2 ||
+        this.storeMap !== this.guestLimit + layout.STORE_MAP)
+    ) {
+      throw new Error(`${name}: native region layout differs from wwt::abi::native_layout`);
+    }
     if (meta && meta.guest_limit !== undefined && meta.guest_limit !== this.guestLimit) {
       throw new Error(
         `${name}: translated for a guest limit of ${meta.guest_limit >>> 20} MB, this machine has ` +

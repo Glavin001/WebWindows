@@ -29,16 +29,15 @@ within one `coremark.mjs` run.
 
 | Build | Iterations/s | vs. native | vs. Emscripten |
 | --- | --- | --- | --- |
-| Native, `gcc -m32 -O2` | ~21,600 | 100% | — |
+| Native, `gcc -m32 -O2` | ~21,600–22,600 | 100% | — |
 | Native, `clang -m32 -O2` (LLVM 18) | ~18,700 | ~90% | — |
-| Emscripten `-O2`, Node (CRC rewrite off, see below) | ~20,500 | ~95% | 100% |
+| Emscripten `-O2`, Node (CRC rewrite off, see below) | ~20,500–21,400 | ~95% | 100% |
 | `wwt`, M1 shims, Node: before this work | ~7,700 | ~35% | ~37% |
 | … with irreducible loops made reducible | ~8,300–9,000 | ~40% | ~42% |
 | … and the store map with inline invalidation | ~9,400–10,000 | ~45% | ~47% |
-| … and fewer load checks, narrower operations, constant guest limit | **~10,500** | **~49%** | **~51%** |
-| Same, headless Chromium (translated in the page) | ~10,500–11,100 | ~50% | ~53% |
-| For reference: no code-write checks | ~11,800 | ~55% | ~57% |
-| For reference: no memory or code-write checks | ~12,600 | ~58% | ~61% |
+| … and fewer load checks, narrower operations, constant guest limit | ~10,500 | ~49% | ~51% |
+| … and inlining, constant table addresses | **~13,300** | **~59%** | **~62%** |
+| Same, headless Chromium (translated in the page) | ~13,600–13,900 | ~61% | ~64% |
 
 Translated Wine ran compute-bound code at the same speed as the M1 shims
 in M2 (its DLLs are only on the path for system calls; see
@@ -80,7 +79,20 @@ Wine tier when they are (`tools/wine/build.sh`).
   immediate instead of a global, which frees a register in V8's code
   (about 4%). The module records the limit, and the runtime refuses it
   under another one. Without the option, modules read the limit at run
-  time as before.
+  time as before. Such modules also address the runtime's tables (address
+  lookup, store map) at constant offsets from the limit
+  (`wwt::abi::native_layout`), instead of reloading their bases from the
+  instance inside loops.
+* **Inlining** (`crates/wwt/src/inline.rs`). A translated call costs far
+  more than an x86 one. The caller writes back its dirty registers, the
+  callee loads what it reads and writes back what it changed, and the
+  caller reloads everything live. perf showed 39% of
+  `core_state_transition`'s time in that entry and exit code. Small leaf
+  functions (no calls, tail jumps or indirect jumps) are now spliced into
+  their callers, where the x86 state stays in locals. The return address
+  is still pushed, and the callee's `ret` continues inline only when it
+  pops the expected address, so x86 semantics and fault addresses are
+  unchanged. +8% on CoreMark. `wwt translate --no-inline` turns it off.
 
 ### What didn't help (measured with `ab.mjs`)
 
@@ -247,11 +259,12 @@ In rough order of expected gain:
 1. **Stack slots as locals.** GCC's x86 code keeps locals and spilled
    registers at `esp+N`. When a function's frame doesn't escape, those
    slots can live in WebAssembly locals, as they do in Emscripten's code.
-2. **Calls with known callees.** A direct call writes back every dirty
-   register and reloads them afterwards. Per-function summaries of the
-   registers read and written would cut that to what the callee uses. A
-   fault inside the callee would then return through its callers, each
-   writing back its own registers.
+2. **More inlining, and cheaper calls where it can't happen.** Callees
+   that make calls of their own can be inlined too: their calls stay calls.
+   Indirect calls through function pointers (CoreMark's sort comparators)
+   could be devirtualized from a run-time profile. Calls that remain would
+   benefit from per-function summaries of the registers read and written,
+   so a call writes back and reloads only what the callee uses.
 3. **Load checks across blocks and out of loops.** An available-checks
    dataflow instead of the per-block and dominator-tree facts used now,
    then range checks hoisted out of counted loops.

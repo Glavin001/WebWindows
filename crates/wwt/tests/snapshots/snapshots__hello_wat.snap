@@ -3760,12 +3760,12 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
     local.get 19
     i32.store offset=32
     local.get 0
-    global.get 1
     local.get 19
     i32.const 12
     i32.shr_u
     i32.const 2
     i32.shl
+    global.get 1
     i32.add
     i32.load
     local.get 19
@@ -3921,12 +3921,12 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
     local.get 19
     i32.store offset=32
     local.get 0
-    global.get 1
     local.get 19
     i32.const 12
     i32.shr_u
     i32.const 2
     i32.shl
+    global.get 1
     i32.add
     i32.load
     local.get 19
@@ -4849,12 +4849,12 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                 local.get 19
                 i32.store offset=32
                 local.get 0
-                global.get 1
                 local.get 19
                 i32.const 12
                 i32.shr_u
                 i32.const 2
                 i32.shl
+                global.get 1
                 i32.add
                 i32.load
                 local.get 19
@@ -5024,12 +5024,12 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                 local.get 19
                 i32.store offset=32
                 local.get 0
-                global.get 1
                 local.get 19
                 i32.const 12
                 i32.shr_u
                 i32.const 2
                 i32.shl
+                global.get 1
                 i32.add
                 i32.load
                 local.get 19

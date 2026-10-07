@@ -17,6 +17,7 @@ pub mod discover;
 pub mod flags;
 pub mod fpu;
 mod fpu_helpers;
+pub mod inline;
 pub mod ir;
 pub mod kernel;
 pub mod lift;
