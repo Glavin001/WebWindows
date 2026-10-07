@@ -159,7 +159,10 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Con
                 }
             }
         }
-    } else if cfg.scan_data {
+    }
+    // Executables often carry few or no relocations: also scan their data
+    // for code pointers (each confirmed by decoding).
+    if cfg.scan_data && !pe.is_dll() {
         for s in &pe.sections {
             if s.is_executable() || s.characteristics & 0xC0 == 0x80 {
                 continue;
@@ -177,6 +180,48 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Con
         }
     }
     d.explore(img);
+    // setjmp returns a second time through longjmp, after its caller's
+    // frame has moved on: its return sites must be entry points.
+    let setjmp_slots: Vec<u32> = pe
+        .imports
+        .iter()
+        .filter(|i| {
+            let n = i.name.to_string().to_ascii_lowercase();
+            n.contains("setjmp")
+        })
+        .map(|i| pe.image_base + i.iat_rva)
+        .collect();
+    if !setjmp_slots.is_empty() {
+        use iced_x86::{FlowControl, OpKind, Register};
+        let via_slot = |i: &iced_x86::Instruction| {
+            i.op0_kind() == OpKind::Memory
+                && i.memory_base() == Register::None
+                && i.memory_index() == Register::None
+                && setjmp_slots.contains(&i.memory_displacement32())
+        };
+        // Import stubs: `jmp [slot]` (how MinGW calls undeclared imports).
+        let stubs: Vec<u32> = d
+            .insts
+            .values()
+            .filter(|i| i.flow_control() == FlowControl::IndirectBranch && via_slot(i))
+            .map(|i| i.ip32())
+            .collect();
+        let returns: Vec<u32> = d
+            .insts
+            .values()
+            .filter(|i| {
+                (i.flow_control() == FlowControl::IndirectCall && via_slot(i))
+                    || (i.flow_control() == FlowControl::Call
+                        && i.op0_kind() == OpKind::NearBranch32
+                        && stubs.contains(&i.near_branch32()))
+            })
+            .map(|i| i.next_ip32())
+            .collect();
+        for r in returns {
+            d.add_function_seed(r, SeedKind::Call);
+        }
+        d.explore(img);
+    }
     d
 }
 
@@ -190,7 +235,24 @@ pub fn translate_pe(pe: &PeFile, cfg: &Config, profile: &[u32]) -> Result<Transl
 
 /// Fast mode: translates code reachable from `entries` in `src`.
 pub fn translate_region(src: &dyn CodeSource, entries: &[u32], cfg: &Config) -> Result<Translation> {
+    translate_region_with_known(src, entries, &[], cfg)
+}
+
+/// Fast mode with a set of function entries already translated elsewhere,
+/// which are called through the lookup rather than translated again.
+pub fn translate_region_with_known(
+    src: &dyn CodeSource,
+    entries: &[u32],
+    known: &[u32],
+    cfg: &Config,
+) -> Result<Translation> {
     let mut d = Discovery::new();
+    for &k in known {
+        if !entries.contains(&k) {
+            d.functions.insert(k);
+            d.external.insert(k);
+        }
+    }
     for &e in entries {
         d.add_function_seed(e, SeedKind::Profile);
     }
@@ -225,6 +287,11 @@ pub fn translate_discovered(
         }
         for entry in todo {
             done.insert(entry);
+            // Entries outside the decodable region (calls out of a fast-mode
+            // window) are reached through the lookup instead.
+            if !d.insts.contains_key(&entry) {
+                continue;
+            }
             let lifted = lift_function(src, d, entry, &cfg.lift);
             report.unsupported.extend(lifted.unsupported);
             for e in lifted.extra_entries {

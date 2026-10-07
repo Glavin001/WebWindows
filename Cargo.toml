@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/wwt", "crates/wwt-cli", "crates/wwt-testkit"]
+members = ["crates/wwt", "crates/wwt-cli", "crates/wwt-testkit", "crates/wwt-wasm"]
 
 [workspace.package]
 version = "0.1.0"
@@ -23,3 +23,16 @@ opt-level = 2
 
 [profile.test]
 opt-level = 1
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+
+[profile.release-wasm]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

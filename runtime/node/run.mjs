@@ -5,7 +5,8 @@
 //
 // Options (before the program): --wasm <file> (translated module; default:
 // translate with `wwt`), --wwt <path> (translator binary), --trace (log API
-// calls), --guest-limit <MB>, --profile <file> (append missed addresses).
+// calls), --guest-limit <MB>, --profile <file> (append missed addresses),
+// --no-fast (disable run-time translation of code the translator missed).
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, appendFileSync, mkdtempSync } from 'node:fs';
@@ -15,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 import { Machine, ProcessExit, GuestFault, hex } from '../runtime.mjs';
 import { Process } from '../win32.mjs';
+import { FastTranslator, enableFastMode } from '../fastmode.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../..');
@@ -27,6 +29,15 @@ function findWwt(explicit) {
     if (existsSync(f)) return f;
   }
   throw new Error('wwt translator not found; build it with `cargo build -p wwt-cli`');
+}
+
+function findTranslatorWasm() {
+  if (process.env.WWT_WASM) return process.env.WWT_WASM;
+  for (const p of ['target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm', 'target/wasm32-unknown-unknown/release/wwt_wasm.wasm']) {
+    const f = join(root, p);
+    if (existsSync(f)) return f;
+  }
+  return null;
 }
 
 export async function runExe(exePath, argv, opts = {}) {
@@ -53,6 +64,13 @@ export async function runExe(exePath, argv, opts = {}) {
     log: opts.verbose ? (s) => process.stderr.write(s + '\n') : undefined,
   });
   await machine.init();
+  if (opts.fast !== false) {
+    const tw = findTranslatorWasm();
+    if (tw) {
+      const ft = await FastTranslator.load(readFileSync(tw));
+      enableFastMode(machine, ft, { log: opts.verbose ? (s) => process.stderr.write(s + '\n') : undefined });
+    }
+  }
   const mod = await machine.loadModule(readFileSync(wasmPath), basename(wasmPath));
   const proc = new Process(machine, {
     argv: [basename(exePath), ...argv],
@@ -83,6 +101,7 @@ async function main() {
     if (a === '--wasm') opts.wasm = args.shift();
     else if (a === '--wwt') opts.wwt = args.shift();
     else if (a === '--trace') opts.trace = true;
+    else if (a === '--no-fast') opts.fast = false;
     else if (a === '--verbose') opts.verbose = true;
     else if (a === '--profile') opts.profile = args.shift();
     else if (a === '--guest-limit') opts.guestLimitMB = Number(args.shift());
