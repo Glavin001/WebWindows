@@ -69,6 +69,18 @@ EDITS = [
      'DECL_HANDLER(get_desktop_window)\n{',
      'extern void clear_user_handle_owner( user_handle_t handle );\n\n'
      'DECL_HANDLER(get_desktop_window)\n{', 1),
+    # Sleep(): select() with only a timeout. Here the thread sleeps through
+    # the host instead (Atomics.wait), like any other wait (inproc/client.c).
+    ('dlls/ntdll/unix/sync.c',
+     '        for (;;) select( 0, NULL, NULL, NULL, NULL );',
+     '        for (;;) wasm_sleep( NULL );', 1),
+    ('dlls/ntdll/unix/sync.c',
+     '            if (select( 0, NULL, NULL, NULL, &tv ) != -1) break;',
+     '            if (wasm_sleep( &tv ) != -1) break;', 1),
+    ('dlls/ntdll/unix/sync.c',
+     'NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeout )\n{',
+     'extern int wasm_sleep( const struct timeval *tv );\n\n'
+     'NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeout )\n{', 1),
     # ntdll's Unix side on wasm32 runs i386 code.
     ('dlls/ntdll/unix/unix_private.h',
      '#ifdef __i386__\nstatic const WORD current_machine = IMAGE_FILE_MACHINE_I386;',
@@ -84,6 +96,19 @@ APPENDS = [
 void wasm_set_nt_data_dir( const WCHAR *dir )
 {
     nt_data_dir = dir;
+}
+
+/* The case tables towupper()/towlower() use (wcsicmp in win32u's class and
+ * atom lookups), as init_environment loads them. */
+void wasm_init_case_tables(void)
+{
+    USHORT *case_table;
+
+    if ((case_table = read_nls_file( "l_intl.nls" )))
+    {
+        uctable = case_table + 2;
+        lctable = case_table + case_table[1] + 2;
+    }
 }
 '''),
     ('server/user.c', '''

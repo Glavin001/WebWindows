@@ -5,12 +5,14 @@ x86 machine code to WebAssembly ahead of time, translating anything the
 first pass missed while the program runs, and caching the result. Everything
 happens on the user's machine; nothing is uploaded.
 
-This repository implements **Milestones 1 and 2** of the plan: the
-translator core and test harness, and Windows programs running on Wine's own
-DLLs translated to WebAssembly, in Node and in the browser. Early parts of M3
-(fast mode, in-browser translation with caching) are in place too. See
-[docs/milestone-1.md](docs/milestone-1.md) and
-[docs/milestone-2.md](docs/milestone-2.md) for status, measurements and
+This repository implements **Milestones 1 to 4** of the plan: the
+translator core and test harness (M1); Windows programs running on Wine's
+own DLLs translated to WebAssembly (M2); the translator, fast mode and a
+translation cache in the browser, with a folder picker (M3); and windowed
+programs: Wine's win32u and wineserver compiled with Emscripten, a browser
+display driver, keyboard and mouse (M4). Wine's Minesweeper and Notepad run
+in a page. See [docs/milestone-1.md](docs/milestone-1.md) to
+[docs/milestone-4.md](docs/milestone-4.md) for status, measurements and
 known limitations.
 
 ## Quick start
@@ -31,9 +33,19 @@ tools/wine/build.sh
 cargo build --release -p wwt-cli
 node runtime/node/wine.mjs tests/programs/hello.exe
 
+# Windowed programs: Wine's Unix side with Emscripten (emcc on PATH), the
+# DLLs, fonts and programs, then a program with a screenshot of its screen:
+tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost user32 gdi32 \
+  win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 rpcrt4 uxtheme \
+  comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts
+sh native/wine-unix/build.sh
+node runtime/node/wine.mjs --screenshot mine.png --run-for 5000 \
+  --input "500:click 60,120" /opt/wine-build/programs/winemine/i386-windows/winemine.exe
+
 # Or in the browser (Chromium): serve with the required headers, open the
-# page and pick a folder that contains an .exe. For "on Wine", build the
-# bundle first with `node runtime/node/wine-bundle.mjs`.
+# page and pick a folder that contains an .exe, or try Wine's Minesweeper
+# and Notepad. For "on Wine", build the bundle first.
+node runtime/node/wine-bundle.mjs
 node runtime/web/serve.mjs 8080
 # http://localhost:8080/runtime/web/
 ```
@@ -73,8 +85,10 @@ target/debug/wwt pack program.exe -o out/  # static web app directory
   kernel`) holds the dispatcher loop; `fastmode.mjs` translates missed code
   with `crates/wwt-wasm`; `win32.mjs` is a temporary Win32 layer (kernel32 and
   msvcrt shims) from M1; `wine/` stands in for Wine's Unix side under
-  Wine's DLLs, which are translated like any other code (M2); `node/` and
-  `web/` are the two hosts.
+  Wine's DLLs, which are translated like any other code (M2), and loads the
+  parts of it compiled with Emscripten (`native/wine-unix`: wineserver,
+  win32u and the browser display driver, M4); `node/` and `web/` are the
+  two hosts.
 * **Memory**: x86 address `A` is WebAssembly address `A`. The low *guest
   limit* bytes (1 GB by default) are the Windows process; the native runtime
   lives above it. Registers live in WebAssembly locals inside a function and
@@ -89,7 +103,8 @@ The plan's verification pipeline, as implemented:
 | --- | --- | --- |
 | 1. Instructions | Every legacy instruction form valid in 32-bit user mode (integer, flag-fusion pairs, x87, SSE/SSE2/MMX), random inputs, recorded on a real x86 CPU by `tools/oracle` | `cargo test -p wwt-testkit` |
 | 2. Programs | Hand-written C programs, Csmith programs and GCC's torture tests built with MinGW vs. a native `gcc -m32` build, on the shims or (`--wine`) on translated Wine | `node tests/programs/check.mjs [--csmith N] [--torture DIR] [--wine]` |
-| 4. Real software (start) | The browser front end in headless Chromium, including the cache and profile loop | `node tests/web/browser.mjs` |
+| 3. Wine's own tests | Every unit of Wine's `kernel32`, `user32` and `gdi32` conformance tests on translated Wine, against recorded baselines | `node tests/wine/winetest.mjs --baseline tests/wine/baseline/user32_test.json .../user32_test.exe` |
+| 4. Real software (start) | The browser front end in headless Chromium: the cache and profile loop, the folder picker, and Wine's Minesweeper and Notepad driven with mouse and keyboard; the same windowed programs headless in Node with screenshots | `node tests/web/browser.mjs`, `tests/web/picker.mjs`, `tests/web/gui.mjs`, `tests/wine/gui.mjs` |
 | 5. Own output | Snapshots of IR and WAT for committed binaries | `cargo test -p wwt --test snapshots` |
 
 Instruction fixtures (`tests/fixtures/instructions/*.jsonl.gz`) are recorded
@@ -113,7 +128,9 @@ crates/wwt-cli      `wwt` command-line tool
 crates/wwt-wasm     translator compiled to WebAssembly (fast mode, browser)
 crates/wwt-testkit  instruction generator, oracle driver, wasmtime runner
 runtime/            JavaScript runtime (Node and browser hosts)
+native/wine-unix    Wine's Unix side (wineserver, win32u, display driver) for Emscripten
 tools/oracle        native x86 oracle for instruction tests
+tools/wine          builds Wine's i386 PE DLLs, programs, tests and fonts
 tests/              fixtures, test programs, Csmith runtime, browser test
 spikes/             M1 spikes: memory size, Emscripten above the guest limit
 docs/               plan status and design notes

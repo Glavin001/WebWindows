@@ -79,16 +79,43 @@ function check(name, ok, detail) {
   check('winbasic: caption text', caption > 20, `${caption} light pixels`);
 }
 
-// winemine (Wine's Minesweeper): menu, LED counters, smiley, the board.
+// winemine (Wine's Minesweeper): menu, LED counters, smiley, the board;
+// then a click on a square reveals it (and starts the clock).
+const green = (c) => c[1] > 100 && c[0] < 60 && c[2] < 60;
+const board = [8, 72, 152, 218];
+let unclicked = 0;
 {
   const exe = join(wineBuild, 'programs/winemine/i386-windows/winemine.exe');
   const { img } = run('winemine', exe, ['--run-for', '3000']);
+  unclicked = count(img, ...board, green);
+  check('winemine: board', unclicked > 15000, `${unclicked} green pixels`);
   const leds = count(img, 8, 46, 44, 68, (c) => c[1] > 200 && c[0] < 60 && c[2] < 60);
   check('winemine: LED digits', leds > 40, `${leds} green pixels`);
   const face = count(img, 70, 48, 90, 66, (c) => c[0] > 200 && c[1] > 200 && c[2] < 60);
   check('winemine: smiley', face > 40, `${face} yellow pixels`);
   const menu = count(img, 8, 28, 70, 38, (c) => c[0] < 96 && c[1] < 96 && c[2] < 96);
   check('winemine: menu text', menu > 15, `${menu} dark pixels`);
+}
+
+{
+  const exe = join(wineBuild, 'programs/winemine/i386-windows/winemine.exe');
+  const { img } = run('winemine-click', exe, ['--run-for', '6000', '--input', '500:click 60,120']);
+  const squares = count(img, ...board, green);
+  // At least one square (16x16, mostly green) is no longer covered.
+  check('winemine: a click reveals squares', squares < unclicked - 100, `${unclicked} -> ${squares} green pixels`);
+}
+
+// Notepad: its edit control comes from comctl32 v6 (a side-by-side
+// assembly); typed text appears in it.
+{
+  const exe = join(wineBuild, 'programs/notepad/i386-windows/notepad.exe');
+  const { img } = run('notepad', exe, ['--run-for', '12000', '--input', '500:text Hello Wine; 900:key Enter; 1000:text Typed in Notepad']);
+  const dark = (c) => c[0] < 96 && c[1] < 96 && c[2] < 96;
+  const title = count(img, 20, 6, 140, 22, (c) => c[0] > 200 && c[1] > 200 && c[2] > 200);
+  check('notepad: caption', title > 60, `${title} light pixels`);
+  const line1 = count(img, 6, 46, 120, 60, dark);
+  const line2 = count(img, 6, 62, 160, 76, dark);
+  check('notepad: typed text', line1 > 60 && line2 > 80, `${line1} and ${line2} dark pixels on lines 1 and 2`);
 }
 
 const failed = results.filter((ok) => !ok).length;

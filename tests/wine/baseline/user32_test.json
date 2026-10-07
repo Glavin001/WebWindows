@@ -1,0 +1,113 @@
+{
+  "broadcast": {
+    "status": "done",
+    "tests": 32,
+    "failures": 0
+  },
+  "class": {
+    "status": "crash",
+    "failures": 72
+  },
+  "clipboard": {
+    "status": "timeout",
+    "failures": 43
+  },
+  "combo": {
+    "status": "done",
+    "tests": 488,
+    "failures": 0
+  },
+  "cursoricon": {
+    "status": "timeout",
+    "failures": 98
+  },
+  "dce": {
+    "status": "done",
+    "tests": 212,
+    "failures": 0
+  },
+  "dde": {
+    "status": "timeout",
+    "failures": 1
+  },
+  "dialog": {
+    "status": "done",
+    "tests": 1006,
+    "failures": 2
+  },
+  "edit": {
+    "status": "done",
+    "tests": 263151,
+    "failures": 0
+  },
+  "generated": {
+    "status": "done",
+    "tests": 0,
+    "failures": 0
+  },
+  "input": {
+    "status": "timeout",
+    "failures": 5
+  },
+  "listbox": {
+    "status": "done",
+    "tests": 1450,
+    "failures": 23
+  },
+  "menu": {
+    "status": "done",
+    "tests": 14097,
+    "failures": 0
+  },
+  "monitor": {
+    "status": "done",
+    "tests": 1583,
+    "failures": 65
+  },
+  "msg": {
+    "status": "timeout",
+    "failures": 1
+  },
+  "resource": {
+    "status": "done",
+    "tests": 140,
+    "failures": 6
+  },
+  "scroll": {
+    "status": "done",
+    "tests": 243,
+    "failures": 4
+  },
+  "static": {
+    "status": "done",
+    "tests": 443,
+    "failures": 0
+  },
+  "sysparams": {
+    "status": "crash",
+    "failures": 0
+  },
+  "text": {
+    "status": "done",
+    "tests": 903,
+    "failures": 0
+  },
+  "uitools": {
+    "status": "done",
+    "tests": 42,
+    "failures": 0
+  },
+  "win": {
+    "status": "timeout",
+    "failures": 6
+  },
+  "winstation": {
+    "status": "timeout",
+    "failures": 12
+  },
+  "wsprintf": {
+    "status": "done",
+    "tests": 58,
+    "failures": 0
+  }
+}

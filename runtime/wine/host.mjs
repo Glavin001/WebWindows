@@ -18,6 +18,7 @@ import { SYSCALLS, STATUS } from './syscalls.mjs';
 import { HANDLE_ROUTED, WIN32U_UNIXLIB } from './unix.mjs';
 
 import layout from './layout.json' with { type: 'json' };
+import { installAssemblies } from './sxs.mjs';
 
 export const L = layout;
 
@@ -138,6 +139,8 @@ export class WineHost {
     this.m = machine;
     this.translate = opts.translate;
     this.files = opts.files;
+    // The side-by-side store wineboot would have filled.
+    installAssemblies(this.files);
     this.stdout = opts.stdout ?? (() => {});
     this.stderr = opts.stderr ?? (() => {});
     this.trace = opts.trace ?? false;
@@ -159,6 +162,33 @@ export class WineHost {
     this.argv = opts.argv;
     this.exePath = opts.exePath; // DOS path, e.g. c:\hello.exe
     this.env = opts.env ?? {};
+    /** Wine's debug channels, as WINEDEBUG sets them ("+actctx,warn+heap") */
+    this.debug = opts.debug ?? '';
+  }
+
+  /**
+   * Writes WINEDEBUG's channels as ntdll reads them: entries of a flags byte
+   * (bit per class: fixme, err, warn, trace) and a 15-byte name, sorted by
+   * name, ended by an empty name whose flags apply to all other channels.
+   */
+  writeDebugOptions(at, spec) {
+    const CLASSES = ['fixme', 'err', 'warn', 'trace'];
+    let all = 0b11; // fixme and err
+    const channels = new Map();
+    for (const item of spec.split(/[,;]/).map((x) => x.trim()).filter(Boolean)) {
+      const m = item.match(/^(fixme|err|warn|trace)?([+-])(.+)$/);
+      if (!m) continue;
+      const bits = m[1] ? 1 << CLASSES.indexOf(m[1]) : 0xf;
+      const apply = (flags) => (m[2] === '+' ? flags | bits : flags & ~bits);
+      if (m[3] === 'all') all = apply(all);
+      else if (m[3].length < 15) channels.set(m[3], apply(channels.get(m[3]) ?? all));
+    }
+    const names = [...channels.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).slice(0, 255);
+    names.forEach((name, i) => {
+      this.m.u8[at + i * 16] = channels.get(name);
+      for (let j = 0; j < name.length; j++) this.m.u8[at + i * 16 + 1 + j] = name.charCodeAt(j);
+    });
+    this.m.u8[at + names.length * 16] = all;
   }
 
   // ---- Guest memory helpers ------------------------------------------------
@@ -328,8 +358,11 @@ export class WineHost {
     this.exe = exe;
 
     // PEB, TEB, process parameters.
-    this.peb = this.alloc(0x1000, PAGE_READWRITE, 'PEB');
+    // The page after the PEB holds the debug channels (as Wine's Unix side
+    // leaves them; ntdll's __wine_dbg_get_channel_flags reads them there).
+    this.peb = this.alloc(0x2000, PAGE_READWRITE, 'PEB');
     this.buildPeb(exe);
+    this.writeDebugOptions(this.peb + 0x1000, this.debug);
     this.teb = this.alloc(0x2000, PAGE_READWRITE, 'TEB');
     this.cpu = m.newCpu();
     this.buildTeb(this.teb, exe.info);

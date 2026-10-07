@@ -39,17 +39,21 @@ target() {
   esac
 }
 targets=""
+keep=""
 for d in $DLLS; do
   if [ "$d" = fonts ]; then
     # sfnt2fon converts the TrueType sources; Wine was configured without
     # FreeType (the browser build brings its own), so build it here.
+    mkdir -p tools/sfnt2fon
     gcc -O2 -o tools/sfnt2fon/sfnt2fon "$WINE_SRC/tools/sfnt2fon/sfnt2fon.c" -Itools/sfnt2fon -Iinclude \
       -I"$WINE_SRC/include" -D__WINESRC__ -DHAVE_FT2BUILD_H -DSONAME_LIBFREETYPE='"libfreetype.so.6"' \
       $(pkg-config --cflags --libs freetype2)
     targets="$targets $(grep -oE 'fonts/[a-z_0-9]+\.fon' Makefile | sort -u | tr '\n' ' ')"
+    # Keep make from relinking it without FreeType.
+    keep="-o tools/sfnt2fon/sfnt2fon"
     continue
   fi
   targets="$targets $(target "$d")"
 done
-make -j"$(nproc)" $targets
+make -j"$(nproc)" $keep $targets
 for t in $targets; do ls -la "$t"; done
