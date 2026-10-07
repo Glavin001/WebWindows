@@ -24,12 +24,17 @@ cp "$root"/runtime/*.mjs "$out/runtime/"
 cp "$translator" "$out/target/wasm32-unknown-unknown/release-wasm/"
 cp -r "$bundle" "$out/target/wine-bundle"
 cp "$root/tests/programs/hello.exe" "$out/tests/programs/"
+# The d3dgpu demo and test page (runtime/d3dgpu/build.sh), when built.
+if [ -f "$root/runtime/d3dgpu/pkg/d3dgpu_web_bg.wasm" ]; then
+  cp -r "$root/runtime/d3dgpu" "$out/runtime/d3dgpu"
+  rm -f "$out/runtime/d3dgpu/.gitignore" "$out/runtime/d3dgpu/build.sh"
+fi
 cat > "$out/index.html" <<'HTML'
 <!doctype html>
 <meta charset="utf-8">
 <title>WebWindows</title>
 <meta http-equiv="refresh" content="0; url=runtime/web/">
-<p><a href="runtime/web/">WebWindows</a></p>
+<p><a href="runtime/web/">WebWindows</a> · <a href="runtime/d3dgpu/">d3dgpu</a></p>
 HTML
 git -C "$root" rev-parse HEAD > "$out/version.txt" 2>/dev/null || true
 du -sh "$out"

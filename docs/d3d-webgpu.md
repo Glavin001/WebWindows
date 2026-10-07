@@ -230,7 +230,7 @@ worker standing in for wined3d's CS thread:
   presentation and `mapAsync` proceed; a 1 ms pump copies finished
   readbacks into shared memory and notifies the fence.
 
-The page (`runtime/d3dgpu/`, also the Vercel preview) is the place for
+The page (`runtime/d3dgpu/`; on the site CI deploys, `/runtime/d3dgpu/`) is the place for
 testing on real hardware:
 
 * **Demos** (`crates/d3dgpu-scenes/src/demos.rs`, HLSL in

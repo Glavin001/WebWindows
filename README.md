@@ -141,6 +141,7 @@ crates/d3dgpu-*     Direct3D 9/10/11 on WebGPU core: protocol, shader translator
                     (SM1-3, DXBC SM4/5), emulation library, render core (wgpu),
                     scenes, web build
 runtime/            JavaScript runtime (Node and browser hosts)
+runtime/d3dgpu/     d3dgpu demo page, render and producer workers, test runner
 native/wine-unix    Wine's Unix side (wineserver, win32u, display driver) for Emscripten
 tools/oracle        native x86 oracle for instruction tests
 tools/wine          builds Wine's i386 PE DLLs, programs, tests and fonts
@@ -151,7 +152,6 @@ tools/site          assembles the static site and deploys it to Vercel
 tests/              fixtures, test programs, Csmith runtime, browser test
 spikes/             M1 spikes: memory size, Emscripten above the guest limit
 docs/               the plan (plan.md) and each milestone's status
-runtime/d3dgpu/     d3dgpu demo page, render and producer workers, test runner
 ```
 
 ## Direct3D on WebGPU
@@ -163,7 +163,8 @@ drive through a command stream. See [docs/d3d-webgpu.md](docs/d3d-webgpu.md).
 ```sh
 cargo test -p d3dgpu-core                     # 54 scenes (D3D9 and D3D11) on native wgpu
 cargo test -p d3dgpu-dxbc                     # DXBC translator (tools/dxbc/ has the corpora)
-runtime/d3dgpu/build.sh                       # wasm + bindings (needs wasm-bindgen-cli)
+runtime/d3dgpu/build.sh                       # wasm + bindings (fetches wasm-bindgen-cli)
 node tests/web/d3dgpu.mjs                     # the same scenes in headless Chromium
 node runtime/web/serve.mjs 8080               # http://localhost:8080/runtime/d3dgpu/
+                                              # (also /runtime/d3dgpu/ on the deployed site)
 ```

@@ -52,12 +52,16 @@ opt-level = 3
 lto = "thin"
 codegen-units = 4
 
-# Speed over size: in browsers about 40% less CPU per draw than
-# opt-level "s", for an 11% larger module.
 [profile.release-wasm]
 inherits = "release"
-opt-level = 3
+opt-level = "s"
 lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# The d3dgpu render core in the browser: speed over size, about 40% less
+# CPU per draw than opt-level "s" for an 11% larger module.
+[profile.release-d3dgpu]
+inherits = "release-wasm"
+opt-level = 3
