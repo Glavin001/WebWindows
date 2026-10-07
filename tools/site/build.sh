@@ -6,7 +6,7 @@
 #
 # Needs the translator (cargo build -p wwt-wasm --target wasm32-unknown-unknown
 # --profile release-wasm) and the bundle (node runtime/node/wine-bundle.mjs).
-# CI publishes the result for Vercel previews (tools/vercel-build.sh).
+# CI deploys the result to Vercel (tools/site/deploy.sh).
 set -eu
 root=$(cd "$(dirname "$0")/../.." && pwd)
 out=${1:-$root/target/site}

@@ -51,11 +51,12 @@ node runtime/web/serve.mjs 8080
 # http://localhost:8080/runtime/web/
 ```
 
-CI runs for pull requests and for `main`. Each of those runs also feeds
-a Vercel preview: CI's wine job assembles the static site
-(`tools/site/build.sh`) and publishes it as an asset of the `site-preview`
-release, and the Vercel build (`vercel.json`, `tools/vercel-build.sh`)
-deploys it with the cross-origin isolation headers.
+CI runs for pull requests and for `main`. Its wine job also deploys the
+static site to Vercel (`tools/site/deploy.sh`, with the `VERCEL_TOKEN`
+secret): a preview for each pull request, linked in a comment on it, and
+production for `main`. The site goes up prebuilt, with its cross-origin
+isolation headers, so Vercel builds nothing (`vercel.json` turns its Git
+builds off).
 
 The CLI also inspects and translates binaries:
 
@@ -143,7 +144,7 @@ tools/wine          builds Wine's i386 PE DLLs, programs, tests and fonts
 tools/wine-layout   generates Wine's structure layouts for the runtime
 tools/torture       fetches GCC's torture tests
 tools/bench         CoreMark: native vs. translated (shims and Wine)
-tools/site          assembles the static site; tools/vercel-build.sh deploys it
+tools/site          assembles the static site and deploys it to Vercel
 tests/              fixtures, test programs, Csmith runtime, browser test
 spikes/             M1 spikes: memory size, Emscripten above the guest limit
 docs/               the plan (plan.md) and each milestone's status
