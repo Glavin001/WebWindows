@@ -16,6 +16,7 @@ import { mapImage } from '../pe.mjs';
 import { VirtualMemory, MEM_IMAGE, MEM_PRIVATE, PAGE_READWRITE, PAGE_EXECUTE_READ, PAGE_READONLY } from './vm.mjs';
 import { SYSCALLS, STATUS } from './syscalls.mjs';
 import { HANDLE_ROUTED, WIN32U_UNIXLIB } from './unix.mjs';
+import { WINED3D_UNIXLIB, OPENGL_UNIXLIB } from './d3d.mjs';
 
 import layout from './layout.json' with { type: 'json' };
 import { installAssemblies } from './sxs.mjs';
@@ -153,6 +154,8 @@ export class WineHost {
     /** Wine's Unix side compiled with Emscripten (./unix.mjs), or null */
     this.unix = opts.unix ?? null;
     this.unix?.attach(this);
+    /** wined3d's WebGPU bridge (./d3d.mjs), or null: Direct3D without 3D */
+    this.d3d = opts.d3d ?? null;
     /** Results of NtCallbackReturn, one per user callback in progress. */
     this.callbackResults = [];
     this.images = new Map(); // base -> {path, info}
@@ -672,6 +675,12 @@ export class WineHost {
       status = this.ntdllUnixCall(code, args);
     } else if (handle === WIN32U_UNIXLIB && this.unix) {
       status = this.unix.win32uUnixCall(code, args);
+    } else if (handle === WINED3D_UNIXLIB) {
+      status = this.d3d ? this.d3d.unixCall(m, code, args) : 0xc00000bb; // STATUS_NOT_SUPPORTED
+    } else if (handle === OPENGL_UNIXLIB) {
+      // opengl32 loads (wined3d imports it) but has no GL: every call
+      // succeeds and returns nothing, so contexts fail to be created.
+      status = 0;
     } else {
       this.log(`unix call to unknown library ${hex(handle)} code ${code}`);
     }

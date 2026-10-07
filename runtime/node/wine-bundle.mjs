@@ -30,6 +30,9 @@ const GUI_DLLS = [
   'advapi32', 'sechost', 'user32', 'gdi32', 'win32u', 'imm32', 'combase', 'comctl32', 'coml2', 'cryptbase',
   'ole32', 'rpcrt4', 'uxtheme', 'comdlg32', 'shcore', 'shell32', 'shlwapi', 'comctl32_v6', 'oleaut32',
 ];
+// Direct3D (wined3d with its WebGPU backend): loaded only by programs that
+// mention Direct3D, since wined3d is large.
+const D3D_DLLS = ['opengl32', 'wined3d', 'd3d9'];
 const DEFAULT_BASE = 0x10000000;
 const PRELINK_BASE = 0x60000000;
 const PROGRAMS = ['winemine', 'notepad'];
@@ -47,7 +50,12 @@ mkdirSync(out, { recursive: true });
 const manifest = { wine: '11.0', dlls: {}, nls: [] };
 const dllPath = (d) => join(wineBuild, 'dlls', d, 'i386-windows', `${d}.dll`);
 let nextBase = PRELINK_BASE;
-for (const d of [...DLLS, ...(withUnix ? GUI_DLLS : [])]) {
+const d3d = withUnix ? D3D_DLLS.filter((d) => existsSync(dllPath(d))) : [];
+if (withUnix && d3d.length !== D3D_DLLS.length) {
+  console.warn(`skipping Direct3D: run tools/wine/build.sh ${D3D_DLLS.join(' ')}`);
+  d3d.length = 0;
+}
+for (const d of [...DLLS, ...(withUnix ? GUI_DLLS : []), ...d3d]) {
   const pe = dllPath(d);
   if (!existsSync(pe)) {
     console.error(`missing ${pe}; run tools/wine/build.sh ${d}`);
@@ -64,7 +72,7 @@ for (const d of [...DLLS, ...(withUnix ? GUI_DLLS : [])]) {
   }
   writeFileSync(join(out, `${d}.dll`), bytes);
   execFileSync(wwt, ['translate', join(out, `${d}.dll`), '-o', join(out, `${d}.dll.wasm`)], { stdio: ['ignore', 'ignore', 'inherit'] });
-  manifest.dlls[`${d}.dll`] = { pe: `${d}.dll`, wasm: `${d}.dll.wasm` };
+  manifest.dlls[`${d}.dll`] = { pe: `${d}.dll`, wasm: `${d}.dll.wasm`, ...(d3d.includes(d) && { group: 'd3d' }) };
 }
 for (const n of NLS) {
   copyFileSync(join(wineSrc, 'nls', `${n}.nls`), join(out, `${n}.nls`));

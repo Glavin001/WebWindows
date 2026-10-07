@@ -14,6 +14,7 @@ import { WineHost } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
 import { InputRing } from '../wine/input-ring.mjs';
+import { startD3D } from '../wine/d3d.mjs';
 
 const log = (text) => postMessage({ type: 'log', text });
 
@@ -56,7 +57,7 @@ async function cacheWrite(dir, name, bytes) {
  * Runs the program on translated Wine (Milestone 2): Wine's DLLs come
  * pre-translated in the bundle; the .exe is translated here and cached.
  */
-async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, key, bundleUrl, display: shared }) {
+async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, key, bundleUrl, display: shared, debug }) {
   const base = new URL(bundleUrl, self.location.href);
   const manifest = await (await fetch(new URL('manifest.json', base))).json();
   const t0 = performance.now();
@@ -72,8 +73,10 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
   const files = new Map();
   const compiled = new Map();
   const sys32 = 'c:\\windows\\system32';
+  // Direct3D's DLLs only for programs that name it (imports or LoadLibrary).
+  const wantsD3D = /d3d[0-9]|ddraw/i.test(new TextDecoder('latin1').decode(exe));
   await Promise.all([
-    ...Object.entries(manifest.dlls).map(async ([name, f]) => {
+    ...Object.entries(manifest.dlls).filter(([, f]) => f.group !== 'd3d' || wantsD3D).map(async ([name, f]) => {
       const [pe, mod] = await Promise.all([
         fetch(new URL(f.pe, base)).then((r) => r.arrayBuffer()),
         // Streaming compilation: browsers cache the compiled code by URL.
@@ -158,8 +161,12 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
     });
     log(`loaded Wine's Unix side (wineserver, win32u) in ${(performance.now() - t0).toFixed(0)} ms`);
   }
+  // wined3d's WebGPU backend executes on a render worker of its own.
+  const d3d = layout && wantsD3D ? await startD3D(new URL('../wine/d3d-worker.mjs', import.meta.url), log) : null;
   const host = new WineHost(machine, {
     translate,
+    d3d,
+    debug,
     files,
     argv: [exeWin, ...argv],
     exePath: exeWin,
@@ -175,7 +182,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
 }
 
 onmessage = async (e) => {
-  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, display } = e.data;
+  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, display, debug } = e.data;
   const enc = new TextEncoder();
   try {
     const t0 = performance.now();
@@ -185,7 +192,7 @@ onmessage = async (e) => {
     const key = `${await sha256(exe)}-abi${abi.version}`;
     const dir = noCache ? null : await cacheDir();
     if (wine) {
-      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, display });
+      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, display, debug });
       if (r.error) postMessage({ type: 'stderr', bytes: enc.encode(`\n*** ${r.error.message}\n`) });
       postMessage({ type: 'exit', code: r.error ? null : r.exitCode, translated: false, runMs: r.runMs, wine: true });
       return;

@@ -6,6 +6,7 @@
 import { ProcessExit, GuestFault, hex } from '../runtime.mjs';
 import { parsePe } from './host.mjs';
 import { WIN32U_UNIXLIB } from './unix.mjs';
+import { WINED3D_UNIXLIB, OPENGL_UNIXLIB } from './d3d.mjs';
 
 import L from './layout.json' with { type: 'json' };
 import {
@@ -194,8 +195,15 @@ export const SYSCALLS = {
       // MemoryWineUnixFuncs: the handle a DLL uses for __wine_unix_call.
       // win32u's Unix side is in the Emscripten module (./unix.mjs).
       const img = this.images.get(addr);
-      if (this.unix && img && /\\win32u\.dll$/i.test(img.path)) {
-        this.w32(buf, WIN32U_UNIXLIB);
+      // wined3d's WebGPU backend (./d3d.mjs), and opengl32, which wined3d
+      // imports and whose unix side is a stub that renders nothing.
+      const handle = !img ? 0
+        : this.unix && /\\win32u\.dll$/i.test(img.path) ? WIN32U_UNIXLIB
+        : /\\wined3d\.dll$/i.test(img.path) ? WINED3D_UNIXLIB
+        : /\\opengl32\.dll$/i.test(img.path) ? OPENGL_UNIXLIB
+        : 0;
+      if (handle) {
+        this.w32(buf, handle);
         this.w32(buf + 4, 0);
         return STATUS.SUCCESS;
       }

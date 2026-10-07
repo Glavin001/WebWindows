@@ -38,7 +38,8 @@ node runtime/node/wine.mjs tests/programs/hello.exe
 # DLLs, fonts and programs, then a program with a screenshot of its screen:
 tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost user32 gdi32 \
   win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 rpcrt4 uxtheme \
-  comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts
+  comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts \
+  opengl32 wined3d d3d9      # Direct3D 9, with wined3d's WebGPU backend
 sh native/wine-unix/build.sh
 node runtime/node/wine.mjs --screenshot mine.png --run-for 5000 \
   --input "500:click 60,120" /opt/wine-build/programs/winemine/i386-windows/winemine.exe
@@ -143,6 +144,7 @@ crates/d3dgpu-*     Direct3D 9/10/11 on WebGPU core: protocol, shader translator
 runtime/            JavaScript runtime (Node and browser hosts)
 runtime/d3dgpu/     d3dgpu demo page, render and producer workers, test runner
 native/wine-unix    Wine's Unix side (wineserver, win32u, display driver) for Emscripten
+native/wined3d-wgpu wined3d's WebGPU backend (patched into Wine's source by tools/wine/build.sh)
 tools/oracle        native x86 oracle for instruction tests
 tools/wine          builds Wine's i386 PE DLLs, programs, tests and fonts
 tools/wine-layout   generates Wine's structure layouts for the runtime
@@ -157,8 +159,9 @@ docs/               the plan (plan.md) and each milestone's status
 ## Direct3D on WebGPU
 
 The `d3dgpu-*` crates are the reusable core for running Direct3D 9, 10 and
-11 games on WebGPU, which wined3d's future `adapter_wgpu` backend will
-drive through a command stream. See [docs/d3d-webgpu.md](docs/d3d-webgpu.md).
+11 games on WebGPU. wined3d's `adapter_wgpu` backend (`native/wined3d-wgpu`)
+drives it through a command stream: Direct3D 9 programs on translated Wine
+draw through it in the browser. See [docs/d3d-webgpu.md](docs/d3d-webgpu.md).
 
 ```sh
 cargo test -p d3dgpu-core                     # 54 scenes (D3D9 and D3D11) on native wgpu

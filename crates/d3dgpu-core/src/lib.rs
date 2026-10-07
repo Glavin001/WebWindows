@@ -132,6 +132,16 @@ extern "C" {
     fn performance_now() -> f64;
 }
 
+/// A shader's cache key: the front end's hash, or one of the bytecode when
+/// the front end sent 0. Translations are cached by it, so shaders must
+/// never share one.
+pub(crate) fn content_hash(hash: u64, bytes: &[u8]) -> u64 {
+    if hash != 0 {
+        return hash;
+    }
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x100_0000_01b3)) | 1
+}
+
 /// Errors that stop a batch. Problems with single commands (an unknown
 /// handle, an unsupported format) are logged and skipped instead, as a
 /// driver would.
@@ -437,6 +447,7 @@ impl Core {
             }
             Command::CreateShader { id, stage, hash, bytecode } => {
                 let Some(bytes) = self.resolve(bytecode, shared) else { return };
+                let hash = content_hash(hash, bytes);
                 match d3dgpu_shader::ShaderModule::from_bytes(bytes) {
                     Ok(module) => {
                         let want = match stage {

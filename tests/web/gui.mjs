@@ -70,8 +70,8 @@ async function click(page, x, y) {
   await page.mouse.click(box.x + (x * box.width) / 800, box.y + (y * box.height) / 600);
 }
 
-async function open(page, program) {
-  await page.goto(`${base}/runtime/web/?exe=/target/wine-bundle/programs/${program}&wine=1`);
+async function open(page, program, path = `/target/wine-bundle/programs/${program}`) {
+  await page.goto(`${base}/runtime/web/?exe=${path}&wine=1`);
   await page.waitForFunction(() => window.screenShown || window.lastExit, null, { timeout: 240000 });
   const exit = await page.evaluate(() => window.lastExit);
   if (exit) throw new Error(`${program} exited: ${await page.textContent('#out')}`);
@@ -84,7 +84,8 @@ const save = async (page, name) => {
 
 // Through the environment's HTTPS proxy, when there is one.
 const proxy = site && process.env.HTTPS_PROXY ? { server: process.env.HTTPS_PROXY } : undefined;
-const browser = await chromium.launch({ proxy });
+// WebGPU for Direct3D (wined3d's WebGPU backend); headless Chromium needs the flag.
+const browser = await chromium.launch({ proxy, args: ['--enable-unsafe-webgpu'] });
 try {
   const page = await browser.newPage({ viewport: { width: 1000, height: 1100 }, ignoreHTTPSErrors: !!proxy });
   if (site?.searchParams.has('_vercel_share')) await page.goto(site.href);
@@ -120,6 +121,28 @@ try {
   const typed = await until(async () => (await count(page, edit, dark)) > ink + 150, 30000);
   check('notepad: typed text appears', typed, `${ink} -> ${await count(page, edit, dark)} dark pixels`);
   await save(page, 'browser-notepad-typed.png');
+
+  // Direct3D 9: wined3d's WebGPU backend renders a clear, a triangle with
+  // vertex and pixel shaders (and their constants), and a fixed-function
+  // quad; Present reads the frame back and draws it into the window.
+  if (await page.evaluate(() => !!navigator.gpu)) {
+    await open(page, 'd3d9tri.exe', '/tests/programs/gui/d3d9tri.exe');
+    const near = (c) => ([r, g, b]) => Math.abs(r - c[0]) < 24 && Math.abs(g - c[1]) < 24 && Math.abs(b - c[2]) < 24;
+    // Window at (40,30); its client area starts at (44,53).
+    const quad = [56, 65, 102, 111];
+    const drawn = await until(async () => (await count(page, quad, near([255, 255, 0]))) > 1500, 180000);
+    check('d3d9: fixed-function quad (yellow)', drawn, `${await count(page, quad, near([255, 255, 0]))} yellow pixels`);
+    check('d3d9: clear colour', (await count(page, [300, 60, 360, 80], near([0, 0, 128]))) > 1000);
+    // The triangle's lower left corner is red, its top green at half
+    // intensity (pixel shader constant), and it is shifted right by a
+    // quarter of the width (vertex shader constant).
+    check('d3d9: shader triangle', (await count(page, [130, 250, 170, 262], ([r, g, b]) => r > 150 && b < 120)) > 100 &&
+      (await count(page, [240, 90, 252, 100], ([r, g, b]) => g > 60 && g < 160 && r < 60)) > 10);
+    check('d3d9: every call succeeded', /Present: 0/.test(await page.textContent('#out')), (await page.textContent('#out')).match(/[A-Za-z ()]+: 0x?[0-9a-f]+/g)?.slice(-3).join(', '));
+    await save(page, 'browser-d3d9tri.png');
+  } else {
+    console.log('skipping d3d9: no WebGPU in this browser');
+  }
   console.log((await page.textContent('#log')).trim());
 } catch (e) {
   console.error(e);

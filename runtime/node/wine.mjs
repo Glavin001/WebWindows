@@ -24,6 +24,7 @@ import { Machine, GuestFault, hex } from '../runtime.mjs';
 import { WineHost } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
+import { D3DRecorder } from '../wine/d3d.mjs';
 import { windowsKey, KEYEVENTF_KEYUP } from '../web/keys.mjs';
 
 /** Thrown out of a wait to stop a GUI program that went idle (--screenshot). */
@@ -69,6 +70,8 @@ let unixTrace = false;
 let screenshot = null;
 let runFor = Infinity;
 let script = [];
+// --d3d-record FILE: wined3d's WebGPU command stream, recorded (no GPU in Node).
+let d3dRecord = null;
 // Wine's Unix side compiled with Emscripten (native/wine-unix): on when built,
 // unless --no-unix.
 const unixDir = join(root, 'target/wine-unix');
@@ -85,6 +88,7 @@ while (args[0]?.startsWith('--')) {
   // ... or once it has run this long (programs with timers never go idle).
   else if (a === '--run-for') runFor = Number(args.shift());
   else if (a === '--input') script = parseInput(args.shift());
+  else if (a === '--d3d-record') d3dRecord = args.shift();
 }
 
 /** "ms:action args; ..." -> [{at, push(display)}], in time order. */
@@ -226,8 +230,15 @@ if (existsSync(tw)) {
     log: trace ? (s) => stderr(`[fast] ${s}\n`) : undefined,
   });
 }
+const d3d = d3dRecord ? new D3DRecorder() : null;
+const saveRecording = () => {
+  if (!d3d) return;
+  writeFileSync(d3dRecord, d3d.bytes());
+  stderr(`recorded ${d3d.batches.length} Direct3D batches in ${d3dRecord}\n`);
+};
 const host = new WineHost(machine, {
   translate,
+  d3d,
   files,
   argv: [`C:\\${basename(exe)}`, ...args],
   exePath: `C:\\${basename(exe)}`,
@@ -242,6 +253,7 @@ const r = host.run();
 if (host.unimplemented.size) {
   stderr(`unimplemented syscalls: ${[...host.unimplemented.keys()].join(', ')}\n`);
 }
+saveRecording();
 if (r.error instanceof ProgramIdle || r.error?.cause instanceof ProgramIdle) {
   writeFileSync(screenshot, await display.png());
   stderr(`idle; screenshot in ${screenshot}\n`);

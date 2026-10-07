@@ -1,0 +1,181 @@
+diff -ruN a/dlls/wined3d/Makefile.in b/dlls/wined3d/Makefile.in
+--- a/dlls/wined3d/Makefile.in	2026-10-07 19:06:14.442396861 +0000
++++ b/dlls/wined3d/Makefile.in	2026-10-07 19:06:14.460311067 +0000
+@@ -6,6 +6,7 @@
+ SOURCES = \
+ 	adapter_gl.c \
+ 	adapter_vk.c \
++	adapter_wgpu.c \
+ 	buffer.c \
+ 	context.c \
+ 	context_gl.c \
+diff -ruN a/dlls/wined3d/buffer.c b/dlls/wined3d/buffer.c
+--- a/dlls/wined3d/buffer.c	2026-10-07 19:06:14.398379915 +0000
++++ b/dlls/wined3d/buffer.c	2026-10-07 19:06:14.459436564 +0000
+@@ -1053,6 +1053,24 @@
+     return wined3d_buffer_init(buffer_no3d, device, desc, data, parent, parent_ops, &wined3d_buffer_no3d_ops);
+ }
+ 
++static const struct wined3d_buffer_ops wined3d_buffer_wgpu_ops =
++{
++    wined3d_buffer_wgpu_prepare_location,
++    wined3d_buffer_wgpu_unload_location,
++};
++
++HRESULT wined3d_buffer_wgpu_init(struct wined3d_buffer *buffer, struct wined3d_device *device,
++        const struct wined3d_buffer_desc *desc, const struct wined3d_sub_resource_data *data,
++        void *parent, const struct wined3d_parent_ops *parent_ops)
++{
++    TRACE("buffer %p, device %p, desc %p, data %p, parent %p, parent_ops %p.\n",
++            buffer, device, desc, data, parent, parent_ops);
++
++    if (desc->access & WINED3D_RESOURCE_ACCESS_GPU)
++        buffer->flags |= WINED3D_BUFFER_USE_BO;
++    return wined3d_buffer_init(buffer, device, desc, data, parent, parent_ops, &wined3d_buffer_wgpu_ops);
++}
++
+ static BOOL wined3d_buffer_gl_prepare_location(struct wined3d_buffer *buffer,
+         struct wined3d_context *context, unsigned int location)
+ {
+diff -ruN a/dlls/wined3d/directx.c b/dlls/wined3d/directx.c
+--- a/dlls/wined3d/directx.c	2026-10-07 19:06:14.378949413 +0000
++++ b/dlls/wined3d/directx.c	2026-10-07 19:06:14.458271432 +0000
+@@ -3481,9 +3481,20 @@
+ 
+ static struct wined3d_adapter *wined3d_adapter_create(unsigned int ordinal, DWORD wined3d_creation_flags)
+ {
++    struct wined3d_adapter *adapter;
++
+     if (wined3d_creation_flags & WINED3D_NO3D)
+         return wined3d_adapter_no3d_create(ordinal, wined3d_creation_flags);
+ 
++    /* WebGPU when the host has it (the browser runtime), else as before. */
++    if (wined3d_settings.renderer == WINED3D_RENDERER_WEBGPU || wined3d_settings.renderer == WINED3D_RENDERER_AUTO)
++    {
++        if ((adapter = wined3d_adapter_wgpu_create(ordinal, wined3d_creation_flags)))
++            return adapter;
++        if (wined3d_settings.renderer == WINED3D_RENDERER_WEBGPU)
++            return wined3d_adapter_no3d_create(ordinal, wined3d_creation_flags | WINED3D_NO3D);
++    }
++
+     if (wined3d_settings.renderer == WINED3D_RENDERER_VULKAN)
+         return wined3d_adapter_vk_create(ordinal, wined3d_creation_flags);
+ 
+diff -ruN a/dlls/wined3d/sampler.c b/dlls/wined3d/sampler.c
+--- a/dlls/wined3d/sampler.c	2026-10-07 19:06:14.417446378 +0000
++++ b/dlls/wined3d/sampler.c	2026-10-07 19:06:14.459803495 +0000
+@@ -133,6 +133,12 @@
+     context_release(context);
+ }
+ 
++void wined3d_sampler_wgpu_init(struct wined3d_sampler *sampler, struct wined3d_device *device,
++        const struct wined3d_sampler_desc *desc, void *parent, const struct wined3d_parent_ops *parent_ops)
++{
++    wined3d_sampler_init(sampler, device, desc, parent, parent_ops);
++}
++
+ void wined3d_sampler_gl_init(struct wined3d_sampler_gl *sampler_gl, struct wined3d_device *device,
+         const struct wined3d_sampler_desc *desc, void *parent, const struct wined3d_parent_ops *parent_ops)
+ {
+diff -ruN a/dlls/wined3d/swapchain.c b/dlls/wined3d/swapchain.c
+--- a/dlls/wined3d/swapchain.c	2026-10-07 19:06:14.425618287 +0000
++++ b/dlls/wined3d/swapchain.c	2026-10-07 19:06:14.460046959 +0000
+@@ -1721,6 +1721,13 @@
+     return hr;
+ }
+ 
++HRESULT wined3d_swapchain_wgpu_init(struct wined3d_swapchain *swapchain, struct wined3d_device *device,
++        const struct wined3d_swapchain_desc *desc, struct wined3d_swapchain_state_parent *state_parent,
++        void *parent, const struct wined3d_parent_ops *parent_ops, const struct wined3d_swapchain_ops *ops)
++{
++    return wined3d_swapchain_init(swapchain, device, desc, state_parent, parent, parent_ops, ops);
++}
++
+ HRESULT wined3d_swapchain_no3d_init(struct wined3d_swapchain *swapchain_no3d, struct wined3d_device *device,
+         const struct wined3d_swapchain_desc *desc, struct wined3d_swapchain_state_parent *state_parent,
+         void *parent, const struct wined3d_parent_ops *parent_ops)
+diff -ruN a/dlls/wined3d/vertexdeclaration.c b/dlls/wined3d/vertexdeclaration.c
+--- a/dlls/wined3d/vertexdeclaration.c	2026-10-07 19:06:14.433885661 +0000
++++ b/dlls/wined3d/vertexdeclaration.c	2026-10-07 19:06:14.460223118 +0000
+@@ -54,6 +54,7 @@
+ 
+     TRACE("declaration %p.\n", declaration);
+ 
++    wined3d_vertex_declaration_wgpu_destroyed(declaration);
+     free(declaration->elements);
+     free(declaration);
+ }
+diff -ruN a/dlls/wined3d/view.c b/dlls/wined3d/view.c
+--- a/dlls/wined3d/view.c	2026-10-07 19:06:14.408508013 +0000
++++ b/dlls/wined3d/view.c	2026-10-07 19:06:14.459649057 +0000
+@@ -1157,6 +1157,13 @@
+     return WINED3D_OK;
+ }
+ 
++HRESULT wined3d_shader_resource_view_wgpu_init(struct wined3d_shader_resource_view *view,
++        const struct wined3d_view_desc *desc, struct wined3d_resource *resource,
++        void *parent, const struct wined3d_parent_ops *parent_ops)
++{
++    return wined3d_shader_resource_view_init(view, desc, resource, parent, parent_ops);
++}
++
+ HRESULT wined3d_shader_resource_view_gl_init(struct wined3d_shader_resource_view_gl *view_gl,
+         const struct wined3d_view_desc *desc, struct wined3d_resource *resource,
+         void *parent, const struct wined3d_parent_ops *parent_ops)
+diff -ruN a/dlls/wined3d/wined3d_main.c b/dlls/wined3d/wined3d_main.c
+--- a/dlls/wined3d/wined3d_main.c	2026-10-07 19:06:14.370359547 +0000
++++ b/dlls/wined3d/wined3d_main.c	2026-10-07 19:06:14.457815670 +0000
+@@ -452,6 +452,11 @@
+                 ERR_(winediag)("Using the OpenGL renderer.\n");
+                 wined3d_settings.renderer = WINED3D_RENDERER_OPENGL;
+             }
++            else if (!strcmp(buffer, "webgpu"))
++            {
++                ERR_(winediag)("Using the WebGPU renderer.\n");
++                wined3d_settings.renderer = WINED3D_RENDERER_WEBGPU;
++            }
+             else if (!strcmp(buffer, "gdi") || !strcmp(buffer, "no3d"))
+             {
+                 ERR_(winediag)("Disabling 3D support.\n");
+diff -ruN a/dlls/wined3d/wined3d_private.h b/dlls/wined3d/wined3d_private.h
+--- a/dlls/wined3d/wined3d_private.h	2026-10-07 19:06:14.388163961 +0000
++++ b/dlls/wined3d/wined3d_private.h	2026-10-07 19:06:14.458719912 +0000
+@@ -2633,6 +2633,27 @@
+ struct wined3d_adapter *wined3d_adapter_gl_create(unsigned int ordinal,
+         unsigned int wined3d_creation_flags);
+ 
++/* WebGPU through the d3dgpu command stream (adapter_wgpu.c). */
++struct wined3d_adapter *wined3d_adapter_wgpu_create(unsigned int ordinal,
++        unsigned int wined3d_creation_flags);
++BOOL wined3d_buffer_wgpu_prepare_location(struct wined3d_buffer *buffer,
++        struct wined3d_context *context, unsigned int location);
++void wined3d_buffer_wgpu_unload_location(struct wined3d_buffer *buffer,
++        struct wined3d_context *context, unsigned int location);
++HRESULT wined3d_buffer_wgpu_init(struct wined3d_buffer *buffer, struct wined3d_device *device,
++        const struct wined3d_buffer_desc *desc, const struct wined3d_sub_resource_data *data,
++        void *parent, const struct wined3d_parent_ops *parent_ops);
++HRESULT wined3d_shader_resource_view_wgpu_init(struct wined3d_shader_resource_view *view,
++        const struct wined3d_view_desc *desc, struct wined3d_resource *resource,
++        void *parent, const struct wined3d_parent_ops *parent_ops);
++void wined3d_sampler_wgpu_init(struct wined3d_sampler *sampler, struct wined3d_device *device,
++        const struct wined3d_sampler_desc *desc, void *parent, const struct wined3d_parent_ops *parent_ops);
++struct wined3d_swapchain_ops;
++HRESULT wined3d_swapchain_wgpu_init(struct wined3d_swapchain *swapchain, struct wined3d_device *device,
++        const struct wined3d_swapchain_desc *desc, struct wined3d_swapchain_state_parent *state_parent,
++        void *parent, const struct wined3d_parent_ops *parent_ops, const struct wined3d_swapchain_ops *ops);
++void wined3d_vertex_declaration_wgpu_destroyed(struct wined3d_vertex_declaration *decl);
++
+ BOOL wined3d_adapter_no3d_init_format_info(struct wined3d_adapter *adapter);
+ ssize_t adapter_adjust_mapped_memory(struct wined3d_adapter *adapter, ssize_t size);
+ UINT64 adapter_adjust_memory(struct wined3d_adapter *adapter, INT64 amount);
+diff -ruN a/include/wine/wined3d.h b/include/wine/wined3d.h
+--- a/include/wine/wined3d.h	2026-10-07 19:06:14.360868524 +0000
++++ b/include/wine/wined3d.h	2026-10-07 19:06:14.457527182 +0000
+@@ -59,6 +59,7 @@
+     WINED3D_RENDERER_VULKAN,
+     WINED3D_RENDERER_OPENGL,
+     WINED3D_RENDERER_NO3D,
++    WINED3D_RENDERER_WEBGPU,
+ };
+ 
+ enum wined3d_light_type

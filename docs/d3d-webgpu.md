@@ -3,8 +3,8 @@
 Status as of October 7, 2026. This implements build-plan steps 1–4 and
 parts of 5 and 6 of the *Direct3D on WebGPU* implementation guide: the
 protocol, shader translators, emulation library and render core that a
-wined3d `adapter_wgpu` front end (step 7) will drive, for Direct3D 9 and
-for Direct3D 10/11. Nothing here knows about wined3d.
+wined3d `adapter_wgpu` front end (step 7, first version below) drives, for
+Direct3D 9 and for Direct3D 10/11. Nothing in the core knows about wined3d.
 
 ```
 front end (wined3d adapter_wgpu, later maybe a native d3d9.dll / d3d11.dll)
@@ -334,6 +334,60 @@ the per-draw clocks still on; the GPU-bound demos (500k instances, 1M
 particles, 10k blended sprites at 1280x720) ran at 23, 77 and 10 ms of
 GPU time per frame. The demo page shows the current numbers live.
 
+## wined3d front end (adapter_wgpu)
+
+`native/wined3d-wgpu/` adds a WebGPU backend to Wine 11.0's wined3d, next
+to its OpenGL, Vulkan and no-3D backends. `tools/wine/build.sh` patches the
+hooks in (`wined3d-wgpu.patch`: renderer selection, init wrappers for a few
+static helpers, the source list) and copies `adapter_wgpu.c` and
+`d3dgpu_proto.h` next to wined3d's sources. wined3d stays a PE DLL,
+translated with the rest of Wine.
+
+```
+game ─► d3d9.dll ─► wined3d.dll (adapter_wgpu) ─► d3dgpu batches in guest memory
+    ─► unix call (WINED3D_UNIXLIB) ─► runtime/wine/d3d.mjs: SharedArrayBuffer slot
+    ─► runtime/wine/d3d-worker.mjs: d3dgpu core (wasm) ─► WebGPU
+    ◄─ readbacks: fence + readback region ◄─ Present: back buffer ─► GDI ─► window
+```
+
+* **Selection.** With `renderer` unset (or `webgpu`), wined3d asks the host
+  for the WebGPU unix library first; without one (Node, no WebGPU) it falls
+  back as before. The command stream runs on the application's thread
+  (`csmt` off) until the runtime has threads.
+* **Resources.** Buffers get a buffer object with a CPU shadow; uploads and
+  unmaps are mirrored as `WriteBuffer`. Textures have a GPU location
+  (`TEXTURE_RGB`): loading it uploads with `WriteTexture`, applies deferred
+  clears, and loading system memory from it reads back with `ReadTexture`
+  and a fence the program's thread waits on (in chunks of the 1 MiB
+  readback region). wined3d's own location tracking decides when.
+* **Shaders.** Direct3D 9 bytecode is sent as is: the application's, and
+  wined3d's fixed function, which Wine 11 generates as HLSL and compiles to
+  `vs_2_a`/`ps_2_a` with vkd3d-shader (`ffp_hlsl`). Constants come from
+  wined3d's push constant buffers and are sent when they change.
+  Pre-transformed positions (`POSITIONT`) go to that shader as `POSITION`,
+  as wined3d matches them.
+* **State.** Blend, depth-stencil and rasterizer state objects become
+  Direct3D 9 render states again; alpha test, clip planes, sRGB writes and
+  flat shading come from wined3d's extra shader arguments and constants.
+  Samplers become sampler states, shader resource views `SetTexture`.
+* **Present** reads the back buffer back and draws it into the window
+  with `StretchDIBits`, so Direct3D windows compose with the desktop on
+  the browser display driver. A direct canvas presentation is the next
+  step for speed.
+* **Not yet:** Direct3D 10/11 through wined3d (shader model 4/5, views,
+  UAVs, compute, queries), GPU blits (`StretchRect` runs on the CPU
+  blitter), fog, point sprites, MSAA, mipmap generation, presenting other
+  than 32-bit back buffers.
+
+Testing: `tests/programs/gui/d3d9tri.c` (a clear, a shader triangle with
+constants, a fixed-function quad) runs in headless Chromium in
+`node tests/web/gui.mjs`. In Node, which has no WebGPU, `node
+runtime/node/wine.mjs --d3d-record FILE --screenshot S --run-for MS
+program.exe` records the command stream, and `cargo run -p d3dgpu-core
+--example replay -- FILE` replays it on the native GPU and saves every
+readback (the presented frames) as PNG; `DUMP=1` prints the commands and
+`SKIP=a-b` drops some, to bisect.
+
 ## Not done yet
 
 * **Direct3D 10/11:** geometry and tessellation shaders and stream output
@@ -345,7 +399,8 @@ GPU time per frame. The demo page shows the current numbers live.
   boundary, render target views of 3D slices other than 0, indirect draws,
   `GenerateMips`.
 
-* **Front end:** wined3d `adapter_wgpu` (step 7) — the C header is ready.
+* **Front end:** wined3d `adapter_wgpu` draws Direct3D 9 (above); Direct3D
+  10/11 through it, and the items listed there, are next.
 * **Fixed function** in the core (wined3d sends its `ffp_hlsl` bytecode, so
   the wined3d path doesn't need it; a native d3d9 would), and the DXVK-style
   ubershader, async pipeline creation and per-game pipeline lists (step 5).

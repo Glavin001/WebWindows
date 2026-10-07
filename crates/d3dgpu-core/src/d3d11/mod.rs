@@ -312,6 +312,7 @@ impl Core {
             }
             Command::CreateShader11 { id, stage, hash, dxbc } => {
                 let Some(bytes) = self.resolve(dxbc, shared) else { return };
+                let hash = crate::content_hash(hash, bytes);
                 self.create_shader11(id, stage, hash, bytes);
             }
             Command::SetInputLayout(h) => {

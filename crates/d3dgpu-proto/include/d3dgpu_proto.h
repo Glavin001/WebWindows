@@ -213,7 +213,9 @@ struct d3dgpu_cmd_write_texture
     uint32_t row_pitch, slice_pitch;
 };
 
-/* Followed by struct d3dgpu_data (SM1-3 bytecode tokens). */
+/* Followed by struct d3dgpu_data (SM1-3 bytecode tokens). The hash keys the
+ * core's translation cache: distinct bytecode must have distinct hashes; 0
+ * lets the core hash the bytecode itself. */
 struct d3dgpu_cmd_create_shader
 {
     struct d3dgpu_cmd_header h;

@@ -173,6 +173,8 @@ function run(exeName, exeBytes, files, exePath) {
         noCache: $('nocache').checked,
         wine,
         bundleUrl,
+        // ?debug=+d3d: Wine's debug channels (WINEDEBUG), on stderr.
+        debug: params.get('debug') ?? '',
         display: screen && { width: screen.width, height: screen.height, screen: screen.screen, frame: screen.frame, input: screen.input },
       },
       [exeBytes],
