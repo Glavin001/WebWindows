@@ -7,8 +7,9 @@
 //   node runtime/node/wine-bundle.mjs && node tests/web/gui.mjs [--root DIR]
 //
 // --root serves another directory with the repository's layout, such as the
-// static site tools/site/build.sh assembles. Besides the canvas, whole-page
-// screenshots are saved (page-*.png).
+// static site tools/site/build.sh assembles; --url tests a deployed site
+// instead (a Vercel share link is visited first, for its cookie). Besides
+// the canvas, whole-page screenshots are saved (page-*.png).
 
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -29,9 +30,12 @@ const rootArg = process.argv.indexOf('--root');
 const root = rootArg > 0 ? resolve(process.argv[rootArg + 1]) : repo;
 const outDir = join(repo, 'target/gui');
 mkdirSync(outDir, { recursive: true });
+const urlArg = process.argv.indexOf('--url');
+const site = urlArg > 0 ? new URL(process.argv[urlArg + 1]) : null;
 const port = 19000 + Math.floor(Math.random() * 1000);
-const server = spawn('node', [join(repo, 'runtime/web/serve.mjs'), String(port), root], { stdio: 'ignore' });
-await new Promise((r) => setTimeout(r, 500));
+const base = site ? site.origin : `http://localhost:${port}`;
+const server = site ? null : spawn('node', [join(repo, 'runtime/web/serve.mjs'), String(port), root], { stdio: 'ignore' });
+if (server) await new Promise((r) => setTimeout(r, 500));
 
 const results = [];
 function check(name, ok, detail) {
@@ -67,7 +71,7 @@ async function click(page, x, y) {
 }
 
 async function open(page, program) {
-  await page.goto(`http://localhost:${port}/runtime/web/?exe=/target/wine-bundle/programs/${program}&wine=1`);
+  await page.goto(`${base}/runtime/web/?exe=/target/wine-bundle/programs/${program}&wine=1`);
   await page.waitForFunction(() => window.screenShown || window.lastExit, null, { timeout: 240000 });
   const exit = await page.evaluate(() => window.lastExit);
   if (exit) throw new Error(`${program} exited: ${await page.textContent('#out')}`);
@@ -78,9 +82,12 @@ const save = async (page, name) => {
   await page.screenshot({ path: join(outDir, `page-${name}`), fullPage: true });
 };
 
-const browser = await chromium.launch();
+// Through the environment's HTTPS proxy, when there is one.
+const proxy = site && process.env.HTTPS_PROXY ? { server: process.env.HTTPS_PROXY } : undefined;
+const browser = await chromium.launch({ proxy });
 try {
-  const page = await browser.newPage({ viewport: { width: 1000, height: 1100 } });
+  const page = await browser.newPage({ viewport: { width: 1000, height: 1100 }, ignoreHTTPSErrors: !!proxy });
+  if (site?.searchParams.has('_vercel_share')) await page.goto(site.href);
   page.on('pageerror', (e) => console.error('page error:', e.message));
 
   // Minesweeper: LEDs, smiley and the board; a click reveals a square.
@@ -119,7 +126,7 @@ try {
   results.push(false);
 } finally {
   await browser.close();
-  server.kill();
+  server?.kill();
 }
 const failed = results.filter((ok) => !ok).length;
 console.log(failed ? `${failed} browser GUI checks failed` : `all ${results.length} browser GUI checks passed (screens in ${outDir})`);
