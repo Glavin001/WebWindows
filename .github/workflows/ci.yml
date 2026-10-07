@@ -115,7 +115,7 @@ jobs:
           sh tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost \
             user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 \
             rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts \
-            hid apisetschema ws2_32 crypt32 dnsapi nsi iphlpapi secur32 bcrypt normaliz wldap32 \
+            hid setupapi apisetschema ws2_32 crypt32 dnsapi nsi iphlpapi secur32 bcrypt normaliz wldap32 \
             kernel32/tests user32/tests gdi32/tests
       - uses: mymindstorm/setup-emsdk@v14
       - name: Build
@@ -194,7 +194,7 @@ jobs:
           ARCH=x86_64 WINE_BUILD=$WINE_BUILD64 sh tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase \
             advapi32 sechost user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 \
             oleaut32 rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi hid programs/winemine programs/notepad fonts \
-            apisetschema ws2_32 crypt32 dnsapi nsi iphlpapi secur32 bcrypt normaliz wldap32
+            setupapi apisetschema ws2_32 crypt32 dnsapi nsi iphlpapi secur32 bcrypt normaliz wldap32
       - uses: mymindstorm/setup-emsdk@v14
       - name: Build
         run: |

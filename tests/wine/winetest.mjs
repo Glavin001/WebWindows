@@ -117,6 +117,15 @@ if (writeBaseline) {
 let regressed = false;
 if (baseline) {
   const base = JSON.parse(readFileSync(baseline, 'utf8'));
+  // A unit the baseline finished must run (a test program that no longer
+  // starts lists none).
+  const ran = new Set(results.map((r) => r.unit));
+  for (const [unit, b] of Object.entries(base)) {
+    if (b.status === 'done' && !ran.has(unit) && (!rest.length || rest.includes(unit))) {
+      console.log(`REGRESSION ${unit}: finished in the baseline, not run now`);
+      regressed = true;
+    }
+  }
   for (const r of results) {
     const b = base[r.unit];
     if (!b) continue;
