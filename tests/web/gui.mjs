@@ -124,9 +124,11 @@ try {
 
   // Direct3D 9: wined3d's WebGPU backend renders a clear, a triangle with
   // vertex and pixel shaders (and their constants), and a fixed-function
-  // quad; Present reads the frame back and draws it into the window.
+  // quad. These checks read the screen, so Present reads frames back and
+  // draws them into the window (d3dpresent=gdi): headless Chromium cannot
+  // show the WebGPU canvas the page otherwise presents to.
   if (await page.evaluate(() => !!navigator.gpu)) {
-    await open(page, 'd3d9tri.exe', '/tests/programs/gui/d3d9tri.exe');
+    await open(page, 'd3d9tri.exe', '/tests/programs/gui/d3d9tri.exe', '&d3dpresent=gdi');
     const near = (c) => ([r, g, b]) => Math.abs(r - c[0]) < 24 && Math.abs(g - c[1]) < 24 && Math.abs(b - c[2]) < 24;
     // Window at (40,30); its client area starts at (44,53).
     const quad = [56, 65, 102, 111];
@@ -144,7 +146,7 @@ try {
     // The benchmark (tests/web/d3d9bench.mjs runs it at full size): textured
     // cubes from static buffers, particles through a dynamic vertex buffer,
     // frames as fast as they come, for 3 seconds.
-    await open(page, 'd3d9bench.exe', '/tests/programs/gui/d3d9bench.exe', '&args=60+500+3');
+    await open(page, 'd3d9bench.exe', '/tests/programs/gui/d3d9bench.exe', '&args=60+500+3&d3dpresent=gdi');
     const out = async () => (await page.textContent('#out')) ?? '';
     await until(async () => / fps: /.test(await out()), 180000);
     // Window at (10,10), client area 640x480 from (14,33); cubes and

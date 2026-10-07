@@ -45,6 +45,8 @@ pub struct Renderer {
     info: String,
     gpu: Arc<GpuTiming>,
     profile: bool,
+    /// The canvas presenter while frames are captured offscreen.
+    parked: Option<Box<dyn d3dgpu_core::Presenter>>,
 }
 
 #[wasm_bindgen]
@@ -126,6 +128,7 @@ impl Renderer {
             info: info_json,
             gpu: Arc::default(),
             profile: false,
+            parked: None,
         })
     }
 
@@ -146,6 +149,42 @@ impl Renderer {
         if let Some(p) = presenter {
             self.core.set_presenter(WINDOW, p);
         }
+    }
+
+    /// Sizes the canvas window 1 presents to (frames are scaled to it).
+    pub fn resize(&mut self, width: u32, height: u32) {
+        let device = self.device.clone();
+        if let Some(p) = self.core.presenter(WINDOW).and_then(|p| p.as_any().downcast_mut::<SurfacePresenter>()) {
+            if (p.config.width, p.config.height) != (width.max(1), height.max(1)) {
+                p.resize(&device, width, height);
+            }
+        }
+    }
+
+    /// Sends window 1's frames to an offscreen front buffer instead of the
+    /// canvas, for [`Renderer::start_frame_read`] (tests: browsers without
+    /// a GPU compositor cannot show or read a WebGPU canvas);
+    /// [`Renderer::show_frames`] goes back to the canvas.
+    pub fn capture_frames(&mut self) {
+        if self.parked.is_none() {
+            if let Some(p) = self.core.take_presenter(WINDOW) {
+                self.parked = Some(p);
+                self.core.set_presenter(WINDOW, Box::new(HeadlessPresenter::new()));
+            }
+        }
+    }
+
+    pub fn show_frames(&mut self) {
+        if let Some(p) = self.parked.take() {
+            self.core.set_presenter(WINDOW, p);
+        }
+    }
+
+    /// The flags of the last `Present` since the previous call, or -1:
+    /// the render worker yields to the event loop after a frame, so the
+    /// canvas shows it, or waits for the next frame with `D3DGPU_PRESENT_VSYNC`.
+    pub fn take_present(&mut self) -> i32 {
+        self.core.take_present().map_or(-1, |f| f as i32)
     }
 
     /// Keep the per-draw time breakdown (`draw_ns`, `prepare_ns`,
@@ -259,8 +298,13 @@ impl Renderer {
         queue.submit([enc.finish()]);
         let state = Arc::new(AtomicU8::new(0));
         let s = state.clone();
-        buf.slice(..)
-            .map_async(wgpu::MapMode::Read, move |r| s.store(if r.is_ok() { 1 } else { 2 }, Ordering::Release));
+        let errors = self.errors.clone();
+        buf.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+            if let Err(e) = &r {
+                errors.lock().unwrap().push(format!("frame read: {e}"));
+            }
+            s.store(if r.is_ok() { 1 } else { 2 }, Ordering::Release)
+        });
         self.read = Some((buf, state, w, h, row));
         true
     }

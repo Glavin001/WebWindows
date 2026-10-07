@@ -250,6 +250,7 @@ pub struct Core {
     blitter: present::Blitter,
     presenters: HashMap<u32, Box<dyn Presenter>>,
     presented: Vec<u32>,
+    last_present: Option<u32>,
     pending: VecDeque<Pending>,
     completed_fence: u64,
     next_id: u64,
@@ -297,6 +298,7 @@ impl Core {
             blitter,
             presenters: HashMap::new(),
             presented: Vec::new(),
+            last_present: None,
             pending: VecDeque::new(),
             completed_fence: 0,
             next_id: 1,
@@ -352,6 +354,12 @@ impl Core {
 
     pub fn presenter(&mut self, window: u32) -> Option<&mut (dyn Presenter + 'static)> {
         self.presenters.get_mut(&window).map(|p| p.as_mut())
+    }
+
+    /// The flags of the last `Present` since the previous call (a host
+    /// returns to its event loop after a frame, or waits for vsync).
+    pub fn take_present(&mut self) -> Option<u32> {
+        self.last_present.take()
     }
 
     /// The highest fence whose work (and readbacks) has completed.
@@ -563,7 +571,10 @@ impl Core {
                     filter,
                 )
             }
-            Command::Present { texture, window, flags: _ } => self.present(texture, window),
+            Command::Present { texture, window, flags } => {
+                self.last_present = Some(flags);
+                self.present(texture, window)
+            }
             Command::SetGammaRamp { window, ramp } => {
                 let mut r = [[0u16; 256]; 3];
                 for (i, c) in ramp.as_chunks::<2>().0.iter().enumerate() {

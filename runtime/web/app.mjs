@@ -131,6 +131,53 @@ for (const type of ['keydown', 'keyup']) {
   });
 }
 
+// Direct3D frames: a canvas over the screen that the program's render
+// worker presents to, moved over the Direct3D window as it reports where
+// that is. ?d3dpresent=gdi keeps the frames in the screen instead (read
+// back and drawn with GDI), to compare; ?d3dpresent=offscreen presents to
+// a buffer only window.d3dSnapshot() reads, for headless tests.
+let d3dCanvas = null;
+let d3dPort = null;
+function newD3DCanvas() {
+  d3dCanvas?.remove();
+  d3dCanvas = null;
+  d3dPort?.close();
+  d3dPort = null;
+  const mode = params.get('d3dpresent');
+  if (mode === 'gdi' || !HTMLCanvasElement.prototype.transferControlToOffscreen) return null;
+  // The render worker's messages, and window.d3dSnapshot() for tests: the
+  // next presented frame as {width, height, pixels} (RGBA).
+  const channel = new MessageChannel();
+  d3dPort = channel.port1;
+  const snapshots = [];
+  d3dPort.onmessage = (e) => {
+    if (e.data.type === 'log') logEl.textContent += `d3d: ${e.data.text}\n`;
+    else if (e.data.type === 'frame') snapshots.shift()?.(e.data);
+  };
+  const port = d3dPort;
+  window.d3dSnapshot = () => new Promise((resolve) => (snapshots.push(resolve), port.postMessage({ type: 'snapshot' })));
+  if (mode === 'offscreen') return { offscreen: true, port: channel.port2 };
+  d3dCanvas = document.createElement('canvas');
+  d3dCanvas.className = 'd3d';
+  d3dCanvas.hidden = true;
+  d3dCanvas.width = 640;
+  d3dCanvas.height = 480;
+  $('screenbox').append(d3dCanvas);
+  return { canvas: d3dCanvas.transferControlToOffscreen(), port: channel.port2 };
+}
+function placeD3D(w) {
+  window.d3dWindow = w;
+  if (!d3dCanvas || !screen) return;
+  const pct = (v, total) => `${(v / total) * 100}%`;
+  Object.assign(d3dCanvas.style, {
+    left: pct(w.x, screen.width),
+    top: pct(w.y, screen.height),
+    width: pct(w.width, screen.width),
+    height: pct(w.height, screen.height),
+  });
+  d3dCanvas.hidden = !w.visible || !w.width || !w.height;
+}
+
 // ---- Running ---------------------------------------------------------------
 
 function run(exeName, exeBytes, files, exePath) {
@@ -145,11 +192,13 @@ function run(exeName, exeBytes, files, exePath) {
   screen = wine ? newScreen() : null;
   shown = -1;
   canvas.hidden = true;
+  const d3dOffscreen = screen ? newD3DCanvas() : null;
   return new Promise((resolve) => {
     worker.onmessage = (e) => {
       const m = e.data;
       if (m.type === 'stdout' || m.type === 'stderr') out.textContent += dec.decode(m.bytes);
       else if (m.type === 'log') logEl.textContent += m.text + '\n';
+      else if (m.type === 'd3d-window') placeD3D(m);
       else if (m.type === 'screen') {
         canvas.hidden = false;
         canvas.focus();
@@ -159,6 +208,7 @@ function run(exeName, exeBytes, files, exePath) {
         $('status').textContent = m.code === null ? `${exeName} stopped with an error` : `${exeName} exited with code ${m.code} (${m.runMs?.toFixed(0)} ms)`;
         $('run').disabled = false;
         worker.terminate();
+        if (d3dCanvas) d3dCanvas.hidden = true;
         window.lastExit = m;
         resolve(m);
       }
@@ -178,8 +228,11 @@ function run(exeName, exeBytes, files, exePath) {
         // ?debug=+d3d: Wine's debug channels (WINEDEBUG), on stderr.
         debug: params.get('debug') ?? '',
         display: screen && { width: screen.width, height: screen.height, screen: screen.screen, frame: screen.frame, input: screen.input },
+        d3dCanvas: d3dOffscreen?.canvas,
+        d3dOffscreen: d3dOffscreen?.offscreen,
+        d3dPort: d3dOffscreen?.port,
       },
-      [exeBytes],
+      [exeBytes, d3dOffscreen?.canvas, d3dOffscreen?.port].filter(Boolean),
     );
   });
 }

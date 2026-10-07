@@ -9,6 +9,11 @@
 //
 // The layout of the buffer is runtime/d3dgpu/protocol.mjs (one batch slot,
 // a fence and a readback region).
+//
+// With a canvas (an OffscreenCanvas the page placed over its screen), the
+// render worker presents frames to it on the GPU, and wined3d tells the
+// bridge where the Direct3D window is so the page can move the canvas there.
+// Without one, wined3d reads frames back and draws them with GDI.
 
 import * as P from '../d3dgpu/protocol.mjs';
 
@@ -18,16 +23,21 @@ export const WINED3D_UNIXLIB = 0x3000;
 const STATUS_SUCCESS = 0;
 const STATUS_NOT_SUPPORTED = 0xc00000bb;
 const STATUS_TIMEOUT = 0x102;
+/** wgpu_open_params.flags: the host shows presented frames over the window. */
+const WGPU_HOST_PRESENT = 0x1;
 
 export class D3DBridge {
   /**
    * @param {SharedArrayBuffer} sab  P.SAB_BYTES, shared with the render worker
    * @param {string} adapter  the WebGPU adapter's name
+   * @param {{worker?: Worker, onWindow?: (w: object) => void}} [present]
+   *   with a render worker presenting to a canvas: where window changes go
    */
-  constructor(sab, adapter = 'WebGPU') {
+  constructor(sab, adapter = 'WebGPU', present = null) {
     this.ctrl = new Int32Array(sab, 0, P.CTRL_BYTES / 4);
     this.bytes = new Uint8Array(sab);
     this.adapter = adapter;
+    this.present = present;
     this.produced = Atomics.load(this.ctrl, P.PRODUCED);
     this.batches = 0;
   }
@@ -39,13 +49,14 @@ export class D3DBridge {
     const u32 = (p) => dv.getUint32(p, true);
     switch (code) {
       case 0: {
-        // open: struct wgpu_open_params {version, max_batch, shared_size, name[64]}
+        // open: struct wgpu_open_params {version, max_batch, shared_size, name[64], flags}
         if (u32(args) !== 1) return STATUS_NOT_SUPPORTED;
         dv.setUint32(args + 4, P.SLOT_BYTES, true);
         dv.setUint32(args + 8, P.SHARED_BYTES, true);
         const name = new TextEncoder().encode(`${this.adapter} (WebGPU)`.slice(0, 63));
         u8.fill(0, args + 12, args + 76);
         u8.set(name, args + 12);
+        dv.setUint32(args + 76, this.present ? WGPU_HOST_PRESENT : 0, true);
         return STATUS_SUCCESS;
       }
       case 1: {
@@ -80,6 +91,24 @@ export class D3DBridge {
           Atomics.wait(this.ctrl, P.FENCE, done, 100);
         }
         if (size) u8.set(this.bytes.subarray(P.SHARED + offset, P.SHARED + offset + size), dst);
+        return STATUS_SUCCESS;
+      }
+      case 3: {
+        // window: struct wgpu_window_params {x, y, width, height, buffer_width, buffer_height, visible}
+        if (!this.present) return STATUS_NOT_SUPPORTED;
+        const w = {
+          x: dv.getInt32(args, true),
+          y: dv.getInt32(args + 4, true),
+          width: u32(args + 8),
+          height: u32(args + 12),
+          bufferWidth: u32(args + 16),
+          bufferHeight: u32(args + 20),
+          visible: !!u32(args + 24),
+        };
+        // The canvas's drawing buffer is the back buffer's size; the page
+        // scales it to the window.
+        this.present.worker?.postMessage({ type: 'resize', width: w.bufferWidth, height: w.bufferHeight });
+        this.present.onWindow?.(w);
         return STATUS_SUCCESS;
       }
       default:
@@ -143,8 +172,13 @@ export class D3DRecorder {
  * wined3d without 3D).
  * @param {URL|string} workerUrl  ./d3d-worker.mjs
  * @param {(s: string) => void} [log]
+ * @param {{canvas?: OffscreenCanvas, offscreen?: boolean, port?: MessagePort, onWindow?: (w: object) => void}} [present]
+ *   a canvas over the screen to present to (or, for tests, `offscreen`:
+ *   present to a buffer that snapshots read), a port to the page for the
+ *   render worker's messages and snapshots, and where to report the
+ *   Direct3D window's position ({x, y, width, height, visible})
  */
-export async function startD3D(workerUrl, log = () => {}) {
+export async function startD3D(workerUrl, log = () => {}, present = {}) {
   if (typeof Worker === 'undefined' || typeof navigator === 'undefined' || !navigator.gpu) return null;
   const sab = new SharedArrayBuffer(P.SAB_BYTES);
   const worker = new Worker(workerUrl, { type: 'module' });
@@ -163,14 +197,15 @@ export async function startD3D(workerUrl, log = () => {}) {
         log(`d3d: ${e.data.text}`);
       }
     };
-    worker.postMessage({ type: 'init', sab });
+    const { canvas, offscreen, port } = present;
+    worker.postMessage({ type: 'init', sab, canvas, offscreen, port }, [canvas, port].filter(Boolean));
   });
   if (!ready) {
     worker.terminate();
     return null;
   }
   log(`d3d: render worker on ${ready.adapter}`);
-  const bridge = new D3DBridge(sab, ready.adapter);
+  const bridge = new D3DBridge(sab, ready.adapter, ready.present ? { worker, onWindow: present.onWindow } : null);
   bridge.worker = worker;
   return bridge;
 }

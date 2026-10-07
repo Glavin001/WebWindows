@@ -17,8 +17,11 @@
  *  - Shaders are Direct3D 9 bytecode, the application's or wined3d's
  *    fixed-function HLSL compiled by vkd3d-shader (ffp_hlsl); the core
  *    translates them. Constants come from wined3d's push constant buffers.
- *  - Present reads the back buffer back and draws it into the window with
- *    GDI, so it composes with the rest of the desktop.
+ *  - Present draws the back buffer on the GPU to a surface the host shows
+ *    over the window's client area (the browser: a canvas over the screen),
+ *    without reading it back; the host is told where the window is when
+ *    that changes. Hosts without one (Node) get the frame read back and
+ *    drawn into the window with GDI.
  *
  * Copyright 2026 the WebWindows authors
  *
@@ -44,7 +47,11 @@ enum wgpu_unix_call
     unix_wgpu_open,
     unix_wgpu_submit,
     unix_wgpu_wait,
+    unix_wgpu_window,
 };
+
+/* wgpu_open_params.flags */
+#define WGPU_HOST_PRESENT 0x1  /* the host shows presented frames over the window */
 
 struct wgpu_open_params
 {
@@ -52,6 +59,7 @@ struct wgpu_open_params
     UINT32 max_batch;      /* out: largest batch the host takes */
     UINT32 shared_size;    /* out: bytes of the readback region */
     char name[64];         /* out: adapter description */
+    UINT32 flags;          /* out: WGPU_HOST_* */
 };
 
 struct wgpu_submit_params
@@ -66,6 +74,16 @@ struct wgpu_wait_params
     UINT32 shared_offset;  /* copy this much of the readback region ... */
     UINT32 size;
     UINT32 dst;            /* ... here once the fence completed (if size) */
+};
+
+/* Where the window showing the swapchain is (screen coordinates of its
+ * client area), the size of its back buffer, and whether it is shown. */
+struct wgpu_window_params
+{
+    INT32 x, y;
+    UINT32 width, height;
+    UINT32 buffer_width, buffer_height;
+    UINT32 visible;
 };
 
 static struct wgpu_open_params wgpu_host;
@@ -124,6 +142,12 @@ struct wined3d_device_wgpu
         uint32_t indices[2];
         bool viewport_known, scissor_known, indices_known;
     } sent;
+
+    /* The window as last told to the host (WGPU_HOST_PRESENT), and the
+     * swapchain presenting there. */
+    struct wgpu_window_params window;
+    bool window_known;
+    struct wined3d_swapchain *window_swapchain;
 };
 
 static inline struct wined3d_device_wgpu *wined3d_device_wgpu(struct wined3d_device *device)
@@ -1976,6 +2000,63 @@ static void wgpu_present_to_window(struct wined3d_swapchain *swapchain, struct w
             DIB_RGB_COLORS, SRCCOPY);
 }
 
+static void wgpu_set_window(struct wined3d_device_wgpu *device, const struct wgpu_window_params *window)
+{
+    if (device->window_known && !memcmp(window, &device->window, sizeof(*window)))
+        return;
+    TRACE("Window at %d,%d, %ux%u, buffer %ux%u, visible %u.\n", window->x, window->y,
+            window->width, window->height, window->buffer_width, window->buffer_height, window->visible);
+    device->window = *window;
+    device->window_known = true;
+    WINE_UNIX_CALL(unix_wgpu_window, &device->window);
+}
+
+/* Presents on the GPU, when the host shows frames over the window itself
+ * (the browser): the back buffer stays on the GPU and the core draws it to
+ * the host's surface. Only the device's first swapchain; the source and
+ * destination rectangles are the whole back buffer and client area. */
+static bool wgpu_present_on_gpu(struct wined3d_swapchain *swapchain, struct wined3d_texture *texture,
+        unsigned int swap_interval)
+{
+    struct wined3d_device_wgpu *device = wined3d_device_wgpu(swapchain->device);
+    struct wgpu_window_params window = {0};
+    struct d3dgpu_cmd_present *cmd;
+    struct wined3d_context *context;
+    HWND hwnd = swapchain->win_handle;
+    POINT origin = {0, 0};
+    RECT client;
+
+    if (!(wgpu_host.flags & WGPU_HOST_PRESENT) || swapchain != swapchain->device->swapchains[0])
+        return false;
+    context = context_acquire(swapchain->device, NULL, 0);
+    wined3d_texture_load_location(texture, 0, context, WINED3D_LOCATION_TEXTURE_RGB);
+    context_release(context);
+    if (!wined3d_texture_wgpu(texture)->id)
+        return false;
+
+    GetClientRect(hwnd, &client);
+    ClientToScreen(hwnd, &origin);
+    window.x = origin.x;
+    window.y = origin.y;
+    window.width = client.right;
+    window.height = client.bottom;
+    window.buffer_width = texture->resource.width;
+    window.buffer_height = texture->resource.height;
+    window.visible = IsWindowVisible(hwnd) && !IsIconic(hwnd);
+    wgpu_set_window(device, &window);
+    device->window_swapchain = swapchain;
+
+    wgpu_activate(device);
+    if ((cmd = wgpu_cmd(device, D3DGPU_OP_PRESENT, sizeof(*cmd))))
+    {
+        cmd->texture = wined3d_texture_wgpu(texture)->id;
+        cmd->window = 1;
+        cmd->flags = swap_interval ? D3DGPU_PRESENT_VSYNC : 0;
+    }
+    wgpu_flush(device);
+    return true;
+}
+
 static void swapchain_wgpu_present(struct wined3d_swapchain *swapchain,
         const RECT *src_rect, const RECT *dst_rect, unsigned int swap_interval, uint32_t flags)
 {
@@ -1984,7 +2065,9 @@ static void swapchain_wgpu_present(struct wined3d_swapchain *swapchain,
     TRACE("swapchain %p, src_rect %s, dst_rect %s, swap_interval %u, flags %#x.\n", swapchain,
             wine_dbgstr_rect(src_rect), wine_dbgstr_rect(dst_rect), swap_interval, flags);
 
-    wgpu_present_to_window(swapchain, back, src_rect, dst_rect);
+    /* Else read the frame back and draw it into the window with GDI. */
+    if (!wgpu_present_on_gpu(swapchain, back, swap_interval))
+        wgpu_present_to_window(swapchain, back, src_rect, dst_rect);
     if (swapchain->state.desc.swap_effect == WINED3D_SWAP_EFFECT_DISCARD)
         wined3d_texture_validate_location(back, 0, WINED3D_LOCATION_DISCARDED);
 }
@@ -2265,6 +2348,17 @@ static HRESULT adapter_wgpu_create_swapchain(struct wined3d_device *device,
 
 static void adapter_wgpu_destroy_swapchain(struct wined3d_swapchain *swapchain)
 {
+    struct wined3d_device_wgpu *device = wined3d_device_wgpu(swapchain->device);
+
+    /* Stop showing frames over the window. */
+    if (swapchain == device->window_swapchain)
+    {
+        struct wgpu_window_params window = device->window;
+
+        window.visible = 0;
+        wgpu_set_window(device, &window);
+        device->window_swapchain = NULL;
+    }
     wined3d_swapchain_cleanup(swapchain);
     free(swapchain);
 }
@@ -2701,6 +2795,7 @@ struct wined3d_adapter *wined3d_adapter_wgpu_create(unsigned int ordinal, unsign
         return NULL;
     }
     wgpu_host.version = D3DGPU_VERSION;
+    wgpu_host.flags = 0;
     if (WINE_UNIX_CALL(unix_wgpu_open, &wgpu_host) || !wgpu_host.max_batch)
     {
         TRACE("The host has no WebGPU device.\n");
