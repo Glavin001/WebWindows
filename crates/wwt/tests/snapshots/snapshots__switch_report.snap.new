@@ -1,5 +1,6 @@
 ---
 source: crates/wwt/tests/snapshots.rs
+assertion_line: 45
 expression: "format!(\"functions: {}\\nblocks: {}\\nx86 instructions: {}\\njump tables: {}\\nseeds: {:?}\\nunsupported: {}\",\nr.functions, r.blocks, r.x86_instructions, r.jump_tables, r.seeds,\nr.unsupported.len())"
 ---
 functions: 113

@@ -146,6 +146,9 @@ pub fn image_meta(pe: &PeFile) -> ImageMeta {
     }
 }
 
+/// Sections the loader may drop after loading (debug information, relocations).
+const IMAGE_SCN_MEM_DISCARDABLE: u32 = 0x0200_0000;
+
 /// Discovers code in a PE image from all static seeds plus `profile` (code
 /// found at run time on earlier launches).
 pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Config) -> Discovery {
@@ -198,11 +201,20 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Con
             }
         }
     }
-    // Executables often carry few or no relocations: also scan their data
-    // for code pointers (each confirmed by decoding).
-    if cfg.scan_data && !pe.is_dll() {
+    // Executables often carry no relocations: then scan their data for
+    // code pointers (each confirmed by decoding). With relocations, those
+    // list every pointer (one without would break when the image is
+    // rebased), and a scan only finds false ones: in debug information,
+    // DWARF line tables hold an address for every statement, and each
+    // would split its function. Discardable sections (debug information,
+    // `.reloc`) hold no pointers the program uses.
+    let relocated = pe.relocations.as_ref().is_some_and(|r| !r.is_empty());
+    if cfg.scan_data && !pe.is_dll() && !relocated {
         for s in &pe.sections {
-            if s.is_executable() || s.characteristics & 0xC0 == 0x80 {
+            if s.is_executable()
+                || s.characteristics & 0xC0 == 0x80
+                || s.characteristics & IMAGE_SCN_MEM_DISCARDABLE != 0
+            {
                 continue;
             }
             let start = pe.image_base + s.virtual_address;
