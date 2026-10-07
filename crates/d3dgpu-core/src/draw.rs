@@ -27,6 +27,25 @@ pub enum Source<'a> {
     Up { count: u32, stride: u32, vertices: &'a [u8], indices: Option<(&'a [u8], Format)> },
 }
 
+/// The state-derived half of a draw that doesn't depend on the primitive.
+pub struct Front {
+    vs_module: Arc<sh::ShaderModule>,
+    ps_module: Arc<sh::ShaderModule>,
+    psv: Arc<Variant>,
+    vsv: Arc<Variant>,
+    slots: Vec<(u32, VertexBufferKey)>,
+    instances: u32,
+    targets: crate::PassTargets,
+}
+
+/// Pipeline and texture bind group for a state, topology and submission.
+pub struct Back {
+    pipeline: (u64, wgpu::RenderPipeline),
+    group1: (u64, wgpu::BindGroup),
+}
+
+type BackKey = (u64, u64, wgpu::PrimitiveTopology, Option<wgpu::IndexFormat>, u64, u64);
+
 pub struct Variant {
     pub module: wgpu::ShaderModule,
     pub translation: Translation,
@@ -124,6 +143,9 @@ pub struct Caches {
     dummies: FastMap<wgpu::TextureViewDimension, Dummy>,
     zero_buffer: wgpu::Buffer,
     driver: (Vec<u8>, u64, u64),
+    driver_src: Option<(u64, [u32; 8], Vec<u8>)>,
+    front: Option<(u64, u32, Arc<Front>)>,
+    back: Option<(BackKey, Arc<Back>)>,
     /// The last translation looked up per stage, checked before hashing.
     last_vs: Option<(u64, VertexKey, Arc<Variant>)>,
     last_ps: Option<(u64, PixelKey, Arc<Variant>)>,
@@ -179,6 +201,9 @@ impl Caches {
             dummies: FastMap::default(),
             zero_buffer,
             driver: (Vec::new(), 0, u64::MAX),
+            driver_src: None,
+            front: None,
+            back: None,
             last_vs: None,
             last_ps: None,
             next_id: 1,
@@ -638,7 +663,7 @@ impl Core {
     /// Texture and sampler for each texture binding of the two shaders.
     fn bound_textures(&mut self, bindings: &[sh::TextureBinding]) -> Vec<Bound> {
         let mut out = Vec::new();
-        let features = self.device.features();
+        let features = self.features;
         for b in bindings {
             let n = b.sampler as usize;
             let want_dim = view_dim(b.dim);
@@ -719,31 +744,33 @@ impl Core {
         self.uniforms.alloc(bytes, 256).expect("uniform ring smaller than one draw")
     }
 
-    pub(crate) fn draw(&mut self, prim: PrimitiveType, src: Source) {
-        self.stats.draws += 1;
+    /// Shader variants, vertex layout and render targets for the current
+    /// state.
+    fn prepare_front(&mut self, src: &Source) -> Result<Arc<Front>, String> {
         if self.st.vs.is_none() || self.st.ps.is_none() {
-            return self
-                .skip("draw without vertex and pixel shaders (fixed function is not implemented in the core yet)");
+            return Err(
+                "draw without vertex and pixel shaders (fixed function is not implemented in the core yet)".into()
+            );
         }
         let (vs_h, ps_h) = (self.st.vs, self.st.ps);
         let (Some(Object::Shader(vs)), Some(Object::Shader(ps))) =
             (self.objects.get(&vs_h.0), self.objects.get(&ps_h.0))
         else {
-            return self.skip("draw with an unknown shader handle");
+            return Err(String::from("draw with an unknown shader handle"));
         };
         let (vs_module, ps_module) = (vs.module.clone(), ps.module.clone());
         let vs_refl = &vs_module.reflection;
         let Some(Object::VertexDecl(decl)) = self.objects.get(&self.st.decl.0) else {
-            return self.skip("draw without a vertex declaration");
+            return Err(String::from("draw without a vertex declaration"));
         };
         let decl = decl.clone();
         let Some(targets) = self.current_targets() else {
-            return self.skip("draw with no render target bound");
+            return Err(String::from("draw with no render target bound"));
         };
 
         // Shaders.
         let pkey = self.pixel_key(&ps_module);
-        let Some(psv) = self.translate_ps(ps_h, &pkey) else { return self.skip("pixel shader failed to translate") };
+        let Some(psv) = self.translate_ps(ps_h, &pkey) else { return Err("pixel shader failed to translate".into()) };
         let mut vkey =
             VertexKey { outputs: ps_module.linkage(&pkey), clip: pkey.clip, pos_fixup: true, ..Default::default() };
 
@@ -761,7 +788,7 @@ impl Core {
                 continue;
             };
             let Some((gf, input)) = vfmt::vertex_format(el.ty, &vopts) else {
-                return self.skip(format!("vertex element type {:?} is not supported", el.ty));
+                return Err(String::from(format!("vertex element type {:?} is not supported", el.ty)));
             };
             vkey.inputs[*reg as usize] = match input {
                 ShaderInput::Float => InputKind::Float,
@@ -772,15 +799,15 @@ impl Core {
                 ShaderInput::Dec3n => InputKind::Dec3n,
             };
             let stream = el.stream as u32;
-            let stride = match &src {
+            let stride = match src {
                 Source::Up { stride, .. } => *stride,
                 _ => self.st.streams.get(stream as usize).map(|s| s.stride).unwrap_or(0),
             };
             if stride % 4 != 0 || el.offset % 4 != 0 {
-                return self.skip(format!(
+                return Err(String::from(format!(
                     "unaligned vertex layout (stride {stride}, offset {}) needs repacking, not done yet",
                     el.offset
-                ));
+                )));
             }
             let instance =
                 self.st.streams.get(stream as usize).is_some_and(|s| s.freq & (1 << 31) != 0) && instances > 1;
@@ -794,9 +821,111 @@ impl Core {
             slots.push((u32::MAX, VertexBufferKey { stride: 0, instance: false, attrs: zero_attrs }));
         }
         if slots.len() > 8 {
-            return self.skip("more than 8 vertex streams need repacking, not done yet");
+            return Err(String::from("more than 8 vertex streams need repacking, not done yet"));
         }
-        let Some(vsv) = self.translate_vs(vs_h, &vkey) else { return self.skip("vertex shader failed to translate") };
+        let Some(vsv) = self.translate_vs(vs_h, &vkey) else { return Err("vertex shader failed to translate".into()) };
+
+        Ok(Arc::new(Front { vs_module, ps_module, psv, vsv, slots, instances, targets }))
+    }
+
+    fn prepare_back(
+        &mut self,
+        vsv: &Arc<Variant>,
+        psv: &Arc<Variant>,
+        slots: &[(u32, VertexBufferKey)],
+        targets: &crate::PassTargets,
+        topology: wgpu::PrimitiveTopology,
+        strip_index: Option<wgpu::IndexFormat>,
+    ) -> Arc<Back> {
+        let mut bindings = vsv.translation.textures.clone();
+        bindings.extend(psv.translation.textures.iter().copied());
+        let bound = self.bound_textures(&bindings);
+        let layout = self.caches.layout(&self.device, bound.iter().map(|b| b.entry.clone()).collect());
+
+        let colors = self.color_states(targets, psv.translation.color_outputs);
+        let depth = self.depth_state(targets, topology);
+        let cull = match Cull(self.st.r(RenderState::CullMode)) {
+            Cull::Cw => Some(wgpu::Face::Front),
+            Cull::Ccw => Some(wgpu::Face::Back),
+            _ => None,
+        };
+        let pkey_full = PipelineKey {
+            vs: vsv.id,
+            ps: psv.id,
+            layout: layout.id,
+            buffers: slots.iter().map(|(_, k)| k.clone()).collect(),
+            topology,
+            strip_index,
+            cull,
+            colors,
+            depth,
+        };
+        let (pipeline_id, pipeline) = self.pipeline(&pkey_full, vsv, psv, &layout);
+
+        // Bind group 1.
+        let mut ids = Vec::with_capacity(bound.len());
+        let mut samplers = Vec::with_capacity(bound.len());
+        for b in &bound {
+            let (sid, s) = self.caches.sampler(&self.device, b.desc, &mut self.stats);
+            ids.push((b.view_id, sid));
+            samplers.push(s);
+        }
+        let bg_key = (layout.id, ids);
+        let group1 = match self.caches.bind_groups.get(&bg_key) {
+            Some(g) => g.clone(),
+            None => {
+                let mut entries = Vec::new();
+                for (b, s) in bound.iter().zip(&samplers) {
+                    entries.push(wgpu::BindGroupEntry {
+                        binding: sh::texture_binding(b.sampler),
+                        resource: wgpu::BindingResource::TextureView(&b.view),
+                    });
+                    entries.push(wgpu::BindGroupEntry {
+                        binding: sh::sampler_binding(b.sampler),
+                        resource: wgpu::BindingResource::Sampler(s),
+                    });
+                }
+                let g = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("d3dgpu textures"),
+                    layout: &layout.group,
+                    entries: &entries,
+                });
+                self.stats.bind_groups_created += 1;
+                let g = (self.id(), g);
+                self.caches.bind_groups.insert(bg_key, g.clone());
+                g
+            }
+        };
+
+        Arc::new(Back { pipeline: (pipeline_id, pipeline), group1 })
+    }
+
+    pub(crate) fn draw(&mut self, prim: PrimitiveType, src: Source) {
+        self.stats.draws += 1;
+        // Shaders, vertex layout and targets depend on the state only:
+        // reuse them while no state command arrived (constants don't count).
+        let up_stride = match &src {
+            Source::Up { stride, .. } => *stride,
+            _ => u32::MAX,
+        };
+        let front = match &self.caches.front {
+            Some((v, s, f)) if *v == self.st.version && *s == up_stride => f.clone(),
+            _ => match {
+                let t = crate::now_ns();
+                let f = self.prepare_front(&src);
+                self.stats.prepare_ns += crate::now_ns() - t;
+                f
+            } {
+                Ok(f) => {
+                    self.caches.front = Some((self.st.version, up_stride, f.clone()));
+                    f
+                }
+                Err(why) => return self.skip(why),
+            },
+        };
+        let (vs_module, ps_module, psv, vsv) =
+            (front.vs_module.clone(), front.ps_module.clone(), front.psv.clone(), front.vsv.clone());
+        let (slots, instances, targets) = (&front.slots, front.instances, front.targets);
 
         // Primitive rewrites.
         let fill = FillMode(self.st.r(RenderState::FillMode));
@@ -962,71 +1091,35 @@ impl Core {
             scissor = crate::intersect(scissor, self.st.scissor);
         }
 
-        // Textures, layout, pipeline.
-        let mut bindings = vsv.translation.textures.clone();
-        bindings.extend(psv.translation.textures.iter().copied());
-        let bound = self.bound_textures(&bindings);
-        let layout = self.caches.layout(&self.device, bound.iter().map(|b| b.entry.clone()).collect());
-
-        let colors = self.color_states(&targets, psv.translation.color_outputs);
-        let depth = self.depth_state(&targets, topology);
-        let cull = match Cull(self.st.r(RenderState::CullMode)) {
-            Cull::Cw => Some(wgpu::Face::Front),
-            Cull::Ccw => Some(wgpu::Face::Back),
-            _ => None,
-        };
-        let pkey_full = PipelineKey {
-            vs: vsv.id,
-            ps: psv.id,
-            layout: layout.id,
-            buffers: slots.iter().map(|(_, k)| k.clone()).collect(),
-            topology,
-            strip_index,
-            cull,
-            colors,
-            depth,
-        };
-        let (pipeline_id, pipeline) = self.pipeline(&pkey_full, &vsv, &psv, &layout);
-
-        // Bind group 1.
-        let mut ids = Vec::with_capacity(bound.len());
-        let mut samplers = Vec::with_capacity(bound.len());
-        for b in &bound {
-            let (sid, s) = self.caches.sampler(&self.device, b.desc, &mut self.stats);
-            ids.push((b.view_id, sid));
-            samplers.push(s);
-        }
-        let bg_key = (layout.id, ids);
-        let group1 = match self.caches.bind_groups.get(&bg_key) {
-            Some(g) => g.clone(),
-            None => {
-                let mut entries = Vec::new();
-                for (b, s) in bound.iter().zip(&samplers) {
-                    entries.push(wgpu::BindGroupEntry {
-                        binding: sh::texture_binding(b.sampler),
-                        resource: wgpu::BindingResource::TextureView(&b.view),
-                    });
-                    entries.push(wgpu::BindGroupEntry {
-                        binding: sh::sampler_binding(b.sampler),
-                        resource: wgpu::BindingResource::Sampler(s),
-                    });
-                }
-                let g = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("d3dgpu textures"),
-                    layout: &layout.group,
-                    entries: &entries,
-                });
-                self.stats.bind_groups_created += 1;
-                let g = (self.id(), g);
-                self.caches.bind_groups.insert(bg_key, g.clone());
-                g
+        // Textures, layout, pipeline and bind group: also state-only, and
+        // they mark the textures used in this submission.
+        let back_key = (self.st.version, self.epoch, topology, strip_index, vsv.id, psv.id);
+        let back = match &self.caches.back {
+            Some((k, b)) if *k == back_key => b.clone(),
+            _ => {
+                let t = crate::now_ns();
+                let b = self.prepare_back(&vsv, &psv, slots, &targets, topology, strip_index);
+                self.stats.prepare_ns += crate::now_ns() - t;
+                self.caches.back = Some((back_key, b.clone()));
+                b
             }
         };
+        let (pipeline_id, pipeline) = back.pipeline.clone();
+        let group1 = back.group1.clone();
 
         // Uniforms (uploaded only when changed this submission).
         let vs_off = self.upload_consts(Stage::Vertex, &vs_module.reflection);
         let ps_off = self.upload_consts(Stage::Pixel, &ps_module.reflection);
-        let drv = self.driver_bytes(&fit);
+        let fit_key = [fit.x, fit.y, fit.width, fit.height, fit.scale[0], fit.scale[1], fit.offset[0], fit.offset[1]]
+            .map(f32::to_bits);
+        let drv = match &self.caches.driver_src {
+            Some((v, k, d)) if *v == self.st.version && *k == fit_key => d.clone(),
+            _ => {
+                let d = self.driver_bytes(&fit);
+                self.caches.driver_src = Some((self.st.version, fit_key, d.clone()));
+                d
+            }
+        };
         let drv_off = if self.caches.driver.2 == self.epoch && self.caches.driver.0 == drv {
             self.caches.driver.1
         } else {
@@ -1044,7 +1137,7 @@ impl Core {
         // Vertex buffers to bind.
         let epoch = self.epoch;
         let mut vbufs: Vec<(wgpu::Buffer, u64, u64)> = Vec::new();
-        for (stream, _) in &slots {
+        for (stream, _) in slots.iter() {
             if *stream == u32::MAX {
                 vbufs.push((self.caches.zero_buffer.clone(), ZERO_BUFFER_ID, 0));
                 continue;
@@ -1077,6 +1170,7 @@ impl Core {
         };
 
         // Record.
+        let t_record = crate::now_ns();
         if self.ensure_pass().is_none() {
             return;
         }
@@ -1102,6 +1196,7 @@ impl Core {
             }
             None => pass.draw(vertex_range.0..vertex_range.1, 0..instances),
         }
+        self.stats.record_ns += crate::now_ns() - t_record;
     }
 
     /// Uploads the constants a shader reads, unless this submission already

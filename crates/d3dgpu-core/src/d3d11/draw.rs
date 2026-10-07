@@ -121,6 +121,9 @@ pub struct Caches11 {
     zero_cb: (u64, u64, u32),
     zero_buffer: wgpu::Buffer,
     vertex_layouts: FastMap<Vec<(u32, VertexBufferKey)>, u64>,
+    /// Pipelines by the identities they depend on (state objects are
+    /// immutable), so switching between a few states skips the full key.
+    fast_pipelines: FastMap<FastKey, (PipelineKey, (u64, wgpu::RenderPipeline))>,
     dummies: FastMap<(wgpu::TextureViewDimension, u8, bool), (wgpu::TextureView, u64)>,
     dummy_storage: FastMap<(wgpu::TextureFormat, wgpu::TextureViewDimension), (wgpu::TextureView, u64)>,
 }
@@ -132,6 +135,12 @@ const DRIVER_GROUP_ID: u64 = u64::MAX - 4;
 const ZERO_BUFFER_ID: u64 = u64::MAX - 5;
 
 impl Caches11 {
+    /// Drops what is keyed by handles (after a handle is destroyed and may
+    /// be reused for another object).
+    pub fn forget_handles(&mut self) {
+        self.fast_pipelines.clear();
+    }
+
     pub fn new(device: &wgpu::Device, uniform_ring: &wgpu::Buffer) -> Caches11 {
         let driver_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("d3dgpu driver11"),
@@ -179,6 +188,7 @@ impl Caches11 {
             zero_cb: (u64::MAX, 0, 0),
             zero_buffer,
             vertex_layouts: FastMap::default(),
+            fast_pipelines: FastMap::default(),
             dummies: FastMap::default(),
             dummy_storage: FastMap::default(),
         }
@@ -235,7 +245,7 @@ pub struct Prepared {
 
 /// Everything the pipeline depends on, by identity: when it is unchanged
 /// the pipeline is too, without building and hashing the full key.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct FastKey {
     vs: u64,
     ps: u64,
@@ -774,7 +784,7 @@ impl Core {
             v.t.bindings.iter().filter(|b| b.group == group).copied().collect();
         bindings.sort_by_key(|b| b.binding);
         let epoch = self.epoch;
-        let features = self.device.features();
+        let features = self.features;
         let mut entries = Vec::with_capacity(bindings.len());
         let mut res = Vec::with_capacity(bindings.len());
         let mut ids = Vec::with_capacity(bindings.len());
@@ -1089,9 +1099,13 @@ impl Core {
             targets,
             sample_mask: st.sample_mask,
         };
-        let (key, pipeline) = match &prev {
-            Some(p) if p.fast == fast => (p.key.clone(), p.pipeline.clone()),
-            _ => {
+        let cached = match &prev {
+            Some(p) if p.fast == fast => Some((p.key.clone(), p.pipeline.clone())),
+            _ => self.d11.caches.fast_pipelines.get(&fast).cloned(),
+        };
+        let (key, pipeline) = match cached {
+            Some(c) => c,
+            None => {
                 let Some(topo) = topology(st.topology) else {
                     return skip(format!("primitive topology {} is not supported", st.topology));
                 };
@@ -1101,6 +1115,11 @@ impl Core {
                 let key =
                     self.pipeline_key11(&targets, topo, &blend, &dss, &rs, &vsv, psv.as_deref(), &g0, &g1, &slots)?;
                 let pipeline = self.render_pipeline11(&key, &vsv, psv.as_deref(), &g0.layout, &g1.layout);
+                // Handles are recycled after Destroy, which clears this.
+                if self.d11.caches.fast_pipelines.len() > 4096 {
+                    self.d11.caches.fast_pipelines.clear();
+                }
+                self.d11.caches.fast_pipelines.insert(fast, (key.clone(), pipeline.clone()));
                 (key, pipeline)
             }
         };
@@ -1276,7 +1295,7 @@ impl Core {
             cull::BACK => Some(wgpu::Face::Back),
             _ => None,
         };
-        let unclipped_depth = !rs.depth_clip && self.device.features().contains(wgpu::Features::DEPTH_CLIP_CONTROL);
+        let unclipped_depth = !rs.depth_clip && self.features.contains(wgpu::Features::DEPTH_CLIP_CONTROL);
         let msaa = targets.samples > 1;
         Ok(PipelineKey {
             vs: vsv.id,
@@ -1311,7 +1330,12 @@ impl Core {
         }
         let p = match &self.d11.prepared {
             Some(p) if self.d11.dirty == 0 => p.clone(),
-            _ => self.prepare11()?,
+            _ => {
+                let t = crate::now_ns();
+                let p = self.prepare11();
+                self.stats.prepare_ns += crate::now_ns() - t;
+                p?
+            }
         };
         let targets = p.targets;
 
@@ -1399,6 +1423,7 @@ impl Core {
         };
 
         // Record.
+        let t_record = crate::now_ns();
         self.ensure_pass11(targets);
         let blend_factor = self.d11.st.blend_factor.map(|c| c as f64);
         let stencil_ref = self.d11.st.stencil_ref & 0xff;
@@ -1427,6 +1452,7 @@ impl Core {
             }
             _ => {}
         }
+        self.stats.record_ns += crate::now_ns() - t_record;
         Ok(())
     }
 

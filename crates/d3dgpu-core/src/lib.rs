@@ -101,10 +101,12 @@ pub struct Stats {
     pub pass_commands: u64,
     pub pass_commands_skipped: u64,
     pub errors: u64,
-    /// Nanoseconds spent recording draws (decode excluded) and in
-    /// `encoder.finish` + `queue.submit`. Zero in the browser build, where
-    /// the host times with `performance.now()`.
+    /// Nanoseconds spent in draws (decode excluded), of which deriving
+    /// state (variants, bind groups, pipelines) and recording pass
+    /// commands; and in `encoder.finish` + `queue.submit`.
     pub draw_ns: u64,
+    pub prepare_ns: u64,
+    pub record_ns: u64,
     pub submit_ns: u64,
 }
 
@@ -117,8 +119,16 @@ fn now_ns() -> u64 {
     }
     #[cfg(target_arch = "wasm32")]
     {
-        0
+        (performance_now() * 1e6) as u64
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    /// `performance.now()`, in windows and workers.
+    #[wasm_bindgen(js_namespace = performance, js_name = now)]
+    fn performance_now() -> f64;
 }
 
 /// Errors that stop a batch. Problems with single commands (an unknown
@@ -207,6 +217,8 @@ struct Pending {
 /// The render core.
 pub struct Core {
     device: wgpu::Device,
+    /// `device.features()`, which in the browser walks a JavaScript set.
+    features: wgpu::Features,
     queue: wgpu::Queue,
     opts: Options,
     objects: FastMap<u32, Object>,
@@ -251,6 +263,7 @@ impl Core {
         let d11 = d3d11::Device11::new(&device, &uniforms.buffer);
         let blitter = present::Blitter::new(&device);
         Core {
+            features: device.features(),
             device,
             queue,
             opts,
@@ -365,11 +378,31 @@ impl Core {
     }
 
     fn command(&mut self, cmd: Command, shared: &[u8]) {
+        if !matches!(
+            cmd,
+            Command::SetShaderConstF { .. }
+                | Command::SetShaderConstI { .. }
+                | Command::SetShaderConstB { .. }
+                | Command::Draw { .. }
+                | Command::DrawIndexed { .. }
+                | Command::DrawUp { .. }
+                | Command::DrawIndexedUp { .. }
+                | Command::Clear { .. }
+                | Command::WriteBuffer { .. }
+                | Command::WriteTexture { .. }
+                | Command::Present { .. }
+                | Command::Marker(_)
+                | Command::Signal { .. }
+                | Command::ReadTexture { .. }
+        ) {
+            self.st.version += 1;
+        }
         match cmd {
             Command::CreateBuffer { id, size, usage } => self.create_buffer(id, size, usage),
             Command::Destroy { id } => {
                 self.objects.remove(&id.0);
                 self.d11.dirty = d3d11::dirty::ALL;
+                self.d11.caches.forget_handles();
             }
             Command::WriteBuffer { id, offset, data } => {
                 if let Some(bytes) = self.resolve(data, shared) {
@@ -1240,7 +1273,7 @@ impl Core {
         let (src_view, src_size, src_depth, filterable) = match self.objects.get_mut(&src.texture.0) {
             Some(Object::Texture(t)) => {
                 t.last_use = epoch;
-                let filterable = t.format.sample_type(None, Some(self.device.features()))
+                let filterable = t.format.sample_type(None, Some(self.features))
                     == Some(wgpu::TextureSampleType::Float { filterable: true });
                 (t.rt_view(src.face, src.level), t.level_size(src.level), t.is_depth(), filterable)
             }

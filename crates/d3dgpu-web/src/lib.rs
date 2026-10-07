@@ -207,10 +207,10 @@ impl Renderer {
     pub fn stats_json(&self) -> String {
         let s = self.core.stats();
         format!(
-            "{{\"batches\":{},\"commands\":{},\"draws\":{},\"skipped_draws\":{},\"submits\":{},\"passes\":{},\"pipelines\":{},\"bind_groups\":{},\"samplers\":{},\"buffers\":{},\"textures\":{},\"translations\":{},\"bytes_uploaded\":{},\"load_op_clears\":{},\"quad_clears\":{},\"presents\":{},\"pass_commands\":{},\"pass_commands_skipped\":{},\"errors\":{}}}",
+            "{{\"batches\":{},\"commands\":{},\"draws\":{},\"skipped_draws\":{},\"submits\":{},\"passes\":{},\"pipelines\":{},\"bind_groups\":{},\"samplers\":{},\"buffers\":{},\"textures\":{},\"translations\":{},\"bytes_uploaded\":{},\"load_op_clears\":{},\"quad_clears\":{},\"presents\":{},\"pass_commands\":{},\"pass_commands_skipped\":{},\"errors\":{},\"draw_ns\":{},\"prepare_ns\":{},\"record_ns\":{},\"submit_ns\":{}}}",
             s.batches, s.commands, s.draws, s.skipped_draws, s.submits, s.passes, s.pipelines_created, s.bind_groups_created,
             s.samplers_created, s.buffers_created, s.textures_created, s.shader_translations, s.bytes_uploaded,
-            s.load_op_clears, s.quad_clears, s.presents, s.pass_commands, s.pass_commands_skipped, s.errors
+            s.load_op_clears, s.quad_clears, s.presents, s.pass_commands, s.pass_commands_skipped, s.errors, s.draw_ns, s.prepare_ns, s.record_ns, s.submit_ns
         )
     }
 

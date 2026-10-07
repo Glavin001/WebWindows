@@ -173,7 +173,7 @@ if (test) {
   const frameLog = []; // { t, interval, exec } for the last few seconds
   const gpuHistory = []; // { t, ms }
   let counters = null; // last stats message counters
-  const windowStats = { frames: 0, draws: 0, passCommands: 0, skipped: 0, created: 0, bytes: 0, errors: 0, skippedDraws: 0 };
+  const windowStats = { frames: 0, draws: 0, passCommands: 0, skipped: 0, created: 0, bytes: 0, errors: 0, skippedDraws: 0, drawNs: 0, prepareNs: 0, recordNs: 0, submitNs: 0 };
   let windowStart = performance.now();
   let lastMessages = [];
 
@@ -250,6 +250,10 @@ if (test) {
       windowStats.bytes += s.bytes_uploaded - counters.bytes_uploaded;
       windowStats.errors += s.errors - counters.errors;
       windowStats.skippedDraws += s.skipped_draws - counters.skipped_draws;
+      windowStats.drawNs += s.draw_ns - counters.draw_ns;
+      windowStats.prepareNs += s.prepare_ns - counters.prepare_ns;
+      windowStats.recordNs += s.record_ns - counters.record_ns;
+      windowStats.submitNs += s.submit_ns - counters.submit_ns;
     }
     counters = s;
     if (e.data.messages.length) lastMessages = [...lastMessages, ...e.data.messages].slice(-20);
@@ -280,6 +284,10 @@ if (test) {
       skippedPerDraw: windowStats.skipped / Math.max(1, windowStats.draws),
       createdPerSec: (windowStats.created * 1000) / Math.max(1, now - windowStart),
       uploadKBPerFrame: windowStats.bytes / 1024 / f,
+      drawsMs: windowStats.drawNs / 1e6 / f,
+      prepareMs: windowStats.prepareNs / 1e6 / f,
+      recordMs: windowStats.recordNs / 1e6 / f,
+      submitMs: windowStats.submitNs / 1e6 / f,
       errors: windowStats.errors,
       skippedDraws: windowStats.skippedDraws,
       frames: windowStats.frames,
@@ -323,6 +331,8 @@ if (test) {
       ['  p50 / p95 / p99', `${fmt(s.p50)} / ${fmt(s.p95)} / ${fmt(s.p99)} ms`],
       ['  worst', `${fmt(s.max)} ms`],
       ['CPU: core execute', `${fmt(s.cpu, 2)} ms (p95 ${fmt(s.cpuP95, 2)})`],
+      ['  in draws', `${fmt(s.drawsMs, 2)} ms (derive ${fmt(s.prepareMs, 2)}, record ${fmt(s.recordMs, 2)})`],
+      ['  finish + submit', `${fmt(s.submitMs, 2)} ms`],
       ['GPU: submit → done', `${fmt(s.gpu, 2)} ms (p95 ${fmt(s.gpuP95, 2)})`],
       ['draws / frame', fmt(s.drawsPerFrame, 0)],
       ['CPU µs / draw', fmt((s.cpu * 1000) / Math.max(1, s.drawsPerFrame), 2)],
@@ -345,7 +355,7 @@ if (test) {
     const label = current ? `${current.name}${current.param !== null ? ` (${spec?.label} ${current.param})` : ''}` : '';
     return `## d3dgpu: ${label}\n\n` +
       `FPS ${fmt(s.fps)} · frame ${fmt(s.frameAvg, 2)} ms (p50 ${fmt(s.p50)}, p95 ${fmt(s.p95)}, p99 ${fmt(s.p99)}, worst ${fmt(s.max)}) · ` +
-      `CPU ${fmt(s.cpu, 2)} ms · GPU submit→done ${fmt(s.gpu, 2)} ms · ${fmt(s.drawsPerFrame, 0)} draws/frame · ` +
+      `CPU ${fmt(s.cpu, 2)} ms (draws ${fmt(s.drawsMs, 2)}: derive ${fmt(s.prepareMs, 2)}, record ${fmt(s.recordMs, 2)}; submit ${fmt(s.submitMs, 2)}) · GPU submit→done ${fmt(s.gpu, 2)} ms · ${fmt(s.drawsPerFrame, 0)} draws/frame · ` +
       `${fmt((s.cpu * 1000) / Math.max(1, s.drawsPerFrame), 2)} µs/draw · ${fmt(s.passCmdsPerDraw, 2)} pass cmds/draw · errors ${s.errors}, skipped draws ${s.skippedDraws}` +
       `${$('pace').checked ? ' · vsync' : ' · uncapped'}\n\n` +
       '```\n' + envText() + '\n```\n' +

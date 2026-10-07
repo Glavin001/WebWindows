@@ -153,7 +153,7 @@ pub struct Clear11 {
 }
 
 /// The attachments of a Direct3D 11 render pass (view handles).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub struct Targets11 {
     pub colors: [Handle; MAX_RTS],
     pub depth: Handle,
@@ -485,7 +485,7 @@ impl Core {
 
     fn create_texture11(&mut self, id: Handle, desc: Texture11Desc) {
         let depth = desc.bind & bind::DEPTH_STENCIL != 0;
-        let features = self.device.features();
+        let features = self.features;
         let Some(format) = format::texture_format(desc.format, depth, features) else {
             return self.warn(format!("CreateTexture11 {id:?}: format {:?} is not supported", desc.format));
         };
@@ -610,7 +610,7 @@ impl Core {
                 ViewRes::Buffer { offset: offset & !255, size: size.next_multiple_of(4).max(4), format }
             }
             Some(Object::Texture11(t)) => {
-                let features = self.device.features();
+                let features = self.features;
                 let depth = t.is_depth();
                 // Shader views of a depth-stencil texture see one aspect.
                 let aspect = match (depth, kind) {

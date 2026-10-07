@@ -80,6 +80,9 @@ impl Consts {
 }
 
 pub struct State {
+    /// Bumped by every command that changes state other than shader
+    /// constants: draws reuse what they derived while it is unchanged.
+    pub version: u64,
     pub rs: [u32; RENDER_STATE_COUNT],
     pub samp: [[u32; SAMPLER_STATE_COUNT]; MAX_SAMPLERS],
     pub tss: [[u32; TEXTURE_STAGE_STATE_COUNT]; MAX_TEXTURE_STAGES],
@@ -103,6 +106,7 @@ pub struct State {
 impl State {
     pub fn new() -> State {
         State {
+            version: 1,
             rs: default_render_states(),
             samp: [default_sampler_states(); MAX_SAMPLERS],
             tss: std::array::from_fn(|i| default_texture_stage_states(i as u32)),
