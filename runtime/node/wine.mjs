@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 
 import { Machine, GuestFault, hex } from '../runtime.mjs';
 import { WineHost } from '../wine/host.mjs';
+import { loadWineUnix } from '../wine/unix.mjs';
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
 import { stdout, stderr } from './output.mjs';
 
@@ -51,13 +52,21 @@ function translate(path, bytes) {
 
 const args = process.argv.slice(2);
 let trace = false;
+let unixTrace = false;
+// Wine's Unix side compiled with Emscripten (native/wine-unix): on when built,
+// unless --no-unix.
+const unixDir = join(root, 'target/wine-unix');
+let useUnix = existsSync(join(unixDir, 'wine_unix.mjs'));
 while (args[0]?.startsWith('--')) {
   const a = args.shift();
   if (a === '--trace') trace = true;
+  else if (a === '--trace-unix') unixTrace = true;
+  else if (a === '--no-unix') useUnix = false;
+  else if (a === '--unix') useUnix = true;
 }
 const exe = args.shift();
 if (!exe) {
-  console.error('usage: wine.mjs [--trace] program.exe [args...]');
+  console.error('usage: wine.mjs [--trace] [--trace-unix] [--no-unix] program.exe [args...]');
   process.exit(2);
 }
 
@@ -82,13 +91,25 @@ const kernelPath = join(cacheDir, `kernel.${process.pid}.wasm`);
 execFileSync(wwt(), ['kernel', '-o', kernelPath]);
 const kernel = readFileSync(kernelPath);
 rmSync(kernelPath);
+const layout = useUnix ? JSON.parse(readFileSync(join(unixDir, 'wine_unix.json'), 'utf8')) : null;
 const machine = new Machine({
   abi,
   kernel,
   guestLimit: 0x8000_0000,
+  ...(layout && { nativeSize: layout.nativeSize, extraSize: layout.extraSize }),
   log: trace ? (s) => stderr(`[machine] ${s}\n`) : undefined,
 });
 await machine.init();
+let unix = null;
+if (useUnix) {
+  unix = await loadWineUnix(machine, {
+    factory: async () => (await import(join(unixDir, 'wine_unix.mjs'))).default,
+    layout,
+    dataFiles: new Map([['/wine/share/wine/nls/l_intl.nls', readFileSync(join(wineSrc, 'nls/l_intl.nls'))]]),
+    stderr: (s) => stderr(s),
+  });
+  if (unixTrace) unix.setTrace(true);
+}
 // Fast mode: code the ahead-of-time pass missed is translated when reached.
 const tw = join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm');
 if (existsSync(tw)) {
@@ -104,6 +125,7 @@ const host = new WineHost(machine, {
   stdout: (b) => stdout(b),
   stderr: (b) => stderr(b),
   trace,
+  unix,
 });
 host.boot(`${sys32}\\ntdll.dll`, exeDos);
 const r = host.run();

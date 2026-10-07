@@ -73,12 +73,15 @@ export class Machine {
    * @param {BufferSource} opts.kernel  kernel.wasm bytes
    * @param {number} [opts.guestLimit]  size of the guest region (default 1 GB)
    * @param {number} [opts.nativeSize]  size of the native region (default 64 MB)
+   * @param {number} [opts.extraSize]   bytes above the native region for a
+   *        module that brings its own allocator (Wine's Unix side, M4)
    */
   constructor(opts) {
     this.abi = opts.abi;
     this.kernelBytes = opts.kernel;
     this.guestLimit = opts.guestLimit ?? 0x4000_0000;
     this.nativeSize = opts.nativeSize ?? 64 << 20;
+    this.extraSize = opts.extraSize ?? 0;
     this.thunkSize = 0x10000;
     this.thunkBase = this.guestLimit - this.thunkSize;
     this.log = opts.log ?? (() => {});
@@ -91,7 +94,7 @@ export class Machine {
   }
 
   async init() {
-    const total = this.guestLimit + this.nativeSize;
+    const total = this.guestLimit + this.nativeSize + this.extraSize;
     if (total > 0x1_0000_0000) throw new Error('guest limit + native region exceed 4 GB');
     const pages = total / 65536;
     this.memory = new WebAssembly.Memory({ initial: pages, maximum: pages, shared: true });
@@ -111,7 +114,7 @@ export class Machine {
     this.codeBitmap = take(L1_ENTRIES / 8, PAGE);
     this.cpuArea = take(this.abi.cpu.SIZE * 128, PAGE);
     this.nativeNext = p;
-    this.nativeEnd = total;
+    this.nativeEnd = this.guestLimit + this.nativeSize;
     this.u32.fill(this.zeroL2, this.l1 >>> 2, (this.l1 >>> 2) + L1_ENTRIES);
     this.cpuSlots = 0;
 
