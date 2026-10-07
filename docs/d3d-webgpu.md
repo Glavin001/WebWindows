@@ -379,6 +379,8 @@ game ─► d3d9.dll ─► wined3d.dll (adapter_wgpu) ─► d3dgpu batches in 
   blitter), fog, point sprites, MSAA, mipmap generation, presenting other
   than 32-bit back buffers.
 
+![d3d9tri on translated Wine in headless Chromium](d3d9tri-browser.png)
+
 Testing: `tests/programs/gui/d3d9tri.c` (a clear, a shader triangle with
 constants, a fixed-function quad) runs in headless Chromium in
 `node tests/web/gui.mjs`. In Node, which has no WebGPU, `node
