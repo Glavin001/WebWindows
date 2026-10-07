@@ -5,8 +5,10 @@
 //! Lists every instruction form (iced-x86 `Code`) the translator discovers
 //! in the given binaries and whether the instruction suite covers it with
 //! recorded cases. Exits non-zero when a form is not covered. Instructions
-//! the translator refuses (they become a fault, e.g. far-pointer loads in
-//! data decoded as code) are listed apart: there is nothing to test.
+//! that only ever fault (privileged ones such as `in`, software interrupts,
+//! `ud2`) or that the translator refuses (far-pointer loads, ...) are listed
+//! apart: the instruction suite has nothing to test there. They mostly come
+//! from data decoded as code.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,6 +17,26 @@ use wwt::pe::PeFile;
 use wwt_testkit::case::read_fixtures;
 use wwt_testkit::gen::Group;
 use wwt_testkit::suite::fixture_path;
+
+/// Instructions the lifter (crates/wwt/src/lift.rs) turns into nothing but
+/// a fault: privileged ones, software interrupts, hlt, cli/sti, ud*.
+fn only_faults(i: &iced_x86::Instruction) -> bool {
+    use iced_x86::Mnemonic as M;
+    i.is_privileged()
+        || matches!(
+            i.mnemonic(),
+            M::Int
+                | M::Int1
+                | M::Int3
+                | M::Into
+                | M::Ud0
+                | M::Ud1
+                | M::Ud2
+                | M::Hlt
+                | M::Cli
+                | M::Sti
+        )
+}
 
 fn main() -> Result<()> {
     let files: Vec<String> = std::env::args().skip(1).collect();
@@ -40,7 +62,7 @@ fn main() -> Result<()> {
         let refused: BTreeSet<u32> = t.report.unsupported.iter().map(|(va, _)| *va).collect();
         for (va, i) in &d.insts {
             let form = format!("{:?}", i.code());
-            if refused.contains(va) {
+            if refused.contains(va) || only_faults(i) {
                 *unsupported.entry(form).or_default() += 1;
             } else {
                 *seen.entry(form).or_default() += 1;
