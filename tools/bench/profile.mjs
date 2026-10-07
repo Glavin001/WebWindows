@@ -21,7 +21,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -115,7 +115,11 @@ function perfProfile(title, args) {
   const dir = mkdtempSync(join(tmpdir(), 'wwt-perf-'));
   const raw = join(dir, 'raw.data');
   const jit = join(dir, 'jit.data');
-  const r = spawnSync(perf, ['record', '-k', 'mono', '-e', 'cpu-clock', '-F', '2000', '-o', raw, '--', process.execPath, '--perf-prof', ...args], {
+  // V8 writes its jitdump, and perf its per-function objects, to the
+  // working directory: a temporary one, with relative paths in the command
+  // made absolute.
+  const absArgs = args.map((x) => (!x.startsWith('-') && !isAbsolute(x) && existsSync(x) ? resolve(x) : x));
+  const r = spawnSync(perf, ['record', '-k', 'mono', '-e', 'cpu-clock', '-F', '2000', '-o', raw, '--', process.execPath, '--perf-prof', ...absArgs], {
     cwd: dir,
     encoding: 'utf8',
     maxBuffer: 64 << 20,
