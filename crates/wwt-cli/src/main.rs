@@ -12,7 +12,7 @@ use wwt::Config;
 #[command(
     name = "wwt",
     version,
-    about = "Translate 32-bit Windows programs to WebAssembly"
+    about = "Translate 32-bit and 64-bit Windows programs to WebAssembly"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -39,6 +39,13 @@ struct TranslateOpts {
     /// Profile file with one hex address per line (written by the runtime).
     #[arg(long)]
     profile: Option<PathBuf>,
+    /// Target a 64-bit (memory64) WebAssembly memory.
+    #[arg(long)]
+    mem64: bool,
+    /// Load (and translate) the image at this base (hex) instead of its
+    /// preferred one. 64-bit images preferred above 4 GB move below it.
+    #[arg(long)]
+    base: Option<String>,
 }
 
 impl TranslateOpts {
@@ -50,7 +57,16 @@ impl TranslateOpts {
         c.lift.smc_checks = !self.no_smc_checks;
         c.codegen.smc_checks = !self.no_smc_checks;
         c.lift.strict_ordering = self.strict_ordering;
-        c
+        c.with_mem64(self.mem64)
+    }
+
+    /// Loads a PE file, moved to `--base` when given.
+    fn load(&self, file: &Path) -> Result<PeFile> {
+        let mut pe = load(file)?;
+        if let Some(b) = &self.base {
+            pe.rebase(parse_hex(b)?)?;
+        }
+        Ok(pe)
     }
 
     fn seeds(&self) -> Result<Vec<u32>> {
@@ -116,6 +132,9 @@ enum Cmd {
     Kernel {
         #[arg(short, long)]
         out: PathBuf,
+        /// The kernel for a 64-bit (memory64) memory.
+        #[arg(long)]
+        mem64: bool,
     },
     /// Print the runtime ABI (CPU struct layout and constants) as JSON.
     Abi,
@@ -145,6 +164,10 @@ fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Info { file } => {
             let pe = load(&file)?;
+            println!("machine      {:#06x} ({:?})", pe.machine, pe.mode);
+            if pe.preferred_base != pe.image_base as u64 {
+                println!("preferred    {:#x} (loads below 4 GB)", pe.preferred_base);
+            }
             println!("image base   {:#010x}", pe.image_base);
             println!("entry point  {:#010x?}", pe.entry_point());
             println!("size         {:#x}", pe.size_of_image);
@@ -185,6 +208,9 @@ fn main() -> Result<()> {
             if let Some(tls) = &pe.tls {
                 println!("tls callbacks: {:x?}", tls.callbacks);
             }
+            if !pe.pdata.is_empty() {
+                println!(".pdata functions: {}", pe.pdata.len());
+            }
         }
         Cmd::Translate {
             file,
@@ -193,7 +219,7 @@ fn main() -> Result<()> {
             report,
             wasm_opt,
         } => {
-            let pe = load(&file)?;
+            let pe = opts.load(&file)?;
             let t = wwt::translate_pe(&pe, &opts.config(), &opts.seeds()?)?;
             let out = out.unwrap_or_else(|| file.with_extension("wasm"));
             std::fs::write(&out, &t.wasm)?;
@@ -217,7 +243,7 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Ir { file, func, opts } => {
-            let pe = load(&file)?;
+            let pe = opts.load(&file)?;
             let t = wwt::translate_pe(&pe, &opts.config(), &opts.seeds()?)?;
             let want = func.map(|f| parse_hex(&f)).transpose()?;
             for f in &t.ir {
@@ -227,7 +253,7 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Wat { file, opts } => {
-            let pe = load(&file)?;
+            let pe = opts.load(&file)?;
             let t = wwt::translate_pe(&pe, &opts.config(), &opts.seeds()?)?;
             println!("{}", wasmprinter::print_bytes(&t.wasm)?);
         }
@@ -256,7 +282,14 @@ fn main() -> Result<()> {
                 println!("    {a:08x}  {s}");
             }
         }
-        Cmd::Kernel { out } => std::fs::write(out, wwt::kernel::kernel_wasm())?,
+        Cmd::Kernel { out, mem64 } => std::fs::write(
+            out,
+            if mem64 {
+                wwt::kernel::kernel64_wasm()
+            } else {
+                wwt::kernel::kernel_wasm()
+            },
+        )?,
         Cmd::Abi => println!("{}", wwt::abi::abi_json()),
         Cmd::Pack { file, out, opts } => pack(&file, &out, &opts)?,
     }
@@ -290,7 +323,7 @@ fn run_wasm_opt(path: &Path) -> Result<()> {
 /// translated module, plus the original .exe (needed for its data).
 fn pack(file: &Path, out: &Path, opts: &TranslateOpts) -> Result<()> {
     std::fs::create_dir_all(out)?;
-    let pe = load(file)?;
+    let pe = opts.load(file)?;
     let t = wwt::translate_pe(&pe, &opts.config(), &opts.seeds()?)?;
     let name = file
         .file_name()
@@ -299,7 +332,12 @@ fn pack(file: &Path, out: &Path, opts: &TranslateOpts) -> Result<()> {
         .into_owned();
     std::fs::write(out.join(format!("{name}.wasm")), &t.wasm)?;
     std::fs::copy(file, out.join(&name))?;
-    std::fs::write(out.join("kernel.wasm"), wwt::kernel::kernel_wasm())?;
+    let kernel = if opts.mem64 {
+        wwt::kernel::kernel64_wasm()
+    } else {
+        wwt::kernel::kernel_wasm()
+    };
+    std::fs::write(out.join("kernel.wasm"), kernel)?;
     std::fs::write(out.join("abi.json"), wwt::abi::abi_json())?;
     // Copy the JavaScript runtime that ships next to the CLI.
     let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime");

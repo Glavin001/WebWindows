@@ -6,7 +6,10 @@
 // Options (before the program): --wasm <file> (translated module; default:
 // translate with `wwt`), --wwt <path> (translator binary), --trace (log API
 // calls), --guest-limit <MB>, --profile <file> (append missed addresses),
-// --no-fast (disable run-time translation of code the translator missed).
+// --no-fast (disable run-time translation of code the translator missed),
+// --mem64 (64-bit WebAssembly memory; Node 22 needs
+// --experimental-wasm-memory64). 64-bit programs are detected from the PE
+// header.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, appendFileSync, mkdtempSync, statSync } from 'node:fs';
@@ -16,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 
 import { Machine, ProcessExit, GuestFault, hex } from '../runtime.mjs';
 import { Process } from '../win32.mjs';
+import { peArch } from '../pe.mjs';
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
 import { stdout, stderr } from './output.mjs';
 
@@ -45,25 +49,32 @@ function findTranslatorWasm() {
 
 export async function runExe(exePath, argv, opts = {}) {
   const wwt = () => findWwt(opts.wwt);
+  const arch = peArch(readFileSync(exePath));
+  const mem64 = opts.mem64 ?? false;
+  const m64 = mem64 ? ['--mem64'] : [];
   let wasmPath = opts.wasm;
   if (!wasmPath) {
     const dir = mkdtempSync(join(tmpdir(), 'wwt-'));
     wasmPath = join(dir, basename(exePath) + '.wasm');
     const extra = opts.translateArgs ?? [];
-    execFileSync(wwt(), ['translate', exePath, '-o', wasmPath, ...extra], {
+    execFileSync(wwt(), ['translate', exePath, '-o', wasmPath, ...m64, ...extra], {
       stdio: ['ignore', 'ignore', opts.quiet ? 'ignore' : 'inherit'],
     });
   }
   const abi = JSON.parse(execFileSync(wwt(), ['abi']).toString());
   const kdir = mkdtempSync(join(tmpdir(), 'wwt-k-'));
-  execFileSync(wwt(), ['kernel', '-o', join(kdir, 'kernel.wasm')]);
+  execFileSync(wwt(), ['kernel', '-o', join(kdir, 'kernel.wasm'), ...m64]);
   const kernel = readFileSync(join(kdir, 'kernel.wasm'));
 
   const out = [];
   const machine = new Machine({
     abi,
     kernel,
-    guestLimit: (opts.guestLimitMB ?? 1024) * 1024 * 1024,
+    arch,
+    mem64,
+    // 64-bit images fold to 1-2 GB (0x1_4000_0000 -> 0x4000_0000), so their
+    // guest region defaults larger.
+    guestLimit: (opts.guestLimitMB ?? (arch === 'x64' ? 3072 : 1024)) * 1024 * 1024,
     log: opts.verbose ? (s) => stderr(s + '\n') : undefined,
   });
   await machine.init();
@@ -112,6 +123,7 @@ async function main() {
     else if (a === '--verbose') opts.verbose = true;
     else if (a === '--profile') opts.profile = args.shift();
     else if (a === '--guest-limit') opts.guestLimitMB = Number(args.shift());
+    else if (a === '--mem64') opts.mem64 = true;
     else throw new Error(`unknown option ${a}`);
   }
   const exe = args.shift();

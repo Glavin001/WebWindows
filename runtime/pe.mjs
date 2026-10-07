@@ -17,3 +17,18 @@ export function mapImage(machine, exeBytes, image) {
   }
   return base;
 }
+
+/** The PE machine field: 0x14c (i386) or 0x8664 (AMD64); 0 if not a PE. */
+export function peMachine(bytes) {
+  const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  if (b.length < 0x40 || b[0] !== 0x4d || b[1] !== 0x5a) return 0;
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const pe = dv.getUint32(0x3c, true);
+  if (pe + 6 > b.length || dv.getUint32(pe, true) !== 0x4550) return 0;
+  return dv.getUint16(pe + 4, true);
+}
+
+/** 'x64' for an AMD64 image, 'x86' otherwise. */
+export function peArch(bytes) {
+  return peMachine(bytes) === 0x8664 ? 'x64' : 'x86';
+}

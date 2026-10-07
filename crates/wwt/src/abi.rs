@@ -53,6 +53,31 @@ pub mod cpu {
     }
 }
 
+/// The x86-64 CPU struct. It keeps every field of [`cpu`] that does not
+/// widen (EIP, FK, DF, segment selectors, x87, MMX, xmm0-7, MXCSR, fault
+/// information, scratch) at the same offset, and adds the 64-bit fields in
+/// an extension after the 32-bit struct. The 32-bit GPR, lazy-operand and
+/// segment-base slots are unused in this layout.
+pub mod cpu64 {
+    /// The sixteen general registers (rax, rcx, rdx, rbx, rsp, rbp, rsi,
+    /// rdi, r8..r15), 8 bytes each.
+    pub const GPR: u32 = 512;
+    /// Lazy flag result and operands, 8 bytes each.
+    pub const FR: u32 = 640;
+    pub const FA: u32 = 648;
+    pub const FB: u32 = 656;
+    pub const FC: u32 = 664;
+    pub const FS_BASE: u32 = 672;
+    pub const GS_BASE: u32 = 680;
+    /// xmm8..xmm15 (16 bytes each); xmm0..7 stay at [`super::cpu::XMM`].
+    pub const XMM8: u32 = 688;
+    pub const SIZE: u32 = 832;
+
+    pub const fn gpr(i: u32) -> u32 {
+        GPR + i * 8
+    }
+}
+
 /// Lazy flag encoding. `FK` holds `op | width_code << 8`; `FR`, `FA`, `FB`
 /// and `FC` hold the result and operands needed to compute each flag.
 pub mod flags {
@@ -100,6 +125,7 @@ pub mod flags {
         let code = match width_bits {
             8 => 0,
             16 => 1,
+            64 => 3,
             _ => 2,
         };
         op | code << 8
@@ -163,6 +189,7 @@ pub const ABI_VERSION: u32 = 2;
 struct AbiJson {
     version: u32,
     cpu: std::collections::BTreeMap<&'static str, u32>,
+    cpu64: std::collections::BTreeMap<&'static str, u32>,
     flags: std::collections::BTreeMap<&'static str, u32>,
     fault: std::collections::BTreeMap<&'static str, u32>,
     stop_address: u32,
@@ -202,6 +229,19 @@ pub fn abi_json() -> String {
     ]
     .into_iter()
     .collect();
+    let cpu64 = [
+        ("GPR", cpu64::GPR),
+        ("FR", cpu64::FR),
+        ("FA", cpu64::FA),
+        ("FB", cpu64::FB),
+        ("FC", cpu64::FC),
+        ("FS_BASE", cpu64::FS_BASE),
+        ("GS_BASE", cpu64::GS_BASE),
+        ("XMM8", cpu64::XMM8),
+        ("SIZE", cpu64::SIZE),
+    ]
+    .into_iter()
+    .collect();
     let fl = [
         ("CF", flags::CF),
         ("PF", flags::PF),
@@ -232,6 +272,7 @@ pub fn abi_json() -> String {
     serde_json::to_string_pretty(&AbiJson {
         version: ABI_VERSION,
         cpu,
+        cpu64,
         flags: fl,
         fault,
         stop_address: addr::STOP,

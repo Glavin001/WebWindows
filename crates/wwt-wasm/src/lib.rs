@@ -8,14 +8,35 @@
 //!   with `wwt_free(ptr, len + 4)`.
 //! * `wwt_translate_pe(file, len, profile, n_profile, opt_level, flags) ->
 //!   ptr` — ahead-of-time translation of a whole .exe/.dll.
-//! * `wwt_kernel() -> ptr` — the runtime kernel module, same format.
+//! * `wwt_kernel() -> ptr` — the runtime kernel module, same format;
+//!   `wwt_kernel64()` for a 64-bit (memory64) memory.
 //! * `wwt_abi() -> ptr` — the ABI JSON, same format.
 
 use wwt::discover::FlatCode;
 
-/// Bit 0: disable memory checks; bit 1: disable code-write checks.
+/// Bit 0: disable memory checks; bit 1: disable code-write checks; bit 2:
+/// the code is x86-64 (for `wwt_translate`; PE files carry their own mode);
+/// bit 3: target a 64-bit (memory64) memory.
 const FLAG_NO_MEM_CHECKS: u32 = 1;
 const FLAG_NO_SMC_CHECKS: u32 = 2;
+const FLAG_X64: u32 = 4;
+const FLAG_MEM64: u32 = 8;
+
+fn apply_flags(cfg: wwt::Config, flags: u32) -> wwt::Config {
+    let mut cfg = cfg;
+    let mc = flags & FLAG_NO_MEM_CHECKS == 0;
+    let sc = flags & FLAG_NO_SMC_CHECKS == 0;
+    cfg.lift.mem_checks = mc;
+    cfg.codegen.mem_checks = mc;
+    cfg.lift.smc_checks = sc;
+    cfg.codegen.smc_checks = sc;
+    let mode = if flags & FLAG_X64 != 0 {
+        wwt::ir::Mode::X64
+    } else {
+        wwt::ir::Mode::X86
+    };
+    cfg.with_mode(mode).with_mem64(flags & FLAG_MEM64 != 0)
+}
 
 #[no_mangle]
 pub extern "C" fn wwt_alloc(len: usize) -> *mut u8 {
@@ -62,17 +83,14 @@ pub unsafe extern "C" fn wwt_translate(
     } else {
         std::slice::from_raw_parts(known, n_known).to_vec()
     };
-    let mut cfg = if opt_level == 0 {
-        wwt::Config::fast()
-    } else {
-        wwt::Config::default()
-    };
-    let mc = flags & FLAG_NO_MEM_CHECKS == 0;
-    let sc = flags & FLAG_NO_SMC_CHECKS == 0;
-    cfg.lift.mem_checks = mc;
-    cfg.codegen.mem_checks = mc;
-    cfg.lift.smc_checks = sc;
-    cfg.codegen.smc_checks = sc;
+    let cfg = apply_flags(
+        if opt_level == 0 {
+            wwt::Config::fast()
+        } else {
+            wwt::Config::default()
+        },
+        flags,
+    );
     let src = FlatCode { base, bytes: code };
     match wwt::translate::translate_region_with_known(&src, &entries, &known, &cfg) {
         Ok(t) => result(t.wasm),
@@ -101,17 +119,14 @@ pub unsafe extern "C" fn wwt_translate_pe(
     } else {
         std::slice::from_raw_parts(profile, n_profile).to_vec()
     };
-    let mut cfg = if opt_level == 0 {
-        wwt::Config::fast()
-    } else {
-        wwt::Config::default()
-    };
-    let mc = flags & FLAG_NO_MEM_CHECKS == 0;
-    let sc = flags & FLAG_NO_SMC_CHECKS == 0;
-    cfg.lift.mem_checks = mc;
-    cfg.codegen.mem_checks = mc;
-    cfg.lift.smc_checks = sc;
-    cfg.codegen.smc_checks = sc;
+    let cfg = apply_flags(
+        if opt_level == 0 {
+            wwt::Config::fast()
+        } else {
+            wwt::Config::default()
+        },
+        flags,
+    );
     let Ok(pe) = wwt::pe::PeFile::parse(data) else {
         return result(vec![]);
     };
@@ -124,6 +139,11 @@ pub unsafe extern "C" fn wwt_translate_pe(
 #[no_mangle]
 pub extern "C" fn wwt_kernel() -> *mut u8 {
     result(wwt::kernel::kernel_wasm())
+}
+
+#[no_mangle]
+pub extern "C" fn wwt_kernel64() -> *mut u8 {
+    result(wwt::kernel::kernel64_wasm())
 }
 
 #[no_mangle]

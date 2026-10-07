@@ -8,6 +8,11 @@
 //   G .. top                  native runtime: lookup tables, code bitmap,
 //                             per-thread CPU state, runtime allocations
 //
+// x86-64 programs (`arch: 'x64'`) use the same map with code below 4 GB and
+// the x86-64 CPU struct; with `mem64` the memory is a 64-bit (memory64) one,
+// the CPU pointer and runtime tables are i64 for translated code, and the
+// first-level lookup table holds 8-byte pointers.
+//
 // Works in Node and in browsers (module workers).
 
 export const PAGE = 0x1000;
@@ -66,6 +71,23 @@ export function hex(v) {
   return '0x' + (v >>> 0).toString(16).padStart(8, '0');
 }
 
+/**
+ * A shared 64-bit memory of `pages` 64 KB pages: the standard constructor
+ * (`address: 'i64'`, BigInt sizes) or the earlier one Node 22 has behind
+ * --experimental-wasm-memory64 (`index: 'i64'`, Number sizes).
+ */
+function newMemory64(pages) {
+  try {
+    return new WebAssembly.Memory({ address: 'i64', initial: BigInt(pages), maximum: BigInt(pages), shared: true });
+  } catch (e) {
+    try {
+      return new WebAssembly.Memory({ index: 'i64', initial: pages, maximum: pages, shared: true });
+    } catch {
+      throw new Error(`this JavaScript engine has no 64-bit WebAssembly memory (${e.message})`);
+    }
+  }
+}
+
 export class Machine {
   /**
    * @param {object} opts
@@ -79,6 +101,12 @@ export class Machine {
   constructor(opts) {
     this.abi = opts.abi;
     this.kernelBytes = opts.kernel;
+    /** 'x86' or 'x64': the guest's register file and CPU struct layout. */
+    this.arch = opts.arch ?? 'x86';
+    this.x64 = this.arch === 'x64';
+    /** A 64-bit (memory64) WebAssembly memory; needs the matching kernel. */
+    this.mem64 = opts.mem64 ?? false;
+    this.cpuSize = this.x64 ? this.abi.cpu64.SIZE : this.abi.cpu.SIZE;
     this.guestLimit = opts.guestLimit ?? 0x4000_0000;
     this.nativeSize = opts.nativeSize ?? 64 << 20;
     this.extraSize = opts.extraSize ?? 0;
@@ -95,9 +123,13 @@ export class Machine {
 
   async init() {
     const total = this.guestLimit + this.nativeSize + this.extraSize;
-    if (total > 0x1_0000_0000) throw new Error('guest limit + native region exceed 4 GB');
+    if (!this.mem64 && total > 0x1_0000_0000) throw new Error('guest limit + native region exceed 4 GB');
+    if (this.guestLimit > 0x1_0000_0000 && this.thunkBase > 0xffff_0000) {
+      // Code addresses (host thunks included) are 32-bit.
+      this.thunkBase = 0xffff_0000 - this.thunkSize;
+    }
     const pages = total / 65536;
-    this.memory = new WebAssembly.Memory({ initial: pages, maximum: pages, shared: true });
+    this.memory = this.mem64 ? newMemory64(pages) : new WebAssembly.Memory({ initial: pages, maximum: pages, shared: true });
     this.table = new WebAssembly.Table({ element: 'anyfunc', initial: 1 });
     this.refreshViews();
 
@@ -109,27 +141,58 @@ export class Machine {
       p += n;
       return at;
     };
-    this.l1 = take(L1_ENTRIES * 4, PAGE);
+    // With 64-bit memory the L1 entries are 8-byte pointers.
+    this.l1Entry = this.mem64 ? 8 : 4;
+    this.l1 = take(L1_ENTRIES * this.l1Entry, PAGE);
     this.zeroL2 = take(L2_BYTES, PAGE);
-    this.codeBitmap = take(L1_ENTRIES / 8, PAGE);
-    this.cpuArea = take(this.abi.cpu.SIZE * 128, PAGE);
+    // One bit per 4 KB page of the guest region (at least the 4 GB of code).
+    this.codeBitmap = take(Math.max(L1_ENTRIES, this.guestLimit / PAGE) / 8, PAGE);
+    this.cpuArea = take(this.cpuSize * 128, PAGE);
     this.nativeNext = p;
     this.nativeEnd = this.guestLimit + this.nativeSize;
-    this.u32.fill(this.zeroL2, this.l1 >>> 2, (this.l1 >>> 2) + L1_ENTRIES);
+    if (this.mem64) {
+      for (let i = 0; i < L1_ENTRIES; i++) this.setL1(i, this.zeroL2);
+    } else {
+      this.u32.fill(this.zeroL2, this.l1 >>> 2, (this.l1 >>> 2) + L1_ENTRIES);
+    }
     this.cpuSlots = 0;
 
     const env = {
       memory: this.memory,
       table: this.table,
-      lookup_l1: this.l1,
+      lookup_l1: this.wide(this.l1),
       thunk_base: this.thunkBase,
       thunk_size: this.thunkSize,
-      host_call: (cpu, eip) => this.hostCall(cpu, eip),
-      miss: (cpu, eip) => this.miss(cpu, eip),
+      host_call: (cpu, eip) => this.hostCall(this.addr(cpu), eip),
+      miss: (cpu, eip) => this.miss(this.addr(cpu), eip),
     };
     const { instance } = await WebAssembly.instantiate(this.kernelBytes, { env });
     this.kernel = instance.exports;
     this.table.set(0, this.kernel.miss_entry);
+  }
+
+  /**
+   * A pointer from translated code as a Number: i32 pointers above 2 GB
+   * arrive negative, i64 ones as BigInt.
+   */
+  addr(v) {
+    return typeof v === 'bigint' ? Number(v) : v >>> 0;
+  }
+
+  /** A pointer-sized value for translated code (BigInt with 64-bit memory). */
+  wide(v) {
+    return this.mem64 ? BigInt(v) : v;
+  }
+
+  l1At(page) {
+    const a = this.l1 + page * this.l1Entry;
+    return this.mem64 ? Number(this.dv.getBigUint64(a, true)) : this.u32[a >>> 2];
+  }
+
+  setL1(page, v) {
+    const a = this.l1 + page * this.l1Entry;
+    if (this.mem64) this.dv.setBigUint64(a, BigInt(v), true);
+    else this.u32[a >>> 2] = v;
   }
 
   refreshViews() {
@@ -151,7 +214,7 @@ export class Machine {
   // ---- CPU state ----------------------------------------------------------
 
   newCpu() {
-    const size = this.abi.cpu.SIZE;
+    const size = this.cpuSize;
     if (this.cpuSlots >= 128) throw new Error('too many threads');
     const cpu = this.cpuArea + size * this.cpuSlots++;
     this.u8.fill(0, cpu, cpu + size);
@@ -161,11 +224,38 @@ export class Machine {
     return cpu;
   }
 
+  /** General register `i` (the low 32 bits on x86-64). */
   reg(cpu, i) {
+    if (this.x64) return this.u32[(cpu + this.abi.cpu64.GPR + i * 8) >>> 2];
     return this.u32[(cpu + this.abi.cpu.GPR + i * 4) >>> 2];
   }
+  /** Sets a general register; on x86-64 zero-extended, as a 32-bit write. */
   setReg(cpu, i, v) {
+    if (this.x64) return this.setReg64(cpu, i, BigInt(v >>> 0));
     this.u32[(cpu + this.abi.cpu.GPR + i * 4) >>> 2] = v >>> 0;
+  }
+  /** x86-64: the whole register as a BigInt. */
+  reg64(cpu, i) {
+    return this.dv.getBigUint64(cpu + this.abi.cpu64.GPR + i * 8, true);
+  }
+  setReg64(cpu, i, v) {
+    this.dv.setBigUint64(cpu + this.abi.cpu64.GPR + i * 8, BigInt.asUintN(64, BigInt(v)), true);
+  }
+  /** The stack pointer (a Number: guest addresses fit in 53 bits). */
+  sp(cpu) {
+    return this.x64 ? Number(this.reg64(cpu, 4)) : this.reg(cpu, 4);
+  }
+  setSp(cpu, v) {
+    if (this.x64) this.setReg64(cpu, 4, BigInt(v));
+    else this.setReg(cpu, 4, v);
+  }
+  /** Reads and writes guest pointers (4 or 8 bytes). */
+  ptr(addr) {
+    return this.x64 ? Number(this.dv.getBigUint64(addr, true)) : this.dv.getUint32(addr, true);
+  }
+  setPtr(addr, v) {
+    if (this.x64) this.dv.setBigUint64(addr, BigInt.asUintN(64, BigInt(v)), true);
+    else this.dv.setUint32(addr, v >>> 0, true);
   }
 
   // ---- Modules and lookup -------------------------------------------------
@@ -201,11 +291,11 @@ export class Machine {
       memory: this.memory,
       table: this.table,
       table_base: base,
-      lookup_l1: this.l1,
-      guest_limit: this.guestLimit - 0x10000 - 16,
-      code_bitmap: this.codeBitmap,
-      fault: (cpu, code, eip, info) => this.fault(cpu, code, eip, info),
-      code_write: (cpu, addr) => this.codeWrite(cpu, addr),
+      lookup_l1: this.wide(this.l1),
+      guest_limit: this.wide(this.guestLimit - 0x10000 - 16),
+      code_bitmap: this.wide(this.codeBitmap),
+      fault: (cpu, code, eip, info) => this.fault(this.addr(cpu), code, eip, info),
+      code_write: (cpu, addr) => this.codeWrite(this.addr(cpu), this.addr(addr)),
       math: hostMath,
     };
     const finish = (instance) => {
@@ -233,26 +323,26 @@ export class Machine {
   register(addr, index) {
     this.entries.add(addr >>> 0);
     const page = addr >>> 12;
-    let l2 = this.u32[(this.l1 >>> 2) + page];
+    let l2 = this.l1At(page);
     if (l2 === this.zeroL2) {
       l2 = this.nativeAlloc(L2_BYTES, PAGE);
       this.u8.fill(0, l2, l2 + L2_BYTES);
-      this.u32[(this.l1 >>> 2) + page] = l2;
+      this.setL1(page, l2);
       this.u8[this.codeBitmap + (page >>> 3)] |= 1 << (page & 7);
     }
     this.u32[(l2 >>> 2) + (addr & 0xfff)] = index;
   }
 
   lookup(addr) {
-    const l2 = this.u32[(this.l1 >>> 2) + (addr >>> 12)];
-    return this.u32[(l2 >>> 2) + (addr & 0xfff)];
+    const l2 = this.l1At(addr >>> 12);
+    return this.u32[(l2 / 4) + (addr & 0xfff)];
   }
 
   /** A store hit a page with translated code: drop the page's translations. */
   codeWrite(cpu, addr) {
     const page = addr >>> 12;
     this.log(`code write at ${hex(addr)}: invalidating page ${hex(page << 12)}`);
-    this.u32[(this.l1 >>> 2) + page] = this.zeroL2;
+    this.setL1(page, this.zeroL2);
     this.u8[this.codeBitmap + (page >>> 3)] &= ~(1 << (page & 7));
   }
 
@@ -302,7 +392,7 @@ export class Machine {
 
   /** Runs guest code at `eip` until it returns to the stop address. */
   run(cpu, eip) {
-    return this.kernel.run(cpu, eip);
+    return this.kernel.run(this.wide(cpu), eip);
   }
 
   /**
@@ -310,6 +400,7 @@ export class Machine {
    * returns eax. Works for cdecl and stdcall callees.
    */
   callGuest(cpu, addr, args = []) {
+    if (this.x64) return this.callGuest64(cpu, addr, args);
     const ESP = 4;
     const saved = this.reg(cpu, ESP);
     let sp = saved;
@@ -322,6 +413,30 @@ export class Machine {
     this.setReg(cpu, ESP, sp);
     this.run(cpu, addr);
     this.setReg(cpu, ESP, saved);
+    return this.reg(cpu, 0);
+  }
+
+  /**
+   * x86-64 (Windows x64 convention): the first four arguments in rcx, rdx,
+   * r8 and r9, the rest on the stack above 32 bytes of home space; returns
+   * eax (use `reg64` for all of rax).
+   */
+  callGuest64(cpu, addr, args = []) {
+    const saved = this.sp(cpu);
+    const regs = [1, 2, 8, 9];
+    const stackArgs = Math.max(0, args.length - 4);
+    // Keep rsp 16-byte aligned at the call (8 off after the return address).
+    let sp = (saved - 8 * stackArgs - 32) & ~15;
+    for (let i = 0; i < args.length; i++) {
+      const v = BigInt.asUintN(64, BigInt(args[i]));
+      if (i < 4) this.setReg64(cpu, regs[i], v);
+      else this.dv.setBigUint64(sp + 32 + (i - 4) * 8, v, true);
+    }
+    sp -= 8;
+    this.dv.setBigUint64(sp, BigInt(this.abi.stop_address >>> 0), true);
+    this.setSp(cpu, sp);
+    this.run(cpu, addr);
+    this.setSp(cpu, saved);
     return this.reg(cpu, 0);
   }
 

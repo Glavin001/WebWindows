@@ -12,6 +12,31 @@ use std::fmt;
 use crate::abi::cpu;
 
 pub type V = u32;
+
+/// Which x86 the code is: 32-bit (i386) or 64-bit (x86-64). Selects the
+/// decoder, the register file and the CPU struct layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize)]
+pub enum Mode {
+    #[default]
+    X86,
+    X64,
+}
+
+impl Mode {
+    pub fn bitness(self) -> u32 {
+        match self {
+            Mode::X86 => 32,
+            Mode::X64 => 64,
+        }
+    }
+    /// Type of guest addresses and general registers.
+    pub fn word(self) -> Ty {
+        match self {
+            Mode::X86 => Ty::I32,
+            Mode::X64 => Ty::I64,
+        }
+    }
+}
 pub type BlockId = u32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -57,10 +82,62 @@ pub const XMM0: V = 20;
 pub const CPU: V = 31;
 /// mm0..mm7 (MMX), as i64.
 pub const MM0: V = 32;
-pub const NUM_STATE: u32 = 48;
+/// r8..r15 (x86-64 only).
+pub const R8: V = 40;
+/// xmm8..xmm15 (x86-64 only).
+pub const XMM8: V = 48;
+pub const NUM_STATE: u32 = 56;
 
 pub const FLAG_STATE: [V; 5] = [FK, FR, FA, FB, FC];
 pub const GPRS: [V; 8] = [EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI];
+/// The sixteen x86-64 general registers in encoding order.
+pub const GPRS64: [V; 16] = [
+    EAX,
+    ECX,
+    EDX,
+    EBX,
+    ESP,
+    EBP,
+    ESI,
+    EDI,
+    R8,
+    R8 + 1,
+    R8 + 2,
+    R8 + 3,
+    R8 + 4,
+    R8 + 5,
+    R8 + 6,
+    R8 + 7,
+];
+
+/// The vreg of SSE register `n` (0..15).
+pub fn xmm(n: u32) -> V {
+    if n < 8 {
+        XMM0 + n
+    } else {
+        XMM8 + n - 8
+    }
+}
+
+/// Home location of a state vreg in the CPU struct for `mode`.
+pub fn state_home_in(v: V, mode: Mode) -> Option<(u32, Ty)> {
+    if mode == Mode::X86 {
+        return state_home(v);
+    }
+    use crate::abi::cpu64;
+    Some(match v {
+        0..=7 => (cpu64::gpr(v), Ty::I64),
+        R8..=47 => (cpu64::gpr(v - R8 + 8), Ty::I64),
+        FR => (cpu64::FR, Ty::I64),
+        FA => (cpu64::FA, Ty::I64),
+        FB => (cpu64::FB, Ty::I64),
+        FC => (cpu64::FC, Ty::I64),
+        FS_BASE => (cpu64::FS_BASE, Ty::I64),
+        GS_BASE => (cpu64::GS_BASE, Ty::I64),
+        XMM8..=55 => (cpu64::XMM8 + (v - XMM8) * 16, Ty::V128),
+        _ => return state_home(v),
+    })
+}
 
 /// Home location of a state vreg in the CPU struct: (offset, type).
 pub fn state_home(v: V) -> Option<(u32, Ty)> {
@@ -86,10 +163,10 @@ pub fn state_home(v: V) -> Option<(u32, Ty)> {
 
 /// Size in bytes of the home of a state vreg when it is narrower than its
 /// type (the x87 control and status words are 16-bit).
-pub fn state_home_size(v: V) -> u32 {
+pub fn state_home_size(v: V, mode: Mode) -> u32 {
     match v {
         FPU_CW | FPU_SW => 2,
-        _ => match state_home(v) {
+        _ => match state_home_in(v, mode) {
             Some((_, Ty::V128)) => 16,
             Some((_, Ty::I64)) => 8,
             _ => 4,
@@ -103,7 +180,14 @@ pub fn state_name(v: V) -> Option<&'static str> {
         "fsbase", "gsbase", "ftop", "fcw", "fsw", "mxcsr", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4",
         "xmm5", "xmm6", "xmm7", "s28", "s29", "s30", "cpu",
     ];
-    NAMES.get(v as usize).copied()
+    const NAMES64: [&str; 16] = [
+        "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15", "xmm8", "xmm9", "xmm10", "xmm11",
+        "xmm12", "xmm13", "xmm14", "xmm15",
+    ];
+    match v {
+        R8..=55 => NAMES64.get((v - R8) as usize).copied(),
+        _ => NAMES.get(v as usize).copied(),
+    }
 }
 
 // ---- Conditions ----------------------------------------------------------
@@ -214,6 +298,12 @@ pub enum BinOp {
     I64LtU,
     I64GtS,
     I64GtU,
+    I64LeS,
+    I64LeU,
+    I64GeS,
+    I64GeU,
+    I64Rotl,
+    I64Rotr,
     F64Add,
     F64Sub,
     F64Mul,
@@ -243,7 +333,7 @@ impl BinOp {
         use BinOp::*;
         match self {
             I64Add | I64Sub | I64Mul | I64DivS | I64DivU | I64RemS | I64RemU | I64And | I64Or
-            | I64Xor | I64Shl | I64ShrS | I64ShrU => Ty::I64,
+            | I64Xor | I64Shl | I64ShrS | I64ShrU | I64Rotl | I64Rotr => Ty::I64,
             F64Add | F64Sub | F64Mul | F64Div | F64Min | F64Max | F64Copysign => Ty::F64,
             F32Add | F32Sub | F32Mul | F32Div | F32Min | F32Max => Ty::F32,
             _ => Ty::I32,
@@ -291,6 +381,15 @@ pub enum UnOp {
     I64ExtendI32S,
     I64ExtendI32U,
     I32WrapI64,
+    I64Clz,
+    I64Ctz,
+    I64Popcnt,
+    I64Extend8S,
+    I64Extend16S,
+    I64Extend32S,
+    F64ConvertI64U,
+    F32ConvertI64S,
+    I64TruncSatF32S,
     F64Neg,
     F64Abs,
     F64Sqrt,
@@ -317,10 +416,14 @@ impl UnOp {
     pub fn result_ty(self) -> Ty {
         use UnOp::*;
         match self {
-            I64ExtendI32S | I64ExtendI32U | I64TruncSatF64S | I64ReinterpretF64 => Ty::I64,
+            I64ExtendI32S | I64ExtendI32U | I64TruncSatF64S | I64ReinterpretF64 | I64Clz
+            | I64Ctz | I64Popcnt | I64Extend8S | I64Extend16S | I64Extend32S | I64TruncSatF32S => {
+                Ty::I64
+            }
             F64Neg | F64Abs | F64Sqrt | F64Ceil | F64Floor | F64Trunc | F64Nearest
-            | F64ConvertI32S | F64ConvertI64S | F64PromoteF32 | F64ReinterpretI64 => Ty::F64,
-            F32DemoteF64 | F32ConvertI32S | F32ReinterpretI32 => Ty::F32,
+            | F64ConvertI32S | F64ConvertI64S | F64ConvertI64U | F64PromoteF32
+            | F64ReinterpretI64 => Ty::F64,
+            F32DemoteF64 | F32ConvertI32S | F32ConvertI64S | F32ReinterpretI32 => Ty::F32,
             _ => Ty::I32,
         }
     }
@@ -396,6 +499,12 @@ pub enum Helper {
     F64ToF80Hi,
     /// (significand: i64, sign/exponent: i32) -> f64
     F80ToF64,
+    /// x86-64 lazy flags: (fk: i32, fr fa fb fc: i64) -> arithmetic eflags
+    Eflags64,
+    /// x86-64 lazy flags: (cc, fk: i32, fr fa fb fc: i64) -> 0/1
+    EvalCond64,
+    /// (hi, lo, d) -> quotient of the 128-bit hi:lo by d, for hi < d.
+    DivU128,
 }
 
 impl Helper {
@@ -408,6 +517,9 @@ impl Helper {
             F64ToF80Lo => (&[F64], I64),
             F64ToF80Hi => (&[F64], I32),
             F80ToF64 => (&[I64, I32], F64),
+            Eflags64 => (&[I32, I64, I64, I64, I64], I32),
+            EvalCond64 => (&[I32, I32, I64, I64, I64, I64], I32),
+            DivU128 => (&[I64, I64, I64], I64),
         }
     }
 }
@@ -880,6 +992,9 @@ pub struct Block {
 pub struct Function {
     /// x86 address of the entry point.
     pub entry: u32,
+    pub mode: Mode,
+    /// The CPU pointer and native addresses are i64 (64-bit memory).
+    pub mem64: bool,
     /// Block 0 is the entry block.
     pub blocks: Vec<Block>,
     /// Type of every vreg, including state vregs.
@@ -888,16 +1003,41 @@ pub struct Function {
 
 impl Function {
     pub fn new(entry: u32) -> Function {
+        Function::new_in(entry, Mode::X86, false)
+    }
+
+    pub fn new_in(entry: u32, mode: Mode, mem64: bool) -> Function {
         let mut vtypes = vec![Ty::I32; NUM_STATE as usize];
         for i in 0..8 {
             vtypes[(XMM0 + i) as usize] = Ty::V128;
             vtypes[(MM0 + i) as usize] = Ty::I64;
         }
+        if mode == Mode::X64 {
+            for &g in &GPRS64 {
+                vtypes[g as usize] = Ty::I64;
+            }
+            for v in [FR, FA, FB, FC, FS_BASE, GS_BASE] {
+                vtypes[v as usize] = Ty::I64;
+            }
+            for i in 0..8 {
+                vtypes[(XMM8 + i) as usize] = Ty::V128;
+            }
+        }
+        if mem64 {
+            vtypes[CPU as usize] = Ty::I64;
+        }
         Function {
             entry,
+            mode,
+            mem64,
             blocks: vec![],
             vtypes,
         }
+    }
+
+    /// Home location of a state vreg in this function's CPU struct.
+    pub fn state_home(&self, v: V) -> Option<(u32, Ty)> {
+        state_home_in(v, self.mode)
     }
 
     pub fn new_vreg(&mut self, ty: Ty) -> V {

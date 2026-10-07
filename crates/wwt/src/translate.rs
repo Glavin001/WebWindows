@@ -12,8 +12,8 @@ use serde::Serialize;
 
 use crate::abi;
 use crate::codegen::{CodegenConfig, ModuleGen};
-use crate::discover::{scan_data_for_code_pointers, CodeSource, Discovery, SeedKind};
-use crate::ir::Function;
+use crate::discover::{scan_data_for_code_pointers_in, CodeSource, Discovery, SeedKind};
+use crate::ir::{Function, Mode};
 use crate::lift::{lift_function, LiftConfig};
 use crate::opt;
 use crate::pe::{ExportTarget, PeFile};
@@ -47,6 +47,23 @@ impl Config {
             ..Config::default()
         }
     }
+
+    /// The same settings for code of `mode` (32-bit or 64-bit x86).
+    pub fn with_mode(mut self, mode: Mode) -> Config {
+        self.lift.mode = mode;
+        self
+    }
+
+    /// Targets a 64-bit (memory64) WebAssembly memory.
+    pub fn with_mem64(mut self, mem64: bool) -> Config {
+        self.lift.mem64 = mem64;
+        self.codegen.mem64 = mem64;
+        self
+    }
+
+    pub fn mode(&self) -> Mode {
+        self.lift.mode
+    }
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -75,7 +92,13 @@ pub struct Translation {
 /// without parsing it again.
 #[derive(Serialize)]
 pub struct ImageMeta {
+    /// x86 or x86-64; the runtime picks the CPU layout from it.
+    pub mode: Mode,
+    pub machine: u16,
+    /// The base the translation was made for (where the image must load).
     pub image_base: u32,
+    /// The base in the file (differs for 64-bit images moved below 4 GB).
+    pub preferred_base: u64,
     pub size_of_image: u32,
     pub size_of_headers: u32,
     pub entry: Option<u32>,
@@ -100,7 +123,10 @@ struct Meta<'a> {
 
 pub fn image_meta(pe: &PeFile) -> ImageMeta {
     ImageMeta {
+        mode: pe.mode,
+        machine: pe.machine,
         image_base: pe.image_base,
+        preferred_base: pe.preferred_base,
         size_of_image: pe.size_of_image,
         size_of_headers: pe.size_of_headers,
         entry: pe.entry_point(),
@@ -120,9 +146,17 @@ pub fn image_meta(pe: &PeFile) -> ImageMeta {
 /// Discovers code in a PE image from all static seeds plus `profile` (code
 /// found at run time on earlier launches).
 pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Config) -> Discovery {
-    let mut d = Discovery::new();
+    let mut d = Discovery::new_in(pe.mode);
     if let Some(e) = pe.entry_point() {
         d.add_function_seed(e, SeedKind::Entry);
+    }
+    // x86-64: every function that calls or allocates stack has a `.pdata`
+    // entry.
+    for &rva in &pe.pdata {
+        let va = pe.image_base + rva;
+        if img.is_code(va) {
+            d.add_function_seed(va, SeedKind::Pdata);
+        }
     }
     for ex in &pe.exports {
         if let ExportTarget::Rva(rva) = ex.target {
@@ -150,8 +184,16 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Con
     // instruction starts are reached some other way (jump tables, calls).
     let mut candidates: BTreeSet<(u32, SeedKind)> = BTreeSet::new();
     if let Some(relocs) = &pe.relocations {
-        for &r in relocs {
-            if let Some(v) = img.read_u32(pe.image_base + r) {
+        for (k, &r) in relocs.iter().enumerate() {
+            let site = pe.image_base + r;
+            let v = if pe.reloc_types.get(k) == Some(&crate::pe::REL_DIR64) {
+                img.read_u64(site)
+                    .filter(|v| v >> 32 == 0)
+                    .map(|v| v as u32)
+            } else {
+                img.read_u32(site)
+            };
+            if let Some(v) = v {
                 // Skip values inside code that are operands of instructions in
                 // code (e.g. `push offset label`), unless they point at code.
                 if img.is_code(v) {
@@ -169,7 +211,7 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Con
             }
             let start = pe.image_base + s.virtual_address;
             let end = start + s.raw_size.min(s.mem_size());
-            for v in scan_data_for_code_pointers(img, start, end) {
+            for v in scan_data_for_code_pointers_in(img, start, end, pe.mode) {
                 candidates.insert((v, SeedKind::DataScan));
             }
         }
@@ -193,11 +235,13 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Con
         .collect();
     if !setjmp_slots.is_empty() {
         use iced_x86::{FlowControl, OpKind, Register};
+        // `[slot]`, or `[rip+slot]` in 64-bit code.
         let via_slot = |i: &iced_x86::Instruction| {
             i.op0_kind() == OpKind::Memory
-                && i.memory_base() == Register::None
+                && matches!(i.memory_base(), Register::None | Register::RIP)
                 && i.memory_index() == Register::None
-                && setjmp_slots.contains(&i.memory_displacement32())
+                && i.memory_displacement64() >> 32 == 0
+                && setjmp_slots.contains(&(i.memory_displacement64() as u32))
         };
         // Import stubs: `jmp [slot]` (how MinGW calls undeclared imports).
         let stubs: Vec<u32> = d
@@ -212,8 +256,7 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Con
             .filter(|i| {
                 (i.flow_control() == FlowControl::IndirectCall && via_slot(i))
                     || (i.flow_control() == FlowControl::Call
-                        && i.op0_kind() == OpKind::NearBranch32
-                        && stubs.contains(&i.near_branch32()))
+                        && crate::lift::branch_target(i, 0).is_some_and(|t| stubs.contains(&t)))
             })
             .map(|i| i.next_ip32())
             .collect();
@@ -226,7 +269,10 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Con
 }
 
 /// Translates a PE file ahead of time.
+/// Translates a PE file ahead of time. The mode (x86 or x86-64) comes from
+/// the file.
 pub fn translate_pe(pe: &PeFile, cfg: &Config, profile: &[u32]) -> Result<Translation> {
+    let cfg = &cfg.clone().with_mode(pe.mode);
     let img = pe.image()?;
     let mut d = discover_pe(pe, &img, profile, cfg);
     let meta = image_meta(pe);
@@ -250,7 +296,7 @@ pub fn translate_region_with_known(
     known: &[u32],
     cfg: &Config,
 ) -> Result<Translation> {
-    let mut d = Discovery::new();
+    let mut d = Discovery::new_in(cfg.mode());
     for &k in known {
         if !entries.contains(&k) {
             d.functions.insert(k);
@@ -335,7 +381,7 @@ pub fn translate_snippet(code: &[u8], base: u32, cfg: &Config) -> (Function, Vec
         base,
         bytes: code.to_vec(),
     };
-    let mut d = Discovery::new();
+    let mut d = Discovery::new_in(cfg.mode());
     d.add_function_seed(base, SeedKind::Profile);
     d.explore(&src);
     let lifted = lift_function(&src, &d, base, &cfg.lift);

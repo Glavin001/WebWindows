@@ -12,6 +12,8 @@ use iced_x86::{
     Register,
 };
 
+use crate::ir::Mode;
+use crate::lift::branch_target;
 use crate::pe::Image;
 
 /// Where code bytes come from: a PE image on disk or a snapshot of guest
@@ -24,6 +26,10 @@ pub trait CodeSource {
     fn read_u32(&self, va: u32) -> Option<u32> {
         let b = self.bytes(va);
         (b.len() >= 4).then(|| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+    fn read_u64(&self, va: u32) -> Option<u64> {
+        let b = self.bytes(va);
+        (b.len() >= 8).then(|| u64::from_le_bytes(b[..8].try_into().unwrap()))
     }
     /// Whether a value stored at `va` can be assumed to stay constant, so a
     /// jump table there can be trusted (read-only data or code).
@@ -70,10 +76,15 @@ pub struct JumpTable {
     pub base: u32,
     /// Targets in table order.
     pub targets: Vec<u32>,
+    /// Bytes per entry: 4, or 8 for x86-64 tables of absolute addresses.
+    /// The jump's table load reads entry `(load address - base) / size`.
+    pub entry_size: u32,
 }
 
 #[derive(Debug, Default)]
 pub struct Discovery {
+    /// 32-bit or 64-bit code (selects the decoder).
+    pub mode: Mode,
     pub insts: HashMap<u32, Instruction>,
     /// Addresses where a basic block must start.
     pub leaders: BTreeSet<u32>,
@@ -99,15 +110,21 @@ pub enum SeedKind {
     DataScan,
     Profile,
     Call,
+    /// x86-64 `.pdata` function table.
+    Pdata,
 }
 
 pub fn decode_one(src: &dyn CodeSource, va: u32) -> Option<Instruction> {
+    decode_one_in(src, va, Mode::X86)
+}
+
+pub fn decode_one_in(src: &dyn CodeSource, va: u32, mode: Mode) -> Option<Instruction> {
     let bytes = src.bytes(va);
     if bytes.is_empty() {
         return None;
     }
     let n = bytes.len().min(15);
-    let mut d = Decoder::with_ip(32, &bytes[..n], va as u64, DecoderOptions::NONE);
+    let mut d = Decoder::with_ip(mode.bitness(), &bytes[..n], va as u64, DecoderOptions::NONE);
     let i = d.decode();
     (i.code() != Code::INVALID).then_some(i)
 }
@@ -134,6 +151,13 @@ impl Discovery {
         Discovery::default()
     }
 
+    pub fn new_in(mode: Mode) -> Discovery {
+        Discovery {
+            mode,
+            ..Discovery::default()
+        }
+    }
+
     pub fn add_function_seed(&mut self, va: u32, kind: SeedKind) {
         self.functions.insert(va);
         self.leaders.insert(va);
@@ -157,7 +181,7 @@ impl Discovery {
                 }
                 let inst = match self.insts.get(&va) {
                     Some(i) => *i,
-                    None => match decode_one(src, va) {
+                    None => match decode_one_in(src, va, self.mode) {
                         Some(i) => {
                             self.insts.insert(va, i);
                             i
@@ -187,19 +211,18 @@ impl Discovery {
                         continue;
                     }
                     FlowControl::ConditionalBranch => {
-                        if inst.op0_kind() == OpKind::NearBranch32 {
-                            push(self, inst.near_branch32(), false);
+                        if let Some(t) = branch_target(&inst, 0) {
+                            push(self, t, false);
                         }
                         push(self, next, false);
                     }
                     FlowControl::UnconditionalBranch => {
-                        if inst.op0_kind() == OpKind::NearBranch32 {
-                            push(self, inst.near_branch32(), false);
+                        if let Some(t) = branch_target(&inst, 0) {
+                            push(self, t, false);
                         }
                     }
                     FlowControl::Call => {
-                        if inst.op0_kind() == OpKind::NearBranch32 {
-                            let t = inst.near_branch32();
+                        if let Some(t) = branch_target(&inst, 0) {
                             // `call $+5` is a get-PC idiom, not a call.
                             push(self, t, t != next);
                         }
@@ -207,7 +230,11 @@ impl Discovery {
                     }
                     FlowControl::IndirectCall => push(self, next, false),
                     FlowControl::IndirectBranch => {
-                        if let Some(jt) = find_jump_table(self, src, va, &inst) {
+                        let jt = match self.mode {
+                            Mode::X86 => find_jump_table(self, src, va, &inst),
+                            Mode::X64 => find_jump_table64(self, src, va, &inst),
+                        };
+                        if let Some(jt) = jt {
                             for &t in &jt.targets {
                                 push(self, t, false);
                             }
@@ -433,7 +460,172 @@ fn find_jump_table(
     if targets.is_empty() {
         return None;
     }
-    Some(JumpTable { base, targets })
+    Some(JumpTable {
+        base,
+        targets,
+        entry_size: 4,
+    })
+}
+
+/// The instructions of the block before `jmp_va` (walking back through
+/// fall-through predecessors), ending with the jump.
+fn block_before(d: &Discovery, jmp_va: u32, jmp: &Instruction) -> Vec<Instruction> {
+    let mut insts = vec![*jmp];
+    let mut va = jmp_va;
+    while insts.len() < 12 {
+        let Some(p) = d.prev_inst(va) else { break };
+        if matches!(
+            p.flow_control(),
+            FlowControl::UnconditionalBranch | FlowControl::Return | FlowControl::IndirectBranch
+        ) {
+            break;
+        }
+        insts.push(p);
+        va = p.ip32();
+    }
+    insts.reverse();
+    insts
+}
+
+/// The last instruction before `idx` whose first operand is register `r`
+/// (any size), and its index.
+fn last_write(insts: &[Instruction], idx: usize, r: Register) -> Option<(usize, Instruction)> {
+    let full = r.full_register();
+    (0..idx).rev().find_map(|j| {
+        let i = &insts[j];
+        (i.op_count() > 0
+            && i.op0_kind() == OpKind::Register
+            && i.op0_register().full_register() == full)
+            .then_some((j, *i))
+    })
+}
+
+/// A constant address loaded into `r` before `idx` (`lea r, [rip+X]` or
+/// `mov r, imm`).
+fn const_reg(insts: &[Instruction], idx: usize, r: Register) -> Option<u64> {
+    let (_, i) = last_write(insts, idx, r)?;
+    match i.mnemonic() {
+        Mnemonic::Lea if i.memory_index() == Register::None => match i.memory_base() {
+            Register::RIP | Register::None => Some(i.memory_displacement64()),
+            _ => None,
+        },
+        Mnemonic::Mov if matches!(i.op1_kind(), OpKind::Immediate64 | OpKind::Immediate32to64) => {
+            Some(i.immediate(1))
+        }
+        _ => None,
+    }
+}
+
+/// x86-64 jump tables:
+/// * `jmp [table + index*8]`: absolute 8-byte entries;
+/// * `lea b, [rip+X]; mov e, [b + index*4 + D]; add r, b; jmp r`: 4-byte
+///   entries relative to X, the image base for MSVC (D is the table's RVA)
+///   and the table itself for GCC and Clang (`movsxd`, D = 0).
+fn find_jump_table64(
+    d: &Discovery,
+    src: &dyn CodeSource,
+    jmp_va: u32,
+    jmp: &Instruction,
+) -> Option<JumpTable> {
+    let insts = block_before(d, jmp_va, jmp);
+    let jidx = insts.len() - 1;
+    let bound = find_bound(&insts);
+    let limit = bound.unwrap_or(1024).min(4096);
+    let jmp_section_code = src.is_code(jmp_va);
+    if !jmp_section_code {
+        return None;
+    }
+    let mut targets = vec![];
+    if jmp.op0_kind() == OpKind::Memory {
+        if jmp.memory_base() != Register::None
+            || jmp.memory_index() == Register::None
+            || jmp.memory_index_scale() != 8
+        {
+            return None;
+        }
+        let base = jmp.memory_displacement64();
+        if base >> 32 != 0 {
+            return None;
+        }
+        let base = base as u32;
+        if !src.is_readonly(base) && !src.is_code(base) {
+            return None;
+        }
+        for k in 0..limit {
+            let Some(t) = src.read_u64(base + k * 8) else {
+                break;
+            };
+            if t >> 32 != 0 || !src.is_code(t as u32) {
+                break;
+            }
+            if bound.is_none() && k > 0 && d.functions.contains(&(base + k * 8)) {
+                break;
+            }
+            targets.push(t as u32);
+        }
+        return (!targets.is_empty()).then_some(JumpTable {
+            base,
+            targets,
+            entry_size: 8,
+        });
+    }
+    if jmp.op0_kind() != OpKind::Register {
+        return None;
+    }
+    // add r, b (either order)
+    let (aidx, add) = last_write(&insts, jidx, jmp.op0_register())?;
+    if add.mnemonic() != Mnemonic::Add || add.op1_kind() != OpKind::Register {
+        return None;
+    }
+    let (r1, r2) = (add.op0_register(), add.op1_register());
+    // The load of one operand from [b + index*4 + D].
+    for (loaded, other) in [(r1, r2), (r2, r1)] {
+        let Some((lidx, load)) = last_write(&insts, aidx, loaded) else {
+            continue;
+        };
+        if !matches!(load.mnemonic(), Mnemonic::Mov | Mnemonic::Movsxd)
+            || load.op1_kind() != OpKind::Memory
+            || load.memory_size().size() != 4
+            || load.memory_index() == Register::None
+            || load.memory_index_scale() != 4
+        {
+            continue;
+        }
+        let b = load.memory_base();
+        if b == Register::None || b.full_register() != other.full_register() {
+            continue;
+        }
+        let Some(x) = const_reg(&insts, lidx, b) else {
+            continue;
+        };
+        let base = x.wrapping_add(load.memory_displacement64());
+        if base >> 32 != 0 || x >> 32 != 0 {
+            return None;
+        }
+        let base = base as u32;
+        if !src.is_readonly(base) && !src.is_code(base) {
+            return None;
+        }
+        for k in 0..limit {
+            let Some(e) = src.read_u32(base + k * 4) else {
+                break;
+            };
+            let t = (x as u32).wrapping_add(e);
+            if !src.is_code(t) {
+                break;
+            }
+            if bound.is_none() && k > 0 && d.functions.contains(&(base + k * 4)) {
+                break;
+            }
+            targets.push(t);
+        }
+        return (!targets.is_empty()).then_some(JumpTable {
+            base,
+            targets,
+            entry_size: 4,
+        });
+    }
+    None
 }
 
 /// Looks for `cmp x, imm` followed by `ja`/`jae` guarding the jump.
@@ -461,11 +653,39 @@ fn find_bound(insts: &[Instruction]) -> Option<u32> {
 /// starts in code, returning plausible code pointers (vtables, callback
 /// tables). Each candidate is confirmed by decoding a few instructions.
 pub fn scan_data_for_code_pointers(src: &dyn CodeSource, start: u32, end: u32) -> Vec<u32> {
+    scan_data_for_code_pointers_in(src, start, end, Mode::X86)
+}
+
+/// [`scan_data_for_code_pointers`] for `mode`: x86-64 pointers are 8-byte
+/// values at 8-byte alignment.
+pub fn scan_data_for_code_pointers_in(
+    src: &dyn CodeSource,
+    start: u32,
+    end: u32,
+    mode: Mode,
+) -> Vec<u32> {
     let mut out = vec![];
+    if mode == Mode::X64 {
+        let mut va = (start + 7) & !7;
+        while va + 8 <= end {
+            if let Some(v) = src.read_u64(va) {
+                if v >> 32 == 0
+                    && src.is_code(v as u32)
+                    && plausible_function_start(src, v as u32, mode)
+                {
+                    out.push(v as u32);
+                }
+            }
+            va += 8;
+        }
+        out.sort_unstable();
+        out.dedup();
+        return out;
+    }
     let mut va = start;
     while va + 4 <= end {
         if let Some(v) = src.read_u32(va) {
-            if src.is_code(v) && plausible_function_start(src, v) {
+            if src.is_code(v) && plausible_function_start(src, v, mode) {
                 out.push(v);
             }
         }
@@ -476,10 +696,10 @@ pub fn scan_data_for_code_pointers(src: &dyn CodeSource, start: u32, end: u32) -
     out
 }
 
-fn plausible_function_start(src: &dyn CodeSource, va: u32) -> bool {
+fn plausible_function_start(src: &dyn CodeSource, va: u32, mode: Mode) -> bool {
     let mut a = va;
     for _ in 0..4 {
-        let Some(i) = decode_one(src, a) else {
+        let Some(i) = decode_one_in(src, a, mode) else {
             return false;
         };
         if matches!(
