@@ -65,6 +65,34 @@ node tools/bench/ab.mjs --wine "target/bench/suite-apibench.exe 2" \
   "old=WWT=/path/to/old/wwt" new=           # two translator builds
 ```
 
+Results (`suite.mjs`, median of 3, seconds; shared 4-vCPU container, Node
+22; the reference is native for portable workloads, native Wine for
+apibench). "Before" is the suite's first run (commit `e2032ca`), "after"
+adds the call ABI work, the native heap and relocation-only discovery:
+
+| Workload | native | emcc | wine | wwt-wine before | wwt-wine after | after vs ref |
+| --- | --- | --- | --- | --- | --- | --- |
+| coremark | 1.38 | 1.39 | 1.31 | 2.32 | 2.23 | 62% |
+| sqlite/speedtest1 | 4.40 | 4.58 | 31.0 | 11.50 | 10.19 | 43% |
+| lua/fib | 0.041 | 0.076 | 0.037 | 0.232 | 0.192 | 21% |
+| lua/tables | 0.363 | 0.560 | 0.297 | 1.067 | 1.038 | 35% |
+| lua/strings | 0.199 | 0.240 | 0.209 | 0.854 | 0.746 | 27% |
+| lua/sort | 0.448 | 0.590 | 0.449 | 1.523 | 1.263 | 35% |
+| lua/objects | 0.705 | 1.094 | 0.857 | 4.363 | 3.129 | 23% |
+| lua/float | 0.412 | 0.938 | 0.400 | 1.455 | 1.290 | 32% |
+| apibench/heap | — | — | 0.062 | 0.190 | 0.039 | 159% |
+| apibench/malloc | — | — | 0.060 | 0.168 | 0.050 | 120% |
+| apibench/files | — | — | 1.006 | 0.187 | 0.129 | 780% |
+| apibench/seek | — | — | 0.178 | 0.135 | 0.133 | 134% |
+| apibench/strings | — | — | 0.819 | 3.801 | 3.146 | 26% |
+| apibench/sync | — | — | 0.063 | 0.168 | 0.132 | 48% |
+| apibench/qsort | — | — | 0.227 | 0.987 | 0.849 | 27% |
+| **geometric mean** | | | | **38%** | **54%** | |
+
+(Wine running natively is slow on SQLite and the file workloads because of
+its real file system; the translated tier's files live in memory. The
+registry workload is not counted: the runtime has no registry yet.)
+
 What running real programs found that CoreMark could not:
 
 - **The Wine runtime's file system** wrote to the wrong offset, copied a
