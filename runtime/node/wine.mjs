@@ -10,6 +10,8 @@
 //                     "500:click 20,80; 900:text Hi; 1200:key Enter"
 //                     (click/rclick/move X,Y; key CODE as in KeyboardEvent.code;
 //                     text types letters, digits and spaces)
+//   --file HOST[=DOS] put a host file in the guest's file system (default
+//                     C:\<name>), e.g. a script or document the program reads
 //
 // Wine's PE DLLs come from WINE_BUILD (default /opt/wine-build) and its NLS
 // files from WINE_SRC; translations are cached in target/wine-cache.
@@ -51,14 +53,17 @@ function translate(path, bytes) {
   // Keyed by the image and the translator build, so a rebuilt translator
   // never serves stale translations.
   const t = statSync(wwt());
-  const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}`).digest('hex').slice(0, 16);
+  // WWT_TRANSLATE_FLAGS: extra `wwt translate` options, for A/B tests
+  // (tools/bench/ab.mjs --wine); part of the cache key.
+  const extra = (process.env.WWT_TRANSLATE_FLAGS ?? '').split(/\s+/).filter(Boolean);
+  const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}:${extra.join(' ')}`).digest('hex').slice(0, 16);
   const out = join(cacheDir, `${path.split('\\').pop()}-${hash}.wasm`);
   if (!existsSync(out)) {
     // Several runners share the cache: write under a per-process name and
     // rename, so a reader never sees a partial file.
     const tmp = join(cacheDir, `${hash}.${process.pid}`);
     writeFileSync(`${tmp}.bin`, bytes);
-    execFileSync(wwt(), ['translate', `${tmp}.bin`, '-o', `${tmp}.wasm`, '--guest-limit-mb', String(GUEST_LIMIT >>> 20)], {
+    execFileSync(wwt(), ['translate', `${tmp}.bin`, '-o', `${tmp}.wasm`, '--guest-limit-mb', String(GUEST_LIMIT >>> 20), ...extra], {
       stdio: ['ignore', 'ignore', 'inherit'],
     });
     renameSync(`${tmp}.wasm`, out);
@@ -73,6 +78,7 @@ let unixTrace = false;
 let screenshot = null;
 let runFor = Infinity;
 let script = [];
+const extraFiles = [];
 // Wine's Unix side compiled with Emscripten (native/wine-unix): on when built,
 // unless --no-unix.
 const unixDir = join(root, 'target/wine-unix');
@@ -89,6 +95,10 @@ while (args[0]?.startsWith('--')) {
   // ... or once it has run this long (programs with timers never go idle).
   else if (a === '--run-for') runFor = Number(args.shift());
   else if (a === '--input') script = parseInput(args.shift());
+  else if (a === '--file') {
+    const [host, dos] = args.shift().split('=');
+    extraFiles.push([host, (dos ?? `C:\\${basename(host)}`).toLowerCase()]);
+  }
 }
 
 /** "ms:action args; ..." -> [{at, push(display)}], in time order. */
@@ -154,6 +164,7 @@ for (const f of readdirSync(join(wineSrc, 'nls'))) {
 files.set('c:\\windows\\globalization\\sorting\\sortdefault.nls', files.get(`${sys32}\\sortdefault.nls`));
 const exeDos = `c:\\${basename(exe).toLowerCase()}`;
 files.set(exeDos, readFileSync(exe));
+for (const [host, dos] of extraFiles) files.set(dos, readFileSync(host));
 
 mkdirSync(cacheDir, { recursive: true });
 const abi = JSON.parse(execFileSync(wwt(), ['abi']).toString());

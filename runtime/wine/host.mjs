@@ -139,6 +139,7 @@ export class WineHost {
     this.m = machine;
     this.translate = opts.translate;
     this.files = opts.files;
+    this.dirs = indexDirectories(this.files);
     // The side-by-side store wineboot would have filled.
     installAssemblies(this.files);
     this.stdout = opts.stdout ?? (() => {});
@@ -280,10 +281,7 @@ export class WineHost {
   }
 
   isDir(dosPath) {
-    if (/^[a-z]:$/.test(dosPath)) return true;
-    const prefix = dosPath + '\\';
-    for (const k of this.files.keys()) if (k.startsWith(prefix)) return true;
-    return false;
+    return /^[a-z]:$/.test(dosPath) || this.dirs.has(dosPath);
   }
 
   // ---- Images ----------------------------------------------------------------
@@ -704,3 +702,28 @@ export class WineHost {
 }
 
 export { EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI, MEM_PRIVATE };
+
+/**
+ * The directories of an in-memory file system (path -> bytes): every
+ * ancestor of every file, kept up to date as files are added. Directories
+ * stay when their files are deleted, as on Windows. Programs probe for
+ * missing files often (SQLite checks for its journal on every transaction),
+ * and each probe asks whether the path is a directory.
+ */
+function indexDirectories(files) {
+  const dirs = new Set();
+  const add = (path) => {
+    for (let i = path.lastIndexOf('\\'); i > 0; i = path.lastIndexOf('\\', i - 1)) {
+      const d = path.slice(0, i);
+      if (dirs.has(d)) break;
+      dirs.add(d);
+    }
+  };
+  for (const k of files.keys()) add(k);
+  const set = files.set.bind(files);
+  files.set = (k, v) => {
+    if (!files.has(k)) add(k);
+    return set(k, v);
+  };
+  return dirs;
+}
