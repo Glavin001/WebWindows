@@ -119,12 +119,14 @@ function dgOptions(src) {
   return flags;
 }
 
-/** Expected torture failures: name -> { opts, reason }. */
+/** Expected torture failures: name -> { opts, reason }. Levels may name an
+ * architecture (`x64:O2`), for failures of one compiler only. */
 const xfail = new Map();
 if (torture) {
   for (const line of readFileSync(join(here, 'torture-xfail.txt'), 'utf8').split('\n')) {
-    const m = line.match(/^(\S+)\s+(\S+)\s+(.*)$/);
-    if (m && !line.startsWith('#')) xfail.set(m[1], { opts: m[2] === '*' ? null : m[2].split(','), reason: m[3] });
+    const m = line.match(/^(\S+)\s+(?:(x86|x64):)?(\S+)\s+(.*)$/);
+    if (!m || line.startsWith('#') || (m[2] && m[2] !== arch)) continue;
+    xfail.set(m[1], { opts: m[3] === '*' ? null : m[3].split(','), reason: m[4] });
   }
 }
 const expectFail = (name, opt) => {
