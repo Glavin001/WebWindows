@@ -20,7 +20,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync,
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { parsePe, rebaseImage } from '../wine/host.mjs';
+import { parsePe, peImports as imports, rebaseImage } from '../wine/host.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const out = resolve(process.argv[2] ?? join(root, 'target/wine-bundle'));
@@ -32,9 +32,14 @@ const GUI_DLLS = [
   'advapi32', 'sechost', 'user32', 'gdi32', 'win32u', 'imm32', 'combase', 'comctl32', 'coml2', 'cryptbase',
   'ole32', 'rpcrt4', 'uxtheme', 'comdlg32', 'shcore', 'shell32', 'shlwapi', 'comctl32_v6', 'oleaut32',
 ];
-// Direct3D (wined3d with its WebGPU backend): loaded only by programs that
-// mention Direct3D, since wined3d is large.
-const D3D_DLLS = ['wined3d', 'd3d9'];
+// Sound, DirectDraw, Direct3D and DirectInput (Milestone 5): fetched only
+// for programs that use one of them (wined3d alone is megabytes), see
+// runtime/web/worker.mjs. wined3d draws Direct3D with its WebGPU backend
+// and needs no opengl32.
+const MEDIA_DLLS = [
+  'version', 'winmm', 'msacm32', 'dsound', 'mmdevapi', 'winepulse.drv', 'ddraw', 'wined3d', 'd3d9',
+  'dinput', 'dinput8', 'hid', 'setupapi',
+];
 // Translator flags per DLL. The Direct3D DLLs never write code, so their
 // stores skip the self-modifying-code check (the C runtime's memcpy, which
 // could copy code for a program, keeps it); the same list is in wine.mjs.
@@ -68,15 +73,12 @@ const withUnix = existsSync(join(unixDir, 'wine_unix.mjs'));
 
 mkdirSync(out, { recursive: true });
 const manifest = { wine: '11.0', dlls: {}, nls: [] };
-const dllPath = (d) => join(wineBuild, 'dlls', d, 'i386-windows', `${d}.dll`);
+const fileName = (d) => (d.includes('.') ? d : `${d}.dll`);
+const dllPath = (d) => join(wineBuild, 'dlls', d, 'i386-windows', fileName(d));
 let nextBase = PRELINK_BASE;
-const d3d = withUnix ? D3D_DLLS.filter((d) => existsSync(dllPath(d))) : [];
-if (withUnix && d3d.length !== D3D_DLLS.length) {
-  console.warn(`skipping Direct3D: run tools/wine/build.sh ${D3D_DLLS.join(' ')}`);
-  d3d.length = 0;
-}
-for (const d of [...DLLS, ...(withUnix ? GUI_DLLS : []), ...d3d]) {
+for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS] : [])]) {
   const pe = dllPath(d);
+  const name = fileName(d);
   if (!existsSync(pe)) {
     console.error(`missing ${pe}; run tools/wine/build.sh ${d}`);
     process.exit(1);
@@ -90,9 +92,10 @@ for (const d of [...DLLS, ...(withUnix ? GUI_DLLS : []), ...d3d]) {
       nextBase += (info.sizeOfImage + 0xffff) & ~0xffff;
     }
   }
-  writeFileSync(join(out, `${d}.dll`), bytes);
-  execFileSync(wwt, ['translate', ...(TRANSLATE_FLAGS[d] ?? []), join(out, `${d}.dll`), '-o', join(out, `${d}.dll.wasm`)], { stdio: ['ignore', 'ignore', 'inherit'] });
-  manifest.dlls[`${d}.dll`] = { pe: `${d}.dll`, wasm: `${d}.dll.wasm`, ...(d3d.includes(d) && { group: 'd3d' }) };
+  writeFileSync(join(out, name), bytes);
+  const media = MEDIA_DLLS.includes(d);
+  execFileSync(wwt, ['translate', ...(TRANSLATE_FLAGS[d] ?? []), join(out, name), '-o', join(out, `${name}.wasm`)], { stdio: ['ignore', 'ignore', 'inherit'] });
+  manifest.dlls[name] = { pe: name, wasm: `${name}.wasm`, ...(media && { group: 'media' }) };
 }
 for (const n of NLS) {
   copyFileSync(join(wineSrc, 'nls', `${n}.nls`), join(out, `${n}.nls`));
@@ -143,23 +146,3 @@ if (missing.size) {
 writeFileSync(join(out, 'manifest.json'), JSON.stringify(manifest, null, 2));
 rmSync(join(out, '.strip.tmp'), { force: true });
 console.log(`Wine bundle in ${out}${withUnix ? ' (with the Unix side, for windowed programs)' : ''}`);
-
-/** Names (lowercase) of the DLLs a PE image imports. */
-function imports(bytes) {
-  const info = parsePe(bytes);
-  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const off = (rva) => {
-    const sec = info.sections.find((x) => rva >= x.virtual_address && rva < x.virtual_address + Math.max(x.virtual_size, x.raw_size));
-    return sec ? rva - sec.virtual_address + sec.raw_offset : -1;
-  };
-  const opt = dv.getUint32(0x3c, true) + 24;
-  const names = [];
-  // Data directory 1: import descriptors of 20 bytes, ended by a zero one.
-  for (let d = off(dv.getUint32(opt + 96 + 8, true)); d >= 0 && dv.getUint32(d + 12, true); d += 20) {
-    let p = off(dv.getUint32(d + 12, true));
-    let name = '';
-    while (bytes[p]) name += String.fromCharCode(bytes[p++]);
-    names.push(name.toLowerCase());
-  }
-  return names;
-}

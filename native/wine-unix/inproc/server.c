@@ -42,7 +42,7 @@
 /* fd.c (see prepare.py) */
 extern int wasm_server_poll(void);
 
-static struct thread *inproc_thread;
+static struct thread *inproc_thread;  /* the thread requests come from */
 static int wait_pipe[2] = { -1, -1 };
 
 #define CLIENT_REPLY_FD 1000
@@ -104,6 +104,52 @@ EMSCRIPTEN_KEEPALIVE int wasm_server_new_process(void)
 EMSCRIPTEN_KEEPALIVE int wasm_server_client_reply_fd(void) { return CLIENT_REPLY_FD; }
 EMSCRIPTEN_KEEPALIVE int wasm_server_client_wait_fd(void) { return CLIENT_WAIT_FD; }
 
+/* Threads (Milestone 5). Each Windows thread has its own server thread;
+ * the host runs one at a time and selects the one requests come from. */
+void *wasm_server_get_thread(void) { return inproc_thread; }
+void wasm_server_set_thread( void *thread ) { inproc_thread = thread; }
+
+/* The request pipe a new thread gets: new_thread receives its read end as
+ * an fd the calling thread sent. The write end stays open for the thread's
+ * life (the server ends a thread whose request pipe closes). */
+int wasm_server_send_request_fd( int *write_end )
+{
+    int request_pipe[2];
+
+    if (!inproc_thread || pipe( request_pipe ) == -1) return -1;
+    thread_add_inflight_fd( inproc_thread, request_pipe[0], request_pipe[0] );
+    *write_end = request_pipe[1];
+    return request_pipe[0];
+}
+
+/* Gives a thread new_thread created its reply and wait pipes (sent over the
+ * socket in Wine) and returns it, holding a reference; the client end of
+ * the wait pipe goes to `wait_fd`. */
+void *wasm_server_thread_setup( unsigned int tid, int *wait_fd )
+{
+    int reply_pipe[2], thread_wait[2];
+    struct thread *thread = get_thread_from_id( tid );
+
+    if (!thread) return NULL;
+    if (pipe( reply_pipe ) == -1 || pipe( thread_wait ) == -1) fatal_error( "pipe: %s\n", strerror( errno ));
+    fcntl( thread_wait[0], F_SETFL, O_NONBLOCK );
+    thread_add_inflight_fd( thread, CLIENT_REPLY_FD, reply_pipe[1] );
+    thread_add_inflight_fd( thread, CLIENT_WAIT_FD, thread_wait[1] );
+    *wait_fd = thread_wait[0];
+    return thread;
+}
+
+/* A thread ended (it asked the server to terminate itself, or another
+ * thread terminated it): the server marks it terminated, which wakes
+ * waiters on it, and the reference from setup is dropped. */
+void wasm_server_thread_ended( void *ptr )
+{
+    struct thread *thread = ptr;
+
+    if (thread->state != TERMINATED) kill_thread( thread, 0 );
+    release_object( thread );
+}
+
 /* One request: the client's struct __server_request_info in, the reply in
  * the same buffer out. */
 EMSCRIPTEN_KEEPALIVE unsigned int wasm_server_call( void *req_ptr )
@@ -131,6 +177,9 @@ EMSCRIPTEN_KEEPALIVE unsigned int wasm_server_call( void *req_ptr )
     }
 
     current = thread;
+    /* The server's clock moves only when its loop runs; a request with a
+     * timeout of "now" (a poll) must see it expired, not wait for it. */
+    set_current_time();
     thread->reply_size = 0;
     clear_error();
     memset( &reply, 0, sizeof(reply) );

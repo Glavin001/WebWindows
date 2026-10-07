@@ -15,7 +15,8 @@ const results = readdirSync(dir)
 let bad = 0;
 let ran = 0;
 for (const r of results) {
-  if (r.status !== 'pass') continue;
+  // Programs that need what CI's Windows machines lack (a sound device).
+  if (r.status !== 'pass' || r.native === false) continue;
   // Results name their executable (torture tests share names with ours and
   // live in a subdirectory, which CI does not upload).
   const exe = join(dir, r.exe ?? `${r.name}-${r.opt}.exe`);

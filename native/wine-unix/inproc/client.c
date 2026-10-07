@@ -45,13 +45,18 @@ EM_JS( int, host_wait, (int ms), {
     return Module.hostWait ? Module.hostWait(ms) : -1;
 });
 
+extern void *wasm_server_get_thread(void);
+extern void wasm_server_set_thread( void *thread );
+extern int wasm_server_send_request_fd( int *write_end );
+extern void *wasm_server_thread_setup( unsigned int tid, int *wait_fd );
+extern void wasm_server_thread_ended( void *thread );
+
 /* Whether the page queued keyboard or mouse input. */
 EM_JS( int, host_has_input, (void), {
     return Module.display?.hasInput() ? 1 : 0;
 });
 
 static TEB *current_teb;
-static int wait_fd = -1;
 
 /* Input reaches Wine in the waits below. A program that polls for messages
  * instead (a game's PeekMessage-then-render loop) never waits, but win32u
@@ -68,6 +73,185 @@ int sched_yield(void)
 TEB * WINAPI NtCurrentTeb(void)
 {
     return current_teb;
+}
+
+/* Threads (Milestone 5): the host runs Windows threads one at a time and
+ * switches between them; each has its TEB and its server thread. */
+static struct inproc_thread
+{
+    TEB  *teb;
+    void *server;       /* struct thread in the server */
+    int   request_end;  /* write end of its request pipe */
+} threads[256];
+
+static struct inproc_thread *find_thread( TEB *teb )
+{
+    unsigned int i;
+    for (i = 0; i < ARRAY_SIZE(threads); i++) if (threads[i].teb == teb) return &threads[i];
+    return NULL;
+}
+
+/* Makes `teb`'s thread the current one: NtCurrentTeb() and the thread
+ * server requests come from. */
+EMSCRIPTEN_KEEPALIVE void wasm_switch_thread( TEB *teb )
+{
+    struct inproc_thread *t = find_thread( teb );
+    current_teb = teb;
+    if (t) wasm_server_set_thread( t->server );
+}
+
+/* NtCreateThreadEx's server part, called on the creating thread: the host
+ * built the new thread's TEB and stack. The new thread introduces itself to
+ * the server (init_thread) as start_thread does. */
+EMSCRIPTEN_KEEPALIVE unsigned int wasm_create_thread( TEB *teb, unsigned int flags, unsigned int access,
+                                                       HANDLE *handle, unsigned int *tid_ret )
+{
+    struct inproc_thread *t = find_thread( NULL );
+    struct ntdll_thread_data *data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
+    TEB *parent = current_teb;
+    unsigned int ret, tid = 0;
+    int request_fd, request_end, wait;
+
+    if (!t) return STATUS_TOO_MANY_THREADS;
+    if ((request_fd = wasm_server_send_request_fd( &request_end )) == -1) return STATUS_TOO_MANY_OPENED_FILES;
+    SERVER_START_REQ( new_thread )
+    {
+        req->process    = wine_server_obj_handle( NtCurrentProcess() );
+        req->access     = access ? access : THREAD_ALL_ACCESS;
+        req->flags      = flags;
+        req->request_fd = request_fd;
+        if (!(ret = wine_server_call( req )))
+        {
+            *handle = wine_server_ptr_handle( reply->handle );
+            tid = reply->tid;
+        }
+    }
+    SERVER_END_REQ;
+    if (ret)
+    {
+        close( request_end );
+        return ret;
+    }
+
+    t->teb = teb;
+    t->request_end = request_end;
+    if (!(t->server = wasm_server_thread_setup( tid, &wait ))) return STATUS_INTERNAL_ERROR;
+    data->request_fd = -1;
+    data->reply_fd   = wasm_server_client_reply_fd();
+    data->wait_fd[0] = wait;
+    data->wait_fd[1] = wasm_server_client_wait_fd();
+    teb->ClientId.UniqueProcess = parent->ClientId.UniqueProcess;
+    teb->ClientId.UniqueThread  = ULongToHandle( tid );
+    *tid_ret = tid;
+
+    wasm_switch_thread( teb );
+    SERVER_START_REQ( init_thread )
+    {
+        req->unix_tid = tid;
+        req->teb      = wine_server_client_ptr( teb );
+        req->entry    = 0;
+        req->reply_fd = wasm_server_client_reply_fd();
+        req->wait_fd  = wasm_server_client_wait_fd();
+        ret = wine_server_call( req );
+    }
+    SERVER_END_REQ;
+    wasm_switch_thread( parent );
+    return ret;
+}
+
+/* The current thread ends (NtTerminateThread on itself): the server marks
+ * it terminated with `status`. The host switches to another thread before
+ * the next request. */
+EMSCRIPTEN_KEEPALIVE void wasm_exit_thread( unsigned int status )
+{
+    struct inproc_thread *t = find_thread( current_teb );
+
+    SERVER_START_REQ( terminate_thread )
+    {
+        req->handle    = wine_server_obj_handle( GetCurrentThread() );
+        req->exit_code = status;
+        wine_server_call( req );
+    }
+    SERVER_END_REQ;
+    if (!t) return;
+    wasm_server_thread_ended( t->server );
+    close( t->request_end );
+    close( ntdll_get_thread_data()->wait_fd[0] );
+    memset( t, 0, sizeof(*t) );
+}
+
+/* Another thread was terminated (the server already marked it). */
+EMSCRIPTEN_KEEPALIVE void wasm_forget_thread( TEB *teb )
+{
+    struct inproc_thread *t = find_thread( teb );
+
+    if (!t) return;
+    wasm_server_thread_ended( t->server );
+    close( t->request_end );
+    close( ((struct ntdll_thread_data *)&teb->GdiTebBatch)->wait_fd[0] );
+    memset( t, 0, sizeof(*t) );
+}
+
+/* Server requests the host needs for threads it schedules. */
+EMSCRIPTEN_KEEPALIVE unsigned int wasm_thread_info( HANDLE handle, unsigned int *tid, unsigned int *exit_code,
+                                                    unsigned int *teb )
+{
+    unsigned int ret;
+
+    SERVER_START_REQ( get_thread_info )
+    {
+        req->handle = wine_server_obj_handle( handle );
+        req->access = THREAD_QUERY_LIMITED_INFORMATION;
+        if (!(ret = wine_server_call( req )))
+        {
+            *tid = reply->tid;
+            *exit_code = reply->exit_code;
+            *teb = (unsigned int)reply->teb;
+        }
+    }
+    SERVER_END_REQ;
+    return ret;
+}
+
+EMSCRIPTEN_KEEPALIVE unsigned int wasm_terminate_thread( HANDLE handle, unsigned int status )
+{
+    unsigned int ret;
+
+    SERVER_START_REQ( terminate_thread )
+    {
+        req->handle    = wine_server_obj_handle( handle );
+        req->exit_code = status;
+        ret = wine_server_call( req );
+    }
+    SERVER_END_REQ;
+    return ret;
+}
+
+/* NtSuspendThread / NtResumeThread: the new count, or -1 with the status
+ * in `status`. */
+EMSCRIPTEN_KEEPALIVE int wasm_suspend_thread( HANDLE handle, int resume, unsigned int *status )
+{
+    int count = -1;
+
+    if (resume)
+    {
+        SERVER_START_REQ( resume_thread )
+        {
+            req->handle = wine_server_obj_handle( handle );
+            if (!(*status = wine_server_call( req ))) count = reply->count;
+        }
+        SERVER_END_REQ;
+    }
+    else
+    {
+        SERVER_START_REQ( suspend_thread )
+        {
+            req->handle = wine_server_obj_handle( handle );
+            if (!(*status = wine_server_call( req ))) count = reply->count;
+        }
+        SERVER_END_REQ;
+    }
+    return count;
 }
 
 /* Sleep (NtDelayExecution): blocks until the time given has passed, or
@@ -115,6 +299,7 @@ static int wait_select_reply( void *cookie )
 
     for (;;)
     {
+        int wait_fd = ntdll_get_thread_data()->wait_fd[0];
         int ret = read( wait_fd, &reply, sizeof(reply) );
         if (ret == sizeof(reply))
         {
@@ -313,6 +498,7 @@ EMSCRIPTEN_KEEPALIVE unsigned int wasm_init_process( TEB *teb, PEB *peb, unsigne
     USHORT machines[8];
 
     current_teb = teb;
+    threads[0].teb = teb;
     {
         /* Wine's data (fonts, NLS) on drive Z:, as ntdll's start-up would set it. */
         static const WCHAR data_dir[] = {'\\','?','?','\\','Z',':','\\','w','i','n','e','\\','s','h','a','r','e',
@@ -322,9 +508,10 @@ EMSCRIPTEN_KEEPALIVE unsigned int wasm_init_process( TEB *teb, PEB *peb, unsigne
     wasm_init_case_tables();
     browser_driver_init();
     wasm_server_start();
-    wait_fd = wasm_server_new_process();
     data = ntdll_get_thread_data();
-    data->wait_fd[0] = wait_fd;
+    data->wait_fd[0] = wasm_server_new_process();
+    threads[0].server = wasm_server_get_thread();
+    threads[0].request_end = -1;
     data->wait_fd[1] = wasm_server_client_wait_fd();
     data->reply_fd = wasm_server_client_reply_fd();
     data->request_fd = -1;

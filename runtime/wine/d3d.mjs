@@ -18,7 +18,7 @@
 import * as P from '../d3dgpu/protocol.mjs';
 
 /** The handle the host gives wined3d.dll for its unix calls. */
-export const WINED3D_UNIXLIB = 0x3000;
+export const WINED3D_UNIXLIB = 0x5000;
 
 const STATUS_SUCCESS = 0;
 const STATUS_NOT_SUPPORTED = 0xc00000bb;

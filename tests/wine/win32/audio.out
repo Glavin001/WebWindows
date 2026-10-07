@@ -1,0 +1,16 @@
+waveOut devices: 1
+waveOutOpen: 0
+waveOutWrite: 0
+buffer done: 1, after about its length (250 ms): 1
+position in samples reached the buffer's end: 1
+waveOutClose: 0
+DirectSoundCreate: 00000000
+SetCooperativeLevel: 00000000
+CreateSoundBuffer: 00000000
+Lock: 00000000, 88200 bytes
+Play: 00000000
+playing: 1
+play cursor moved: 1, within the first second: 1
+Stop: 00000000
+stopped: 1
+done

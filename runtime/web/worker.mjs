@@ -10,11 +10,12 @@
 import { Machine, ProcessExit, GuestFault } from '../runtime.mjs';
 import { Process } from '../win32.mjs';
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
-import { WineHost } from '../wine/host.mjs';
+import { WineHost, peImports } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
 import { InputRing } from '../wine/input-ring.mjs';
 import { startD3D } from '../wine/d3d.mjs';
+import { ringWriter } from '../wine/audio-sink.mjs';
 
 const log = (text) => postMessage({ type: 'log', text });
 
@@ -73,10 +74,33 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
   const files = new Map();
   const compiled = new Map();
   const sys32 = 'c:\\windows\\system32';
-  // Direct3D's DLLs only for programs that name it (imports or LoadLibrary).
-  const wantsD3D = /d3d[0-9]|ddraw/i.test(new TextDecoder('latin1').decode(exe));
+  // Direct3D 8/9 programs (imports or LoadLibrary, so by name): they get
+  // wined3d's WebGPU backend. DirectDraw keeps wined3d without 3D.
+  const wantsD3D = /d3d[89]\.dll/i.test(new TextDecoder('latin1').decode(exe));
+  // The media group (sound, DirectDraw, Direct3D) only for a program that
+  // imports one of its DLLs, itself or through a DLL of its folder, or
+  // names Direct3D.
+  const media = new Set(Object.entries(manifest.dlls).filter(([, f]) => f.group === 'media').map(([n]) => n.toLowerCase()));
+  const wantsMedia = (() => {
+    const local = new Map(Object.entries(folder).map(([rel, b]) => [rel.split('/').pop().toLowerCase(), b]));
+    const seen = new Set();
+    const visit = (bytes) => {
+      let names;
+      try {
+        names = peImports(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
+      } catch {
+        return false;
+      }
+      for (const n of names) {
+        if (media.has(n)) return true;
+        if (local.has(n) && !seen.has(n) && (seen.add(n), visit(local.get(n)))) return true;
+      }
+      return false;
+    };
+    return wantsD3D || visit(exe);
+  })();
   await Promise.all([
-    ...Object.entries(manifest.dlls).filter(([, f]) => f.group !== 'd3d' || wantsD3D).map(async ([name, f]) => {
+    ...Object.entries(manifest.dlls).filter(([, f]) => f.group !== 'media' || wantsMedia).map(async ([name, f]) => {
       const [pe, mod] = await Promise.all([
         fetch(new URL(f.pe, base)).then((r) => r.arrayBuffer()),
         // Streaming compilation: browsers cache the compiled code by URL.
@@ -182,8 +206,10 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
     stdout: (b) => postMessage({ type: 'stdout', bytes: b }),
     stderr: (b) => postMessage({ type: 'stderr', bytes: b }),
     unix,
+    audioSink: shared?.audio ? ringWriter(shared.audio.buffer, shared.audio.rate) : null,
   });
   host.boot(`${sys32}\\ntdll.dll`, exeDos);
+  await host.startClock();
   log(`Wine process ready in ${(performance.now() - t0).toFixed(0)} ms; running`);
   const tr = performance.now();
   const r = host.run();
@@ -191,7 +217,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
 }
 
 onmessage = async (e) => {
-  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, display, debug, d3dCanvas, d3dOffscreen, d3dPort } = e.data;
+  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, display, audio, debug, d3dCanvas, d3dOffscreen, d3dPort } = e.data;
   const enc = new TextEncoder();
   try {
     const t0 = performance.now();
@@ -201,7 +227,7 @@ onmessage = async (e) => {
     const key = `${await sha256(exe)}-abi${abi.version}`;
     const dir = noCache ? null : await cacheDir();
     if (wine) {
-      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, display, debug, d3dCanvas, d3dOffscreen, d3dPort });
+      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, display: display && { ...display, audio }, debug, d3dCanvas, d3dOffscreen, d3dPort });
       if (r.error) postMessage({ type: 'stderr', bytes: enc.encode(`\n*** ${r.error.message}\n`) });
       postMessage({ type: 'exit', code: r.error ? null : r.exitCode, translated: false, runMs: r.runMs, wine: true });
       return;

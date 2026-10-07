@@ -1,29 +1,26 @@
 ---
 source: crates/wwt/tests/snapshots.rs
-assertion_line: 38
 expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
 ---
 (module
   (type (;0;) (func (param i32) (result i32)))
-  (type (;1;) (func (param i32 i32 i32 i32)))
+  (type (;1;) (func (param i32 i32 i32 i32) (result i32)))
   (type (;2;) (func (param i32 i32)))
   (type (;3;) (func (param i32 f64 f64) (result f64)))
-  (type (;4;) (func (param f64) (result f64)))
-  (type (;5;) (func (param i32 i32 i32 i32 i32) (result i32)))
-  (type (;6;) (func (param i32 i32 i32 i32 i32 i32) (result i32)))
-  (import "env" "fault" (func (;0;) (type 1) (param i32 i32 i32 i32)))
+  (type (;4;) (func (param i32 i32 i32 i32 i32) (result i32)))
+  (type (;5;) (func (param i32 i32 i32 i32 i32 i32) (result i32)))
+  (import "env" "fault" (func (;0;) (type 1) (param i32 i32 i32 i32) (result i32)))
   (import "env" "code_write" (func (;1;) (type 2) (param i32 i32)))
   (import "env" "math" (func (;2;) (type 3) (param i32 f64 f64) (result f64)))
-  (import "env" "sin" (func (;3;) (type 4) (param f64) (result f64)))
-  (import "env" "cos" (func (;4;) (type 4) (param f64) (result f64)))
   (import "env" "memory" (memory (;0;) 1 65536 shared))
   (import "env" "table" (table (;0;) 1 funcref))
   (import "env" "table_base" (global (;0;) i32))
   (import "env" "lookup_l1" (global (;1;) i32))
   (import "env" "guest_limit" (global (;2;) i32))
   (import "env" "code_bitmap" (global (;3;) i32))
-  (elem (;0;) (table 0) (global.get 0) func $fib $start)
-  (func (;5;) (type 5) (param i32 i32 i32 i32 i32) (result i32)
+  (export "eflags" (func 3))
+  (elem (;0;) (table 0) (global.get 0) func 5 6)
+  (func (;3;) (type 4) (param i32 i32 i32 i32 i32) (result i32)
     block ;; label = @1
       block ;; label = @2
         block ;; label = @3
@@ -1685,14 +1682,14 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
     i32.const 2261
     i32.and
   )
-  (func (;6;) (type 6) (param i32 i32 i32 i32 i32 i32) (result i32)
+  (func (;4;) (type 5) (param i32 i32 i32 i32 i32 i32) (result i32)
     (local i32)
     local.get 1
     local.get 2
     local.get 3
     local.get 4
     local.get 5
-    call 5
+    call 3
     local.set 6
     block ;; label = @1
       block ;; label = @2
@@ -1878,7 +1875,7 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
     end
     i32.const 0
   )
-  (func $fib (;7;) (type 0) (param i32) (result i32)
+  (func (;5;) (type 0) (param i32) (result i32)
     (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i64 i32)
     local.get 0
     i32.load
@@ -2857,7 +2854,7 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                                                                 local.get 12
                                                                 i32.store offset=48
                                                                 local.get 0
-                                                                call $fib
+                                                                call 5
                                                                 local.tee 17
                                                                 i32.const 4198781
                                                                 i32.ne
@@ -3649,7 +3646,7 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
     return
     unreachable
   )
-  (func $start (;8;) (type 0) (param i32) (result i32)
+  (func (;6;) (type 0) (param i32) (result i32)
     (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i64 i64 i32 i32 i64 i32)
     local.get 0
     i32.load offset=12
@@ -4031,11 +4028,11 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
         i32.const 4199371
         i32.store offset=32
         local.get 0
-        i32.const -1073741819
+        i32.const -531169277
         i32.const 4199371
         local.get 20
         call 0
-        unreachable
+        return
       end
       local.get 15
       local.get 16
@@ -4095,7 +4092,7 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
         i32.const 4199375
         local.get 20
         call 0
-        unreachable
+        return
       end
       local.get 13
       i32.load8_u offset=57
@@ -4185,7 +4182,7 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
         local.get 12
         i32.store offset=48
         local.get 0
-        call $fib
+        call 5
         local.tee 19
         i32.const 4199396
         i32.ne
@@ -4325,11 +4322,11 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
             i32.const 4199435
             i32.store offset=32
             local.get 0
-            i32.const -1073741819
+            i32.const -531169277
             i32.const 4199435
             local.get 20
             call 0
-            unreachable
+            return
           end
           local.get 15
           local.get 16
@@ -4453,7 +4450,7 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                 i32.const 4199472
                 local.get 20
                 call 0
-                unreachable
+                return
               end
               local.get 2
               i32.load8_u
@@ -4520,11 +4517,11 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                 i32.const 4199482
                 i32.store offset=32
                 local.get 0
-                i32.const -1073741819
+                i32.const -531169277
                 i32.const 4199482
                 local.get 20
                 call 0
-                unreachable
+                return
               end
               local.get 15
               local.get 14
@@ -4630,11 +4627,11 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                   i32.const 4199504
                   i32.store offset=32
                   local.get 0
-                  i32.const -1073741819
+                  i32.const -531169277
                   i32.const 4199504
                   local.get 20
                   call 0
-                  unreachable
+                  return
                 end
                 local.get 16
                 local.get 14
@@ -4858,7 +4855,7 @@ expression: "wasmprinter::print_bytes(&t.wasm).unwrap()"
                 local.get 12
                 i32.store offset=48
                 local.get 0
-                call $fib
+                call 5
                 local.tee 19
                 i32.const 4199554
                 i32.ne

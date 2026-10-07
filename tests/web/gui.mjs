@@ -2,7 +2,10 @@
 // Windowed Wine programs in headless Chromium (Milestone 4): runs Wine's
 // Minesweeper and Notepad from the Wine bundle through the web front end,
 // checks the canvas shows them, then clicks and types on the canvas and
-// checks the programs respond. Screens are saved in target/gui.
+// checks the programs respond. Then (Milestone 5) a DirectDraw and
+// DirectSound program built here with MinGW (tests/web/ddsound.c): its
+// animation on the canvas, its tone in the page's audio ring. Screens are
+// saved in target/gui.
 //
 //   node runtime/node/wine-bundle.mjs && node tests/web/gui.mjs [--root DIR]
 //
@@ -11,7 +14,7 @@
 // instead (a Vercel share link is visited first, for its cookie). Besides
 // the canvas, whole-page screenshots are saved (page-*.png).
 
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -189,6 +192,36 @@ try {
     console.log('skipping d3d9: no WebGPU in this browser');
   }
   console.log((await page.textContent('#log')).trim());
+
+  // DirectDraw and DirectSound: a red square moving on blue, and a tone.
+  if (!site) {
+    mkdirSync(join(root, 'target/web'), { recursive: true });
+    execFileSync('i686-w64-mingw32-gcc', ['-O2', '-mwindows', '-o', join(root, 'target/web/ddsound.exe'),
+      join(repo, 'tests/web/ddsound.c'), '-lddraw', '-ldsound', '-ldxguid', '-lgdi32', '-luser32', '-lwinmm']);
+    await open(page, 'ddsound.exe', '/target/web/ddsound.exe');
+    const client = [24, 44, 344, 284];
+    const blue = ([r, g, b]) => b > 200 && r < 60 && g < 60;
+    const red = ([r, g, b]) => r > 200 && g < 60 && b < 60;
+    const drew = await until(async () => (await count(page, client, blue)) > 30000, 120000);
+    check('ddsound: DirectDraw draws in the window', drew, `${await count(page, client, blue)} blue pixels`);
+    // The square's left edge, from the red pixels along its middle row.
+    const squareX = async () => {
+      const row = await page.evaluate(() => Array.from(document.getElementById('screen').getContext('2d').getImageData(24, 164, 320, 1).data));
+      for (let i = 0; i < row.length; i += 4) if (red([row[i], row[i + 1], row[i + 2]])) return i / 4;
+      return -1;
+    };
+    const x0 = await squareX();
+    const moved = await until(async () => {
+      const x = await squareX();
+      return x >= 0 && x0 >= 0 && x !== x0;
+    }, 10000);
+    check('ddsound: the square moves', moved, `x ${x0} -> ${await squareX()}`);
+    await save(page, 'browser-ddsound.png');
+    // The tone reaches the ring the AudioWorklet reads (whether or not the
+    // headless browser lets the context play it).
+    const played = await page.evaluate(() => (window.audioRing ? new Int32Array(window.audioRing, 0, 2)[0] : -1));
+    check('ddsound: DirectSound output reaches the page', played > 1000, `${played} frames written`);
+  }
 } catch (e) {
   console.error(e);
   results.push(false);
