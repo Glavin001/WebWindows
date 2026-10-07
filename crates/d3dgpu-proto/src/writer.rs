@@ -1,5 +1,6 @@
 //! Building batches, with one method per command in Direct3D 9 terms.
 
+use crate::d3d11::*;
 use crate::d3d9::*;
 use crate::*;
 
@@ -536,5 +537,429 @@ impl Writer {
     /// A debug label (shows up in traces and GPU captures).
     pub fn marker(&mut self, text: &str) {
         self.cmd(Op::Marker, |w| w.data(DataSrc::Inline(text.as_bytes())));
+    }
+
+    // ---- Direct3D 10/11 ----
+
+    fn box3(&mut self, b: Option<&Box3>) {
+        match b {
+            Some(b) => {
+                self.u32(1);
+                for v in [b.left, b.top, b.front, b.right, b.bottom, b.back] {
+                    self.u32(v);
+                }
+            }
+            None => {
+                self.u32(0);
+                for _ in 0..6 {
+                    self.u32(0);
+                }
+            }
+        }
+    }
+
+    /// A buffer: `bind` and `misc` are `D3D11_BIND_*` / `D3D11_RESOURCE_MISC_*`,
+    /// `stride` the structure stride of structured buffers.
+    pub fn create_buffer11(&mut self, id: Handle, size: u32, bind: u32, misc: u32, stride: u32) {
+        self.cmd(Op::CreateBuffer11, |w| {
+            for v in [id.0, size, bind, misc, stride] {
+                w.u32(v);
+            }
+        });
+    }
+
+    pub fn create_texture11(&mut self, id: Handle, d: &Texture11Desc) {
+        self.cmd(Op::CreateTexture11, |w| {
+            for v in
+                [id.0, d.dim as u32, d.format.0, d.width, d.height, d.depth_or_array, d.mips, d.samples, d.bind, d.misc]
+            {
+                w.u32(v);
+            }
+        });
+    }
+
+    /// `UpdateSubresource` (subresource = mip + slice * mips; buffers use
+    /// 0 and the box's left/right as a byte range).
+    pub fn update_subresource<'a>(
+        &mut self,
+        resource: Handle,
+        subresource: u32,
+        bx: Option<&Box3>,
+        row_pitch: u32,
+        depth_pitch: u32,
+        data: impl Into<DataSrc<'a>>,
+    ) {
+        let data = data.into();
+        self.cmd(Op::UpdateSubresource, |w| {
+            w.u32(resource.0);
+            w.u32(subresource);
+            w.box3(bx);
+            w.u32(row_pitch);
+            w.u32(depth_pitch);
+            w.data(data);
+        });
+    }
+
+    pub fn create_view(&mut self, id: Handle, kind: ViewKind, resource: Handle, d: &ViewDesc) {
+        self.cmd(Op::CreateView, |w| {
+            for v in [
+                id.0,
+                kind as u32,
+                resource.0,
+                d.format.0,
+                d.dim.0,
+                d.first_mip,
+                d.mip_count,
+                d.first_slice,
+                d.slice_count,
+                d.first_element,
+                d.num_elements,
+                d.flags,
+            ] {
+                w.u32(v);
+            }
+        });
+    }
+
+    pub fn create_sampler(&mut self, id: Handle, d: &SamplerDesc11) {
+        self.cmd(Op::CreateSampler, |w| {
+            w.u32(id.0);
+            w.u32(d.filter);
+            for a in d.address {
+                w.u32(a);
+            }
+            w.f32(d.mip_lod_bias);
+            w.u32(d.max_anisotropy);
+            w.u32(d.comparison);
+            for b in d.border {
+                w.f32(b);
+            }
+            w.f32(d.min_lod);
+            w.f32(d.max_lod);
+        });
+    }
+
+    pub fn create_blend_state(&mut self, id: Handle, d: &BlendDesc11) {
+        self.cmd(Op::CreateBlendState, |w| {
+            w.u32(id.0);
+            w.u32(d.alpha_to_coverage as u32);
+            w.u32(d.independent as u32);
+            for t in &d.targets {
+                for v in [t.enable as u32, t.src, t.dst, t.op, t.src_alpha, t.dst_alpha, t.op_alpha, t.write_mask] {
+                    w.u32(v);
+                }
+            }
+        });
+    }
+
+    pub fn create_depth_stencil_state(&mut self, id: Handle, d: &DepthStencilDesc11) {
+        self.cmd(Op::CreateDepthStencilState, |w| {
+            for v in [
+                id.0,
+                d.depth_enable as u32,
+                d.depth_write as u32,
+                d.depth_func,
+                d.stencil_enable as u32,
+                d.read_mask,
+                d.write_mask,
+            ] {
+                w.u32(v);
+            }
+            for f in [d.front, d.back] {
+                for v in [f.fail, f.depth_fail, f.pass, f.func] {
+                    w.u32(v);
+                }
+            }
+        });
+    }
+
+    pub fn create_rasterizer_state(&mut self, id: Handle, d: &RasterizerDesc11) {
+        self.cmd(Op::CreateRasterizerState, |w| {
+            w.u32(id.0);
+            w.u32(d.fill);
+            w.u32(d.cull);
+            w.u32(d.front_ccw as u32);
+            w.i32(d.depth_bias);
+            w.f32(d.depth_bias_clamp);
+            w.f32(d.slope_scaled_depth_bias);
+            w.u32(d.depth_clip as u32);
+            w.u32(d.scissor as u32);
+            w.u32(d.multisample as u32);
+            w.u32(d.antialiased_line as u32);
+        });
+    }
+
+    pub fn create_input_layout(&mut self, id: Handle, elements: &[InputElement]) {
+        self.cmd(Op::CreateInputLayout, |w| {
+            w.u32(id.0);
+            w.u32(elements.len() as u32);
+            for e in elements {
+                w.u32(e.semantic.len() as u32);
+                w.bytes_padded(e.semantic.as_bytes());
+                for v in [e.semantic_index, e.format.0, e.slot, e.offset, e.per_instance as u32, e.step_rate] {
+                    w.u32(v);
+                }
+            }
+        });
+    }
+
+    /// Registers DXBC bytecode for `stage`.
+    pub fn create_shader11<'a>(&mut self, id: Handle, stage: Stage11, hash: u64, dxbc: impl Into<DataSrc<'a>>) {
+        let data = dxbc.into();
+        self.cmd(Op::CreateShader11, |w| {
+            w.u32(id.0);
+            w.u32(stage as u32);
+            w.u32(hash as u32);
+            w.u32((hash >> 32) as u32);
+            w.data(data);
+        });
+    }
+
+    pub fn set_input_layout(&mut self, id: Handle) {
+        self.cmd(Op::SetInputLayout, |w| w.u32(id.0));
+    }
+
+    pub fn set_vertex_buffers(&mut self, start: u32, buffers: &[VertexBufferBinding]) {
+        self.cmd(Op::SetVertexBuffers, |w| {
+            w.u32(start);
+            w.u32(buffers.len() as u32);
+            for b in buffers {
+                w.u32(b.buffer.0);
+                w.u32(b.stride);
+                w.u32(b.offset);
+            }
+        });
+    }
+
+    /// `format` is `R16_UINT` or `R32_UINT`.
+    pub fn set_index_buffer(&mut self, buffer: Handle, format: DxgiFormat, offset: u32) {
+        self.cmd(Op::SetIndexBuffer, |w| {
+            w.u32(buffer.0);
+            w.u32(format.0);
+            w.u32(offset);
+        });
+    }
+
+    /// `D3D11_PRIMITIVE_TOPOLOGY`.
+    pub fn set_primitive_topology(&mut self, topology: u32) {
+        self.cmd(Op::SetPrimitiveTopology, |w| w.u32(topology));
+    }
+
+    pub fn set_shader11(&mut self, stage: Stage11, id: Handle) {
+        self.cmd(Op::SetShader11, |w| {
+            w.u32(stage as u32);
+            w.u32(id.0);
+        });
+    }
+
+    pub fn set_constant_buffers(&mut self, stage: Stage11, start: u32, buffers: &[ConstantBufferBinding]) {
+        self.cmd(Op::SetConstantBuffers, |w| {
+            w.u32(stage as u32);
+            w.u32(start);
+            w.u32(buffers.len() as u32);
+            for b in buffers {
+                w.u32(b.buffer.0);
+                w.u32(b.first_constant);
+                w.u32(b.num_constants);
+            }
+        });
+    }
+
+    fn handles(&mut self, op: Op, stage: Stage11, start: u32, hs: &[Handle]) {
+        self.cmd(op, |w| {
+            w.u32(stage as u32);
+            w.u32(start);
+            w.u32(hs.len() as u32);
+            for h in hs {
+                w.u32(h.0);
+            }
+        });
+    }
+
+    pub fn set_shader_resources(&mut self, stage: Stage11, start: u32, views: &[Handle]) {
+        self.handles(Op::SetShaderResources, stage, start, views);
+    }
+
+    pub fn set_samplers(&mut self, stage: Stage11, start: u32, samplers: &[Handle]) {
+        self.handles(Op::SetSamplers, stage, start, samplers);
+    }
+
+    /// UAVs for the compute stage, or for the pixel stage (`OMSetRenderTargetsAndUnorderedAccessViews`).
+    pub fn set_unordered_access_views(&mut self, stage: Stage11, start: u32, views: &[Handle]) {
+        self.handles(Op::SetUnorderedAccessViews, stage, start, views);
+    }
+
+    pub fn set_render_targets11(&mut self, rtvs: &[Handle], dsv: Handle) {
+        self.cmd(Op::SetRenderTargets11, |w| {
+            w.u32(rtvs.len() as u32);
+            for h in rtvs {
+                w.u32(h.0);
+            }
+            w.u32(dsv.0);
+        });
+    }
+
+    pub fn set_blend_state(&mut self, id: Handle, factor: [f32; 4], sample_mask: u32) {
+        self.cmd(Op::SetBlendState, |w| {
+            w.u32(id.0);
+            for f in factor {
+                w.f32(f);
+            }
+            w.u32(sample_mask);
+        });
+    }
+
+    pub fn set_depth_stencil_state(&mut self, id: Handle, stencil_ref: u32) {
+        self.cmd(Op::SetDepthStencilState, |w| {
+            w.u32(id.0);
+            w.u32(stencil_ref);
+        });
+    }
+
+    pub fn set_rasterizer_state(&mut self, id: Handle) {
+        self.cmd(Op::SetRasterizerState, |w| w.u32(id.0));
+    }
+
+    pub fn set_viewports(&mut self, viewports: &[Viewport11]) {
+        self.cmd(Op::SetViewports, |w| {
+            w.u32(viewports.len() as u32);
+            for v in viewports {
+                for f in [v.x, v.y, v.width, v.height, v.min_depth, v.max_depth] {
+                    w.f32(f);
+                }
+            }
+        });
+    }
+
+    pub fn set_scissor_rects(&mut self, rects: &[Rect]) {
+        self.cmd(Op::SetScissorRects, |w| {
+            w.u32(rects.len() as u32);
+            for r in rects {
+                w.rect(*r);
+            }
+        });
+    }
+
+    pub fn draw11(&mut self, vertex_count: u32, start_vertex: u32, instance_count: u32, start_instance: u32) {
+        self.cmd(Op::Draw11, |w| {
+            for v in [vertex_count, start_vertex, instance_count, start_instance] {
+                w.u32(v);
+            }
+        });
+    }
+
+    pub fn draw_indexed11(
+        &mut self,
+        index_count: u32,
+        start_index: u32,
+        base_vertex: i32,
+        instance_count: u32,
+        start_instance: u32,
+    ) {
+        self.cmd(Op::DrawIndexed11, |w| {
+            w.u32(index_count);
+            w.u32(start_index);
+            w.i32(base_vertex);
+            w.u32(instance_count);
+            w.u32(start_instance);
+        });
+    }
+
+    pub fn dispatch(&mut self, x: u32, y: u32, z: u32) {
+        self.cmd(Op::Dispatch, |w| {
+            w.u32(x);
+            w.u32(y);
+            w.u32(z);
+        });
+    }
+
+    pub fn clear_render_target_view(&mut self, view: Handle, color: [f32; 4]) {
+        self.cmd(Op::ClearRenderTargetView, |w| {
+            w.u32(view.0);
+            for c in color {
+                w.f32(c);
+            }
+        });
+    }
+
+    /// `flags`: [`clear11`] bits.
+    pub fn clear_depth_stencil_view(&mut self, view: Handle, flags: u32, depth: f32, stencil: u32) {
+        self.cmd(Op::ClearDepthStencilView, |w| {
+            w.u32(view.0);
+            w.u32(flags);
+            w.f32(depth);
+            w.u32(stencil);
+        });
+    }
+
+    pub fn clear_unordered_access_view_uint(&mut self, view: Handle, values: [u32; 4]) {
+        self.cmd(Op::ClearUnorderedAccessViewUint, |w| {
+            w.u32(view.0);
+            for v in values {
+                w.u32(v);
+            }
+        });
+    }
+
+    pub fn clear_unordered_access_view_float(&mut self, view: Handle, values: [f32; 4]) {
+        self.cmd(Op::ClearUnorderedAccessViewFloat, |w| {
+            w.u32(view.0);
+            for v in values {
+                w.f32(v);
+            }
+        });
+    }
+
+    pub fn copy_resource(&mut self, dst: Handle, src: Handle) {
+        self.cmd(Op::CopyResource, |w| {
+            w.u32(dst.0);
+            w.u32(src.0);
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn copy_subresource_region(
+        &mut self,
+        dst: Handle,
+        dst_sub: u32,
+        x: u32,
+        y: u32,
+        z: u32,
+        src: Handle,
+        src_sub: u32,
+        bx: Option<&Box3>,
+    ) {
+        self.cmd(Op::CopySubresourceRegion, |w| {
+            for v in [dst.0, dst_sub, x, y, z, src.0, src_sub] {
+                w.u32(v);
+            }
+            w.box3(bx);
+        });
+    }
+
+    /// Reads a subresource (or a byte range of a buffer: subresource 0 and
+    /// the box's left/right) into shared memory, then completes `fence`
+    /// (`Map(D3D11_MAP_READ)` on a staging resource).
+    #[allow(clippy::too_many_arguments)]
+    pub fn read_subresource(
+        &mut self,
+        resource: Handle,
+        subresource: u32,
+        bx: Option<&Box3>,
+        dest_offset: u32,
+        row_pitch: u32,
+        depth_pitch: u32,
+        fence: u64,
+    ) {
+        self.cmd(Op::ReadSubresource, |w| {
+            w.u32(resource.0);
+            w.u32(subresource);
+            w.box3(bx);
+            w.u32(dest_offset);
+            w.u32(row_pitch);
+            w.u32(depth_pitch);
+            w.u32(fence as u32);
+            w.u32((fence >> 32) as u32);
+        });
     }
 }

@@ -1,5 +1,6 @@
 //! Round trips, malformed input, and agreement with the C header.
 
+use d3dgpu_proto::d3d11::*;
 use d3dgpu_proto::d3d9::*;
 use d3dgpu_proto::*;
 
@@ -140,6 +141,98 @@ fn every_command() -> Vec<(&'static str, Vec<u8>)> {
     one("d3dgpu_cmd_read_texture", &|w| w.read_texture(&region, 1024, 32, 0, 0x1_0000_0002));
     one("d3dgpu_cmd_signal", &|w| w.signal(u64::MAX - 1));
     one("", &|w| w.marker("frame 1"));
+    let bx = Box3 { left: 1, top: 2, front: 0, right: 5, bottom: 6, back: 1 };
+    one("d3dgpu_cmd_create_buffer11", &|w| w.create_buffer11(Handle(20), 256, bind::CONSTANT_BUFFER, 0, 0));
+    one("d3dgpu_cmd_create_texture11", &|w| {
+        w.create_texture11(Handle(21), &Texture11Desc::d2(DxgiFormat::R8G8B8A8Unorm, 64, 32, 0, bind::SHADER_RESOURCE))
+    });
+    one("", &|w| w.update_subresource(Handle(21), 0, Some(&bx), 16, 0, &[7u8; 64]));
+    one("d3dgpu_cmd_create_view", &|w| {
+        w.create_view(
+            Handle(22),
+            ViewKind::ShaderResource,
+            Handle(21),
+            &ViewDesc {
+                format: DxgiFormat::R8G8B8A8Unorm,
+                dim: ViewDim::Texture2D,
+                mip_count: u32::MAX,
+                ..Default::default()
+            },
+        )
+    });
+    one("d3dgpu_cmd_create_sampler", &|w| w.create_sampler(Handle(23), &SamplerDesc11::default()));
+    one("d3dgpu_cmd_create_blend_state", &|w| {
+        let mut d = BlendDesc11::default();
+        d.targets[0] = RtBlend { enable: true, src: 5, dst: 6, ..Default::default() };
+        w.create_blend_state(Handle(24), &d)
+    });
+    one("d3dgpu_cmd_create_depth_stencil_state", &|w| {
+        w.create_depth_stencil_state(Handle(25), &DepthStencilDesc11::default())
+    });
+    one("d3dgpu_cmd_create_rasterizer_state", &|w| {
+        w.create_rasterizer_state(Handle(26), &RasterizerDesc11 { depth_bias: -3, ..Default::default() })
+    });
+    one("", &|w| {
+        w.create_input_layout(
+            Handle(27),
+            &[
+                InputElement {
+                    semantic: "POSITION".into(),
+                    semantic_index: 0,
+                    format: DxgiFormat::R32G32B32Float,
+                    slot: 0,
+                    offset: 0,
+                    per_instance: false,
+                    step_rate: 0,
+                },
+                InputElement {
+                    semantic: "TEXCOORD".into(),
+                    semantic_index: 1,
+                    format: DxgiFormat::R16G16Float,
+                    slot: 1,
+                    offset: APPEND_ALIGNED_ELEMENT,
+                    per_instance: true,
+                    step_rate: 1,
+                },
+            ],
+        )
+    });
+    one("", &|w| w.create_shader11(Handle(28), Stage11::Pixel, 0xabcdef, b"DXBC"));
+    one("d3dgpu_cmd_set_object", &|w| w.set_input_layout(Handle(27)));
+    one("", &|w| w.set_vertex_buffers(0, &[VertexBufferBinding { buffer: Handle(1), stride: 20, offset: 4 }]));
+    one("d3dgpu_cmd_set_index_buffer", &|w| w.set_index_buffer(Handle(9), DxgiFormat::R16Uint, 6));
+    one("d3dgpu_cmd_set_object", &|w| w.set_primitive_topology(4));
+    one("d3dgpu_cmd_set_shader11", &|w| w.set_shader11(Stage11::Vertex, Handle(28)));
+    one("", &|w| {
+        w.set_constant_buffers(
+            Stage11::Pixel,
+            1,
+            &[ConstantBufferBinding { buffer: Handle(20), first_constant: 0, num_constants: 0 }],
+        )
+    });
+    one("", &|w| w.set_shader_resources(Stage11::Pixel, 0, &[Handle(22), Handle::NONE]));
+    one("", &|w| w.set_samplers(Stage11::Compute, 2, &[Handle(23)]));
+    one("", &|w| w.set_unordered_access_views(Stage11::Compute, 0, &[Handle(29)]));
+    one("", &|w| w.set_render_targets11(&[Handle(30)], Handle(31)));
+    one("d3dgpu_cmd_set_blend_state", &|w| w.set_blend_state(Handle(24), [0.5; 4], 0xffff_ffff));
+    one("d3dgpu_cmd_set_depth_stencil_state", &|w| w.set_depth_stencil_state(Handle(25), 3));
+    one("d3dgpu_cmd_set_object", &|w| w.set_rasterizer_state(Handle(26)));
+    one("", &|w| {
+        w.set_viewports(&[Viewport11 { x: 0.0, y: 0.0, width: 64.0, height: 64.0, min_depth: 0.0, max_depth: 1.0 }])
+    });
+    one("", &|w| w.set_scissor_rects(&[Rect::new(0, 0, 8, 8)]));
+    one("d3dgpu_cmd_draw11", &|w| w.draw11(3, 0, 1, 0));
+    one("d3dgpu_cmd_draw_indexed11", &|w| w.draw_indexed11(6, 2, -1, 4, 1));
+    one("d3dgpu_cmd_dispatch", &|w| w.dispatch(4, 2, 1));
+    one("d3dgpu_cmd_clear_render_target_view", &|w| w.clear_render_target_view(Handle(30), [0.0, 0.5, 1.0, 1.0]));
+    one("d3dgpu_cmd_clear_depth_stencil_view", &|w| w.clear_depth_stencil_view(Handle(31), clear11::DEPTH, 1.0, 0));
+    one("d3dgpu_cmd_clear_unordered_access_view", &|w| w.clear_unordered_access_view_uint(Handle(29), [1, 2, 3, 4]));
+    one("d3dgpu_cmd_clear_unordered_access_view", &|w| w.clear_unordered_access_view_float(Handle(29), [0.25; 4]));
+    one("d3dgpu_cmd_copy_resource", &|w| w.copy_resource(Handle(21), Handle(32)));
+    one("d3dgpu_cmd_copy_subresource_region", &|w| {
+        w.copy_subresource_region(Handle(21), 1, 2, 3, 0, Handle(32), 0, Some(&bx))
+    });
+    one("d3dgpu_cmd_read_subresource", &|w| w.read_subresource(Handle(21), 0, None, 64, 256, 0, 9));
     out
 }
 
@@ -298,6 +391,55 @@ fn reencode(c: &Command) -> Vec<u8> {
         }
         Command::Signal { fence } => w.signal(*fence),
         Command::Marker(s) => w.marker(s),
+        Command::CreateBuffer11 { id, size, bind, misc, stride } => {
+            w.create_buffer11(*id, *size, *bind, *misc, *stride)
+        }
+        Command::CreateTexture11 { id, desc } => w.create_texture11(*id, desc),
+        Command::UpdateSubresource { resource, subresource, bx, row_pitch, depth_pitch, data } => {
+            w.update_subresource(*resource, *subresource, bx.as_ref(), *row_pitch, *depth_pitch, data_src(data))
+        }
+        Command::CreateView { id, kind, resource, desc } => w.create_view(*id, *kind, *resource, desc),
+        Command::CreateSampler { id, desc } => w.create_sampler(*id, desc),
+        Command::CreateBlendState { id, desc } => w.create_blend_state(*id, desc),
+        Command::CreateDepthStencilState { id, desc } => w.create_depth_stencil_state(*id, desc),
+        Command::CreateRasterizerState { id, desc } => w.create_rasterizer_state(*id, desc),
+        Command::CreateInputLayout { id, elements } => w.create_input_layout(*id, elements),
+        Command::CreateShader11 { id, stage, hash, dxbc } => w.create_shader11(*id, *stage, *hash, data_src(dxbc)),
+        Command::SetInputLayout(h) => w.set_input_layout(*h),
+        Command::SetVertexBuffers { start, buffers } => w.set_vertex_buffers(*start, buffers),
+        Command::SetIndexBuffer { buffer, format, offset } => w.set_index_buffer(*buffer, *format, *offset),
+        Command::SetPrimitiveTopology(t) => w.set_primitive_topology(*t),
+        Command::SetShader11 { stage, id } => w.set_shader11(*stage, *id),
+        Command::SetConstantBuffers { stage, start, buffers } => w.set_constant_buffers(*stage, *start, buffers),
+        Command::SetShaderResources { stage, start, views } => w.set_shader_resources(*stage, *start, views),
+        Command::SetSamplers { stage, start, samplers } => w.set_samplers(*stage, *start, samplers),
+        Command::SetUnorderedAccessViews { stage, start, views } => w.set_unordered_access_views(*stage, *start, views),
+        Command::SetRenderTargets11 { rtvs, dsv } => w.set_render_targets11(rtvs, *dsv),
+        Command::SetBlendState { id, factor, sample_mask } => w.set_blend_state(*id, *factor, *sample_mask),
+        Command::SetDepthStencilState { id, stencil_ref } => w.set_depth_stencil_state(*id, *stencil_ref),
+        Command::SetRasterizerState(h) => w.set_rasterizer_state(*h),
+        Command::SetViewports(v) => w.set_viewports(v),
+        Command::SetScissorRects(r) => w.set_scissor_rects(r),
+        Command::Draw11 { vertex_count, start_vertex, instance_count, start_instance } => {
+            w.draw11(*vertex_count, *start_vertex, *instance_count, *start_instance)
+        }
+        Command::DrawIndexed11 { index_count, start_index, base_vertex, instance_count, start_instance } => {
+            w.draw_indexed11(*index_count, *start_index, *base_vertex, *instance_count, *start_instance)
+        }
+        Command::Dispatch { x, y, z } => w.dispatch(*x, *y, *z),
+        Command::ClearRenderTargetView { view, color } => w.clear_render_target_view(*view, *color),
+        Command::ClearDepthStencilView { view, flags, depth, stencil } => {
+            w.clear_depth_stencil_view(*view, *flags, *depth, *stencil)
+        }
+        Command::ClearUnorderedAccessViewUint { view, values } => w.clear_unordered_access_view_uint(*view, *values),
+        Command::ClearUnorderedAccessViewFloat { view, values } => w.clear_unordered_access_view_float(*view, *values),
+        Command::CopyResource { dst, src } => w.copy_resource(*dst, *src),
+        Command::CopySubresourceRegion { dst, dst_sub, x, y, z, src, src_sub, bx } => {
+            w.copy_subresource_region(*dst, *dst_sub, *x, *y, *z, *src, *src_sub, bx.as_ref())
+        }
+        Command::ReadSubresource { resource, subresource, bx, dest_offset, row_pitch, depth_pitch, fence } => {
+            w.read_subresource(*resource, *subresource, bx.as_ref(), *dest_offset, *row_pitch, *depth_pitch, *fence)
+        }
     }
     w.finish()
 }

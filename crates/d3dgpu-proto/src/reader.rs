@@ -1,5 +1,6 @@
 //! Decoding batches without copying.
 
+use crate::d3d11::*;
 use crate::d3d9::*;
 use crate::*;
 
@@ -184,6 +185,169 @@ pub enum Command<'a> {
         fence: u64,
     },
     Marker(&'a str),
+
+    // Direct3D 10/11.
+    CreateBuffer11 {
+        id: Handle,
+        size: u32,
+        bind: u32,
+        misc: u32,
+        stride: u32,
+    },
+    CreateTexture11 {
+        id: Handle,
+        desc: Texture11Desc,
+    },
+    UpdateSubresource {
+        resource: Handle,
+        subresource: u32,
+        bx: Option<Box3>,
+        row_pitch: u32,
+        depth_pitch: u32,
+        data: Data<'a>,
+    },
+    CreateView {
+        id: Handle,
+        kind: ViewKind,
+        resource: Handle,
+        desc: ViewDesc,
+    },
+    CreateSampler {
+        id: Handle,
+        desc: SamplerDesc11,
+    },
+    CreateBlendState {
+        id: Handle,
+        desc: Box<BlendDesc11>,
+    },
+    CreateDepthStencilState {
+        id: Handle,
+        desc: DepthStencilDesc11,
+    },
+    CreateRasterizerState {
+        id: Handle,
+        desc: RasterizerDesc11,
+    },
+    CreateInputLayout {
+        id: Handle,
+        elements: Vec<InputElement>,
+    },
+    CreateShader11 {
+        id: Handle,
+        stage: Stage11,
+        hash: u64,
+        dxbc: Data<'a>,
+    },
+    SetInputLayout(Handle),
+    SetVertexBuffers {
+        start: u32,
+        buffers: Vec<VertexBufferBinding>,
+    },
+    SetIndexBuffer {
+        buffer: Handle,
+        format: DxgiFormat,
+        offset: u32,
+    },
+    SetPrimitiveTopology(u32),
+    SetShader11 {
+        stage: Stage11,
+        id: Handle,
+    },
+    SetConstantBuffers {
+        stage: Stage11,
+        start: u32,
+        buffers: Vec<ConstantBufferBinding>,
+    },
+    SetShaderResources {
+        stage: Stage11,
+        start: u32,
+        views: Vec<Handle>,
+    },
+    SetSamplers {
+        stage: Stage11,
+        start: u32,
+        samplers: Vec<Handle>,
+    },
+    SetUnorderedAccessViews {
+        stage: Stage11,
+        start: u32,
+        views: Vec<Handle>,
+    },
+    SetRenderTargets11 {
+        rtvs: Vec<Handle>,
+        dsv: Handle,
+    },
+    SetBlendState {
+        id: Handle,
+        factor: [f32; 4],
+        sample_mask: u32,
+    },
+    SetDepthStencilState {
+        id: Handle,
+        stencil_ref: u32,
+    },
+    SetRasterizerState(Handle),
+    SetViewports(Vec<Viewport11>),
+    SetScissorRects(Vec<Rect>),
+    Draw11 {
+        vertex_count: u32,
+        start_vertex: u32,
+        instance_count: u32,
+        start_instance: u32,
+    },
+    DrawIndexed11 {
+        index_count: u32,
+        start_index: u32,
+        base_vertex: i32,
+        instance_count: u32,
+        start_instance: u32,
+    },
+    Dispatch {
+        x: u32,
+        y: u32,
+        z: u32,
+    },
+    ClearRenderTargetView {
+        view: Handle,
+        color: [f32; 4],
+    },
+    ClearDepthStencilView {
+        view: Handle,
+        flags: u32,
+        depth: f32,
+        stencil: u32,
+    },
+    ClearUnorderedAccessViewUint {
+        view: Handle,
+        values: [u32; 4],
+    },
+    ClearUnorderedAccessViewFloat {
+        view: Handle,
+        values: [f32; 4],
+    },
+    CopyResource {
+        dst: Handle,
+        src: Handle,
+    },
+    CopySubresourceRegion {
+        dst: Handle,
+        dst_sub: u32,
+        x: u32,
+        y: u32,
+        z: u32,
+        src: Handle,
+        src_sub: u32,
+        bx: Option<Box3>,
+    },
+    ReadSubresource {
+        resource: Handle,
+        subresource: u32,
+        bx: Option<Box3>,
+        dest_offset: u32,
+        row_pitch: u32,
+        depth_pitch: u32,
+        fence: u64,
+    },
 }
 
 /// Why a batch could not be decoded.
@@ -320,6 +484,33 @@ impl<'a> Cursor<'a> {
     }
     fn rect(&mut self) -> Option<Rect> {
         Some(Rect { x1: self.i32()?, y1: self.i32()?, x2: self.i32()?, y2: self.i32()? })
+    }
+    fn box3(&mut self) -> Option<Option<Box3>> {
+        let has = self.u32()?;
+        let b = Box3 {
+            left: self.u32()?,
+            top: self.u32()?,
+            front: self.u32()?,
+            right: self.u32()?,
+            bottom: self.u32()?,
+            back: self.u32()?,
+        };
+        Some((has != 0).then_some(b))
+    }
+    fn f4(&mut self) -> Option<[f32; 4]> {
+        Some([self.f32()?, self.f32()?, self.f32()?, self.f32()?])
+    }
+    fn stage(&mut self) -> Option<Stage11> {
+        Stage11::from_u32(self.u32()?)
+    }
+    fn handles(&mut self) -> Option<(Stage11, u32, Vec<Handle>)> {
+        let stage = self.stage()?;
+        let start = self.u32()?;
+        let n = self.u32()?;
+        if n > 128 {
+            return None;
+        }
+        Some((stage, start, (0..n).map(|_| self.h()).collect::<Option<_>>()?))
     }
     fn region(&mut self) -> Option<TextureRegion> {
         Some(TextureRegion {
@@ -496,6 +687,266 @@ fn decode_body<'a>(op: Op, c: &mut Cursor<'a>) -> Option<Command<'a>> {
             fence: c.u64()?,
         },
         Op::Signal => Command::Signal { fence: c.u64()? },
+        Op::CreateBuffer11 => {
+            Command::CreateBuffer11 { id: c.h()?, size: c.u32()?, bind: c.u32()?, misc: c.u32()?, stride: c.u32()? }
+        }
+        Op::CreateTexture11 => {
+            let id = c.h()?;
+            let dim = TextureDim::from_u32(c.u32()?)?;
+            Command::CreateTexture11 {
+                id,
+                desc: Texture11Desc {
+                    dim,
+                    format: DxgiFormat(c.u32()?),
+                    width: c.u32()?,
+                    height: c.u32()?,
+                    depth_or_array: c.u32()?,
+                    mips: c.u32()?,
+                    samples: c.u32()?,
+                    bind: c.u32()?,
+                    misc: c.u32()?,
+                },
+            }
+        }
+        Op::UpdateSubresource => Command::UpdateSubresource {
+            resource: c.h()?,
+            subresource: c.u32()?,
+            bx: c.box3()?,
+            row_pitch: c.u32()?,
+            depth_pitch: c.u32()?,
+            data: c.data()?,
+        },
+        Op::CreateView => {
+            let id = c.h()?;
+            let kind = ViewKind::from_u32(c.u32()?)?;
+            let resource = c.h()?;
+            Command::CreateView {
+                id,
+                kind,
+                resource,
+                desc: ViewDesc {
+                    format: DxgiFormat(c.u32()?),
+                    dim: ViewDim(c.u32()?),
+                    first_mip: c.u32()?,
+                    mip_count: c.u32()?,
+                    first_slice: c.u32()?,
+                    slice_count: c.u32()?,
+                    first_element: c.u32()?,
+                    num_elements: c.u32()?,
+                    flags: c.u32()?,
+                },
+            }
+        }
+        Op::CreateSampler => Command::CreateSampler {
+            id: c.h()?,
+            desc: SamplerDesc11 {
+                filter: c.u32()?,
+                address: [c.u32()?, c.u32()?, c.u32()?],
+                mip_lod_bias: c.f32()?,
+                max_anisotropy: c.u32()?,
+                comparison: c.u32()?,
+                border: c.f4()?,
+                min_lod: c.f32()?,
+                max_lod: c.f32()?,
+            },
+        },
+        Op::CreateBlendState => {
+            let id = c.h()?;
+            let alpha_to_coverage = c.u32()? != 0;
+            let independent = c.u32()? != 0;
+            let mut targets = [RtBlend::default(); 8];
+            for t in &mut targets {
+                *t = RtBlend {
+                    enable: c.u32()? != 0,
+                    src: c.u32()?,
+                    dst: c.u32()?,
+                    op: c.u32()?,
+                    src_alpha: c.u32()?,
+                    dst_alpha: c.u32()?,
+                    op_alpha: c.u32()?,
+                    write_mask: c.u32()?,
+                };
+            }
+            Command::CreateBlendState { id, desc: Box::new(BlendDesc11 { alpha_to_coverage, independent, targets }) }
+        }
+        Op::CreateDepthStencilState => {
+            let id = c.h()?;
+            let mut d = DepthStencilDesc11 {
+                depth_enable: c.u32()? != 0,
+                depth_write: c.u32()? != 0,
+                depth_func: c.u32()?,
+                stencil_enable: c.u32()? != 0,
+                read_mask: c.u32()?,
+                write_mask: c.u32()?,
+                ..Default::default()
+            };
+            for f in [&mut d.front, &mut d.back] {
+                *f = StencilFace { fail: c.u32()?, depth_fail: c.u32()?, pass: c.u32()?, func: c.u32()? };
+            }
+            Command::CreateDepthStencilState { id, desc: d }
+        }
+        Op::CreateRasterizerState => Command::CreateRasterizerState {
+            id: c.h()?,
+            desc: RasterizerDesc11 {
+                fill: c.u32()?,
+                cull: c.u32()?,
+                front_ccw: c.u32()? != 0,
+                depth_bias: c.i32()?,
+                depth_bias_clamp: c.f32()?,
+                slope_scaled_depth_bias: c.f32()?,
+                depth_clip: c.u32()? != 0,
+                scissor: c.u32()? != 0,
+                multisample: c.u32()? != 0,
+                antialiased_line: c.u32()? != 0,
+            },
+        },
+        Op::CreateInputLayout => {
+            let id = c.h()?;
+            let n = c.u32()?;
+            if n > 64 {
+                return None;
+            }
+            let mut elements = Vec::with_capacity(n as usize);
+            for _ in 0..n {
+                let len = c.u32()? as usize;
+                let semantic = std::str::from_utf8(c.bytes(len)?).ok()?.to_string();
+                elements.push(InputElement {
+                    semantic,
+                    semantic_index: c.u32()?,
+                    format: DxgiFormat(c.u32()?),
+                    slot: c.u32()?,
+                    offset: c.u32()?,
+                    per_instance: c.u32()? != 0,
+                    step_rate: c.u32()?,
+                });
+            }
+            Command::CreateInputLayout { id, elements }
+        }
+        Op::CreateShader11 => {
+            Command::CreateShader11 { id: c.h()?, stage: c.stage()?, hash: c.u64()?, dxbc: c.data()? }
+        }
+        Op::SetInputLayout => Command::SetInputLayout(c.h()?),
+        Op::SetVertexBuffers => {
+            let start = c.u32()?;
+            let n = c.u32()?;
+            if n > 32 {
+                return None;
+            }
+            let buffers = (0..n)
+                .map(|_| Some(VertexBufferBinding { buffer: c.h()?, stride: c.u32()?, offset: c.u32()? }))
+                .collect::<Option<_>>()?;
+            Command::SetVertexBuffers { start, buffers }
+        }
+        Op::SetIndexBuffer => {
+            Command::SetIndexBuffer { buffer: c.h()?, format: DxgiFormat(c.u32()?), offset: c.u32()? }
+        }
+        Op::SetPrimitiveTopology => Command::SetPrimitiveTopology(c.u32()?),
+        Op::SetShader11 => Command::SetShader11 { stage: c.stage()?, id: c.h()? },
+        Op::SetConstantBuffers => {
+            let stage = c.stage()?;
+            let start = c.u32()?;
+            let n = c.u32()?;
+            if n > 16 {
+                return None;
+            }
+            let buffers = (0..n)
+                .map(|_| {
+                    Some(ConstantBufferBinding { buffer: c.h()?, first_constant: c.u32()?, num_constants: c.u32()? })
+                })
+                .collect::<Option<_>>()?;
+            Command::SetConstantBuffers { stage, start, buffers }
+        }
+        Op::SetShaderResources => {
+            let (stage, start, views) = c.handles()?;
+            Command::SetShaderResources { stage, start, views }
+        }
+        Op::SetSamplers => {
+            let (stage, start, samplers) = c.handles()?;
+            Command::SetSamplers { stage, start, samplers }
+        }
+        Op::SetUnorderedAccessViews => {
+            let (stage, start, views) = c.handles()?;
+            Command::SetUnorderedAccessViews { stage, start, views }
+        }
+        Op::SetRenderTargets11 => {
+            let n = c.u32()?;
+            if n > 8 {
+                return None;
+            }
+            let rtvs = (0..n).map(|_| c.h()).collect::<Option<_>>()?;
+            Command::SetRenderTargets11 { rtvs, dsv: c.h()? }
+        }
+        Op::SetBlendState => Command::SetBlendState { id: c.h()?, factor: c.f4()?, sample_mask: c.u32()? },
+        Op::SetDepthStencilState => Command::SetDepthStencilState { id: c.h()?, stencil_ref: c.u32()? },
+        Op::SetRasterizerState => Command::SetRasterizerState(c.h()?),
+        Op::SetViewports => {
+            let n = c.u32()?;
+            if n > 16 {
+                return None;
+            }
+            let v = (0..n)
+                .map(|_| {
+                    Some(Viewport11 {
+                        x: c.f32()?,
+                        y: c.f32()?,
+                        width: c.f32()?,
+                        height: c.f32()?,
+                        min_depth: c.f32()?,
+                        max_depth: c.f32()?,
+                    })
+                })
+                .collect::<Option<_>>()?;
+            Command::SetViewports(v)
+        }
+        Op::SetScissorRects => {
+            let n = c.u32()?;
+            if n > 16 {
+                return None;
+            }
+            Command::SetScissorRects((0..n).map(|_| c.rect()).collect::<Option<_>>()?)
+        }
+        Op::Draw11 => Command::Draw11 {
+            vertex_count: c.u32()?,
+            start_vertex: c.u32()?,
+            instance_count: c.u32()?,
+            start_instance: c.u32()?,
+        },
+        Op::DrawIndexed11 => Command::DrawIndexed11 {
+            index_count: c.u32()?,
+            start_index: c.u32()?,
+            base_vertex: c.i32()?,
+            instance_count: c.u32()?,
+            start_instance: c.u32()?,
+        },
+        Op::Dispatch => Command::Dispatch { x: c.u32()?, y: c.u32()?, z: c.u32()? },
+        Op::ClearRenderTargetView => Command::ClearRenderTargetView { view: c.h()?, color: c.f4()? },
+        Op::ClearDepthStencilView => {
+            Command::ClearDepthStencilView { view: c.h()?, flags: c.u32()?, depth: c.f32()?, stencil: c.u32()? }
+        }
+        Op::ClearUnorderedAccessViewUint => {
+            Command::ClearUnorderedAccessViewUint { view: c.h()?, values: [c.u32()?, c.u32()?, c.u32()?, c.u32()?] }
+        }
+        Op::ClearUnorderedAccessViewFloat => Command::ClearUnorderedAccessViewFloat { view: c.h()?, values: c.f4()? },
+        Op::CopyResource => Command::CopyResource { dst: c.h()?, src: c.h()? },
+        Op::CopySubresourceRegion => Command::CopySubresourceRegion {
+            dst: c.h()?,
+            dst_sub: c.u32()?,
+            x: c.u32()?,
+            y: c.u32()?,
+            z: c.u32()?,
+            src: c.h()?,
+            src_sub: c.u32()?,
+            bx: c.box3()?,
+        },
+        Op::ReadSubresource => Command::ReadSubresource {
+            resource: c.h()?,
+            subresource: c.u32()?,
+            bx: c.box3()?,
+            dest_offset: c.u32()?,
+            row_pitch: c.u32()?,
+            depth_pitch: c.u32()?,
+            fence: c.u64()?,
+        },
         Op::Marker => match c.data()? {
             Data::Inline(b) => Command::Marker(std::str::from_utf8(b).ok()?),
             Data::Shared { .. } => return None,

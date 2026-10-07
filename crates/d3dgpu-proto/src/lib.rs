@@ -25,7 +25,9 @@
 //! Handles are `u32`, allocated by the front end from one namespace for all
 //! object kinds; `0` means "none".
 
+#[macro_use]
 pub mod d3d9;
+pub mod d3d11;
 
 mod reader;
 mod writer;
@@ -162,6 +164,44 @@ ops! {
     Signal = 0x0051,
     // Debugging.
     Marker = 0x0060,
+    // Direct3D 10/11 objects.
+    CreateBuffer11 = 0x0100,
+    CreateTexture11 = 0x0101,
+    UpdateSubresource = 0x0102,
+    CreateView = 0x0103,
+    CreateSampler = 0x0104,
+    CreateBlendState = 0x0105,
+    CreateDepthStencilState = 0x0106,
+    CreateRasterizerState = 0x0107,
+    CreateInputLayout = 0x0108,
+    CreateShader11 = 0x0109,
+    // Direct3D 10/11 state.
+    SetInputLayout = 0x0110,
+    SetVertexBuffers = 0x0111,
+    SetIndexBuffer = 0x0112,
+    SetPrimitiveTopology = 0x0113,
+    SetShader11 = 0x0114,
+    SetConstantBuffers = 0x0115,
+    SetShaderResources = 0x0116,
+    SetSamplers = 0x0117,
+    SetUnorderedAccessViews = 0x0118,
+    SetRenderTargets11 = 0x0119,
+    SetBlendState = 0x011A,
+    SetDepthStencilState = 0x011B,
+    SetRasterizerState = 0x011C,
+    SetViewports = 0x011D,
+    SetScissorRects = 0x011E,
+    // Direct3D 10/11 work.
+    Draw11 = 0x0130,
+    DrawIndexed11 = 0x0131,
+    Dispatch = 0x0132,
+    ClearRenderTargetView = 0x0133,
+    ClearDepthStencilView = 0x0134,
+    ClearUnorderedAccessViewUint = 0x0135,
+    ClearUnorderedAccessViewFloat = 0x0136,
+    CopyResource = 0x0137,
+    CopySubresourceRegion = 0x0138,
+    ReadSubresource = 0x0139,
 }
 
 /// `CreateBuffer` usage bits.
