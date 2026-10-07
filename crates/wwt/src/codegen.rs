@@ -131,7 +131,18 @@ impl<'a> ModuleGen<'a> {
     }
 
     /// Generates the module bytes.
-    pub fn build(mut self, funcs: &[Function], meta_json: &str) -> Vec<u8> {
+    pub fn build(self, funcs: &[Function], meta_json: &str) -> Vec<u8> {
+        self.build_named(funcs, meta_json, &std::collections::BTreeMap::new())
+    }
+
+    /// [`ModuleGen::build`], with a name section for the functions whose
+    /// entries `names` has (address -> symbol).
+    pub fn build_named(
+        mut self,
+        funcs: &[Function],
+        meta_json: &str,
+        names: &std::collections::BTreeMap<u32, String>,
+    ) -> Vec<u8> {
         let mut module = Module::new();
 
         // Types.
@@ -263,6 +274,17 @@ impl<'a> ModuleGen<'a> {
             name: Cow::Borrowed(abi::META_SECTION),
             data: Cow::Borrowed(meta_json.as_bytes()),
         });
+        if funcs.iter().any(|f| names.contains_key(&f.entry)) {
+            let mut map = wasm_encoder::NameMap::new();
+            for (i, f) in funcs.iter().enumerate() {
+                if let Some(n) = names.get(&f.entry) {
+                    map.append(self.translated_func_index(i as u32), n);
+                }
+            }
+            let mut sec = wasm_encoder::NameSection::new();
+            sec.functions(&map);
+            module.section(&sec);
+        }
         module.finish()
     }
 

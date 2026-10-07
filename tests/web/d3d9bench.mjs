@@ -4,9 +4,9 @@
 // wined3d's WebGPU backend, and prints what it reports: frames per second
 // and where each frame's time went.
 //
-//   node runtime/node/wine-bundle.mjs && node tests/web/d3d9bench.mjs [cubes [particles [seconds]]]
+//   node runtime/node/wine-bundle.mjs && node tests/web/d3d9bench.mjs [cubes [particles [seconds [materials]]]]
 //
-// Defaults: 400 cubes, 2000 particles, 10 seconds. --url tests a deployed
+// Defaults: 400 cubes, 2000 particles, 10 seconds, 1 material. --url tests a deployed
 // site instead of serving this checkout; --headed shows the browser. The
 // last frame is saved as target/gui/d3d9bench.png.
 
@@ -35,7 +35,7 @@ const flag = (name) => {
 const headed = argv.includes('--headed') && argv.splice(argv.indexOf('--headed'), 1);
 const urlArg = flag('--url');
 const site = urlArg ? new URL(urlArg) : null;
-const [cubes = '400', particles = '2000', seconds = '10'] = argv;
+const [cubes = '400', particles = '2000', seconds = '10', materials = '1'] = argv;
 
 const port = 19000 + Math.floor(Math.random() * 1000);
 const base = site ? site.origin + site.pathname.replace(/\/runtime\/web\/?$/, '').replace(/\/$/, '') : `http://localhost:${port}`;
@@ -49,7 +49,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1000, height: 1100 }, ignoreHTTPSErrors: !!proxy });
   if (site?.searchParams.has('_vercel_share')) await page.goto(site.href);
   page.on('pageerror', (e) => console.error('page error:', e.message));
-  const args = [cubes, particles, seconds].join('+');
+  const args = [cubes, particles, seconds, materials].join('+');
   await page.goto(`${base}/runtime/web/?exe=/tests/programs/gui/d3d9bench.exe&wine=1&args=${args}`);
 
   const out = join(repo, 'target/gui');

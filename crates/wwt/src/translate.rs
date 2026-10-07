@@ -5,7 +5,7 @@
 //! program runs. Both produce one WebAssembly module whose functions are
 //! registered under their x86 addresses at load time.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Result;
 use serde::Serialize;
@@ -230,7 +230,9 @@ pub fn translate_pe(pe: &PeFile, cfg: &Config, profile: &[u32]) -> Result<Transl
     let img = pe.image()?;
     let mut d = discover_pe(pe, &img, profile, cfg);
     let meta = image_meta(pe);
-    translate_discovered(&img, &mut d, cfg, Some(&meta))
+    // Function names for profilers, when the file has symbols.
+    let names = pe.function_symbols();
+    translate_discovered_named(&img, &mut d, cfg, Some(&meta), &names)
 }
 
 /// Fast mode: translates code reachable from `entries` in `src`.
@@ -270,6 +272,19 @@ pub fn translate_discovered(
     d: &mut Discovery,
     cfg: &Config,
     meta: Option<&ImageMeta>,
+) -> Result<Translation> {
+    translate_discovered_named(src, d, cfg, meta, &BTreeMap::new())
+}
+
+/// [`translate_discovered`], naming functions found in `names` (address ->
+/// symbol) in the module's name section, where profilers and debuggers
+/// look for them.
+pub fn translate_discovered_named(
+    src: &dyn CodeSource,
+    d: &mut Discovery,
+    cfg: &Config,
+    meta: Option<&ImageMeta>,
+    names: &BTreeMap<u32, String>,
 ) -> Result<Translation> {
     let mut report = Report::default();
     for k in d.seed_kinds.values() {
@@ -318,7 +333,7 @@ pub fn translate_discovered(
         report: &report,
     })?;
     let gen = ModuleGen::new(&cfg.codegen, &funcs);
-    let wasm = gen.build(&funcs, &meta_json);
+    let wasm = gen.build_named(&funcs, &meta_json, names);
     report.wasm_bytes = wasm.len();
     Ok(Translation {
         wasm,

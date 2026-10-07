@@ -405,6 +405,47 @@ impl PeFile {
         Ok(tls)
     }
 
+    /// Function symbols of the COFF symbol table (unstripped MinGW
+    /// builds have one, statics included): address -> name, without the
+    /// leading underscore of i386 C names. Empty when stripped.
+    pub fn function_symbols(&self) -> std::collections::BTreeMap<u32, String> {
+        let mut out = std::collections::BTreeMap::new();
+        let d = &self.data;
+        let Ok(pe_off) = rd_u32(d, 0x3c) else { return out };
+        let coff = pe_off as usize + 4;
+        let (Ok(table), Ok(count)) = (rd_u32(d, coff + 8), rd_u32(d, coff + 12)) else { return out };
+        let (table, count) = (table as usize, count as usize);
+        if table == 0 || table.saturating_add(count.saturating_mul(18)) > d.len() {
+            return out;
+        }
+        let strings = table + count * 18;
+        let mut i = 0;
+        while i < count {
+            let s = table + i * 18;
+            let value = u32::from_le_bytes(d[s + 8..s + 12].try_into().unwrap());
+            let section = i16::from_le_bytes([d[s + 12], d[s + 13]]);
+            let ty = u16::from_le_bytes([d[s + 14], d[s + 15]]);
+            let aux = d[s + 17] as usize;
+            if section > 0 && ty & 0x30 == 0x20 {
+                let raw = if d[s..s + 4] == [0; 4] {
+                    let off = strings + u32::from_le_bytes(d[s + 4..s + 8].try_into().unwrap()) as usize;
+                    let end = d.get(off..).and_then(|t| t.iter().position(|&b| b == 0)).map(|n| off + n);
+                    end.map(|e| &d[off..e]).unwrap_or(&[])
+                } else {
+                    let n = d[s..s + 8].iter().position(|&b| b == 0).unwrap_or(8);
+                    &d[s..s + n]
+                };
+                if let Some(sec) = self.sections.get(section as usize - 1) {
+                    let name = String::from_utf8_lossy(raw);
+                    let name = name.strip_prefix('_').unwrap_or(&name).to_string();
+                    out.entry(self.image_base + sec.virtual_address + value).or_insert(name);
+                }
+            }
+            i += 1 + aux;
+        }
+        out
+    }
+
     pub fn section_for_rva(&self, rva: u32) -> Option<&Section> {
         self.sections.iter().find(|s| s.contains_rva(rva))
     }

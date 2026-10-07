@@ -388,10 +388,25 @@ game ─► d3d9.dll ─► wined3d.dll (adapter_wgpu) ─► d3dgpu batches in 
   Direct3D 9 render states again; alpha test, clip planes, sRGB writes and
   flat shading come from wined3d's extra shader arguments and constants.
   Samplers become sampler states, shader resource views `SetTexture`.
-* **Present** reads the back buffer back and draws it into the window
-  with `StretchDIBits`, so Direct3D windows compose with the desktop on
-  the browser display driver. A direct canvas presentation is the next
-  step for speed.
+* **Present** stays on the GPU: the backend sends one `Present` and the
+  render worker draws the back buffer to a WebGPU canvas the page lays
+  over the window's client area (`runtime/web/app.mjs`). wined3d reports
+  where the window is (a fourth unix call) when that changes, and the
+  page moves the canvas there. The render worker returns to its event
+  loop after each frame so the canvas shows it, waits for the next
+  display frame on a vsynced `Present`, and keeps at most 3 frames in
+  flight on the GPU, which paces the program as Direct3D does. Its
+  messages go to the page over a port of their own, as the Wine worker is
+  busy running the program. Hosts without a canvas (Node, recordings)
+  read the frame back and draw it with `StretchDIBits`;
+  `?d3dpresent=gdi` forces that, and `?d3dpresent=offscreen` presents to
+  a buffer `window.d3dSnapshot()` reads, for headless browsers (they can
+  neither show nor read a WebGPU canvas).
+* **Per draw**, the backend sends only what changed: the parts of the
+  state wined3d marks dirty (blend, depth/stencil, rasterizer, the
+  fixed-function extras), samplers by object (they are immutable), and of
+  the constant buffers the byte ranges written since they were last sent.
+  Constant buffers stay CPU-side.
 * **Not yet:** Direct3D 10/11 through wined3d (shader model 4/5, views,
   UAVs, compute, queries), GPU blits (`StretchRect` runs on the CPU
   blitter), fog, point sprites, MSAA, mipmap generation, presenting other
@@ -413,17 +428,32 @@ textured cubes (one `DrawIndexedPrimitive` each, with its matrix in
 shader constants) and particles written to a dynamic vertex buffer every
 frame and drawn with the fixed-function pipeline, as fast as it can, and
 prints the frame rate with each frame split into "scene" (the program's
-calls from `Clear` to `EndScene`) and "present". On the page, pick it in
-the second row and give "cubes particles seconds" as arguments (defaults
-400, 2000, until closed), or open
+calls from `Clear` to `EndScene`) and "present". With more than one
+material, consecutive cubes switch texture, sampler filter and alpha
+blending, as a game's objects do. On the page, pick it in the second row
+and give "cubes particles seconds materials" as arguments (defaults 400,
+2000, until closed, 1), or open
 `runtime/web/?exe=/tests/programs/gui/d3d9bench.exe&wine=1&args=400+2000+10`;
-`node tests/web/d3d9bench.mjs [cubes particles seconds]` runs it in
-headless Chromium. In this repository's CI container (Chromium with a
-software GPU), 400 cubes and 2000 particles at 640x480 run at about 27
-fps: the scene takes 8 ms (20 µs per draw through translated d3d9 and
-wined3d) and Present 27 ms, of which about 14 ms is the readback and GDI
-copy alone (an empty scene runs at 60 fps). Presenting straight to a
-canvas is the next step.
+`node tests/web/d3d9bench.mjs [cubes particles seconds materials]` runs
+it in headless Chromium.
+
+Measured in this repository's container (headless Chromium, software
+GPU):
+
+| | Present | Per draw | 2000 cubes, 8 materials |
+| --- | --- | --- | --- |
+| Readback and GDI, all state sent each draw | 27 ms | 20 µs | 25 fps |
+| GPU present, only changes sent | 0.1 ms | 8 µs | 55-60 fps |
+
+On a desktop browser with a real GPU, 400 cubes and 2000 particles run at
+about 175 fps. What a draw costs now is about half wined3d's own state
+handling (`wined3d_device_apply_stateblock`, constant uploads through the
+command stream) and a third the backend.
+
+Profiling: unstripped DLLs (what `runtime/node/wine.mjs` loads) are
+translated with their COFF symbols as wasm function names, so `node
+--cpu-prof runtime/node/wine.mjs --d3d-record FILE program.exe` gives a
+profile with Wine's function names.
 
 ## Not done yet
 

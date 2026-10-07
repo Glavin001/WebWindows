@@ -6,11 +6,14 @@
  * "scene" is the program's Direct3D calls from Clear to EndScene, "present"
  * is Present.
  *
- *   d3d9bench [cubes [particles [seconds [width height]]]]
+ *   d3d9bench [cubes [particles [seconds [materials [width height]]]]]
  *
- * Defaults: 400 cubes, 2000 particles, run until the window is closed,
- * a 640x480 client area. With seconds, it stops after that long and prints
- * a summary line.
+ * Defaults: 400 cubes, 2000 particles, run until the window is closed
+ * (seconds 0), 1 material, a 640x480 client area. With seconds, it stops
+ * after that long and prints a summary line. With more than one material,
+ * consecutive cubes use different ones, as a game's objects do: each draw
+ * then also changes the texture, the sampler filter and (every other
+ * material) alpha blending.
  *
  * The shaders were compiled with vkd3d-compiler 1.19 from:
  *
@@ -147,8 +150,9 @@ int main(int argc, char **argv)
     int cubes = argc > 1 ? atoi(argv[1]) : 400;
     int particles = argc > 2 ? atoi(argv[2]) : 2000;
     double seconds = argc > 3 ? atof(argv[3]) : 0.0;
-    int width = argc > 5 ? atoi(argv[4]) : 640;
-    int height = argc > 5 ? atoi(argv[5]) : 480;
+    int materials = argc > 4 ? atoi(argv[4]) : 1;
+    int width = argc > 6 ? atoi(argv[5]) : 640;
+    int height = argc > 6 ? atoi(argv[6]) : 480;
     IDirect3D9 *(WINAPI *create)(UINT);
     IDirect3DVertexDeclaration9 *decl;
     IDirect3DVertexBuffer9 *vb, *pvb = NULL;
@@ -157,7 +161,7 @@ int main(int argc, char **argv)
     IDirect3DPixelShader9 *ps;
     IDirect3DVertexShader9 *vs;
     IDirect3DDevice9 *device;
-    IDirect3DTexture9 *tex;
+    IDirect3DTexture9 *tex[16];
     D3DADAPTER_IDENTIFIER9 id;
     D3DLOCKED_RECT lr;
     WNDCLASSA wc = {0};
@@ -182,9 +186,11 @@ int main(int argc, char **argv)
     };
 
     if (cubes < 0) cubes = 0;
+    if (materials < 1) materials = 1;
+    if (materials > 16) materials = 16;
     if (particles < 0) particles = 0;
     if (width < 64 || height < 64) width = 640, height = 480;
-    printf("d3d9bench: %d cubes, %d particles, %dx%d\n", cubes, particles, width, height);
+    printf("d3d9bench: %d cubes, %d particles, %d materials, %dx%d\n", cubes, particles, materials, width, height);
 
     wc.lpfnWndProc = proc;
     wc.hInstance = GetModuleHandleA(NULL);
@@ -244,17 +250,21 @@ int main(int argc, char **argv)
         IDirect3DIndexBuffer9_Unlock(ib);
     }
 
-    /* A 64x64 checkerboard. */
-    CHECK("CreateTexture", IDirect3DDevice9_CreateTexture(device, 64, 64, 1, 0, D3DFMT_A8R8G8B8,
-            D3DPOOL_MANAGED, &tex, NULL));
-    CHECK("LockRect", IDirect3DTexture9_LockRect(tex, 0, &lr, NULL, 0));
-    for (y = 0; y < 64; ++y)
-        for (x = 0; x < 64; ++x)
-        {
-            BYTE v = ((x >> 3) ^ (y >> 3)) & 1 ? 255 : 96;
-            ((DWORD *)((BYTE *)lr.pBits + y * lr.Pitch))[x] = D3DCOLOR_XRGB(v, v, v);
-        }
-    IDirect3DTexture9_UnlockRect(tex, 0);
+    /* A 64x64 checkerboard per material, its squares 2 to 32 texels. */
+    for (i = 0; i < materials; ++i)
+    {
+        CHECK("CreateTexture", IDirect3DDevice9_CreateTexture(device, 64, 64, 1, 0, D3DFMT_A8R8G8B8,
+                D3DPOOL_MANAGED, &tex[i], NULL));
+        CHECK("LockRect", IDirect3DTexture9_LockRect(tex[i], 0, &lr, NULL, 0));
+        for (y = 0; y < 64; ++y)
+            for (x = 0; x < 64; ++x)
+            {
+                int shift = 1 + (i + 2) % 5;
+                BYTE v = ((x >> shift) ^ (y >> shift)) & 1 ? 255 : 96;
+                ((DWORD *)((BYTE *)lr.pBits + y * lr.Pitch))[x] = D3DCOLOR_ARGB(i & 1 ? 192 : 255, v, v, v);
+            }
+        IDirect3DTexture9_UnlockRect(tex[i], 0);
+    }
 
     if (particles)
         CHECK("CreateVertexBuffer (particles)", IDirect3DDevice9_CreateVertexBuffer(device,
@@ -299,9 +309,11 @@ int main(int argc, char **argv)
         IDirect3DDevice9_SetVertexDeclaration(device, decl);
         IDirect3DDevice9_SetVertexShader(device, vs);
         IDirect3DDevice9_SetPixelShader(device, ps);
-        IDirect3DDevice9_SetTexture(device, 0, (IDirect3DBaseTexture9 *)tex);
+        IDirect3DDevice9_SetTexture(device, 0, (IDirect3DBaseTexture9 *)tex[0]);
         IDirect3DDevice9_SetSamplerState(device, 0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
         IDirect3DDevice9_SetSamplerState(device, 0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+        IDirect3DDevice9_SetRenderState(device, D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+        IDirect3DDevice9_SetRenderState(device, D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
         IDirect3DDevice9_SetStreamSource(device, 0, vb, 0, sizeof(struct cube_vertex));
         IDirect3DDevice9_SetIndices(device, ib);
         for (i = 0; i < cubes; ++i)
@@ -321,6 +333,13 @@ int main(int argc, char **argv)
                 {r[2][0], r[2][1], r[2][2], tz},
                 {0.6f + 0.4f * sinf(i * 0.5f), 0.6f + 0.4f * sinf(i * 0.7f + 2.0f), 0.6f + 0.4f * sinf(i * 0.9f + 4.0f), 1.0f},
             };
+            if (materials > 1)
+            {
+                int m = i % materials;
+                IDirect3DDevice9_SetTexture(device, 0, (IDirect3DBaseTexture9 *)tex[m]);
+                IDirect3DDevice9_SetSamplerState(device, 0, D3DSAMP_MAGFILTER, m & 2 ? D3DTEXF_POINT : D3DTEXF_LINEAR);
+                IDirect3DDevice9_SetRenderState(device, D3DRS_ALPHABLENDENABLE, m & 1);
+            }
             IDirect3DDevice9_SetVertexShaderConstantF(device, 0, &c[0][0], 5);
             IDirect3DDevice9_DrawIndexedPrimitive(device, D3DPT_TRIANGLELIST, 0, 0, 24, 0, 12);
         }
@@ -401,7 +420,8 @@ int main(int argc, char **argv)
     fflush(stdout);
 
     if (pvb) IDirect3DVertexBuffer9_Release(pvb);
-    IDirect3DTexture9_Release(tex);
+    for (i = 0; i < materials; ++i)
+        IDirect3DTexture9_Release(tex[i]);
     IDirect3DIndexBuffer9_Release(ib);
     IDirect3DVertexBuffer9_Release(vb);
     IDirect3DPixelShader9_Release(ps);
