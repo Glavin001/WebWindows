@@ -97,7 +97,9 @@ async function runOne(p, opt) {
   const wasm = b.exe + '.wasm';
   const tr = await sh(wwt, ['translate', b.exe, '-o', wasm]);
   if (tr.status !== 0) return { status: 'fail', detail: 'translate: ' + tr.stderr.slice(-800) };
+  const t0 = performance.now();
   const run = await sh('node', [join(root, 'runtime/node/run.mjs'), '--wasm', wasm, b.exe], { timeout: 120000 });
+  run.ms = performance.now() - t0;
   if (run.error) return { status: 'fail', detail: `translated run: ${run.error.message}` };
   const want = { out: nat.stdout, code: nat.status & 0xff };
   const got = { out: run.stdout, code: run.status & 0xff };
@@ -113,7 +115,7 @@ async function runOne(p, opt) {
     detail += run.stderr.split('\n').filter((l) => !l.includes('.wasm:')).join(' ').slice(0, 600);
     return { status: 'fail', detail };
   }
-  return { status: 'pass' };
+  return { status: 'pass', exitCode: got.code, stdout: got.out, ms: Math.round(run.ms ?? 0) };
 }
 
 const results = [];
