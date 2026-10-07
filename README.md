@@ -39,7 +39,7 @@ node runtime/node/wine.mjs tests/programs/hello.exe
 tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost user32 gdi32 \
   win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 rpcrt4 uxtheme \
   comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts \
-  opengl32 wined3d d3d9      # Direct3D 9, with wined3d's WebGPU backend
+  wined3d d3d9      # Direct3D 9, with wined3d's WebGPU backend
 sh native/wine-unix/build.sh
 node runtime/node/wine.mjs --screenshot mine.png --run-for 5000 \
   --input "500:click 60,120" /opt/wine-build/programs/winemine/i386-windows/winemine.exe

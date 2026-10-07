@@ -24,8 +24,12 @@ fi
 # wined3d's WebGPU backend (native/wined3d-wgpu): hooks patched in once, the
 # backend and the d3dgpu protocol header copied next to wined3d's sources.
 root=$(cd "$(dirname "$0")/../.." && pwd)
-if ! grep -q WINED3D_RENDERER_WEBGPU "$WINE_SRC/include/wine/wined3d.h"; then
-  patch -d "$WINE_SRC" -p1 < "$root/native/wined3d-wgpu/wined3d-wgpu.patch"
+wpatch=$root/native/wined3d-wgpu/wined3d-wgpu.patch
+if ! cmp -s "$wpatch" "$WINE_SRC/.wined3d-wgpu.patch"; then
+  # A changed patch replaces the one applied before.
+  [ ! -f "$WINE_SRC/.wined3d-wgpu.patch" ] || patch -d "$WINE_SRC" -p1 -R < "$WINE_SRC/.wined3d-wgpu.patch"
+  patch -d "$WINE_SRC" -p1 < "$wpatch"
+  cp "$wpatch" "$WINE_SRC/.wined3d-wgpu.patch"
 fi
 for f in native/wined3d-wgpu/adapter_wgpu.c crates/d3dgpu-proto/include/d3dgpu_proto.h; do
   cmp -s "$root/$f" "$WINE_SRC/dlls/wined3d/$(basename "$f")" || cp "$root/$f" "$WINE_SRC/dlls/wined3d/"

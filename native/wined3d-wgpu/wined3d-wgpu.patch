@@ -1,7 +1,15 @@
 diff -ruN a/dlls/wined3d/Makefile.in b/dlls/wined3d/Makefile.in
 --- a/dlls/wined3d/Makefile.in	2026-10-07 19:06:14.442396861 +0000
-+++ b/dlls/wined3d/Makefile.in	2026-10-07 19:06:14.460311067 +0000
-@@ -6,6 +6,7 @@
++++ b/dlls/wined3d/Makefile.in	2026-10-07 19:52:42.891020656 +0000
+@@ -1,11 +1,14 @@
+ MODULE    = wined3d.dll
+ IMPORTLIB = wined3d
+-IMPORTS   = $(VKD3D_PE_LIBS) dxguid opengl32 user32 gdi32 advapi32
++IMPORTS   = $(VKD3D_PE_LIBS) dxguid user32 gdi32 advapi32
++# Only the OpenGL backend calls opengl32: load it when that backend runs.
++DELAYIMPORTS = opengl32
+ EXTRAINCL = $(VKD3D_PE_CFLAGS)
+ 
  SOURCES = \
  	adapter_gl.c \
  	adapter_vk.c \
@@ -39,7 +47,7 @@ diff -ruN a/dlls/wined3d/buffer.c b/dlls/wined3d/buffer.c
  {
 diff -ruN a/dlls/wined3d/directx.c b/dlls/wined3d/directx.c
 --- a/dlls/wined3d/directx.c	2026-10-07 19:06:14.378949413 +0000
-+++ b/dlls/wined3d/directx.c	2026-10-07 19:06:14.458271432 +0000
++++ b/dlls/wined3d/directx.c	2026-10-07 19:52:42.892819693 +0000
 @@ -3481,9 +3481,20 @@
  
  static struct wined3d_adapter *wined3d_adapter_create(unsigned int ordinal, DWORD wined3d_creation_flags)
@@ -54,8 +62,8 @@ diff -ruN a/dlls/wined3d/directx.c b/dlls/wined3d/directx.c
 +    {
 +        if ((adapter = wined3d_adapter_wgpu_create(ordinal, wined3d_creation_flags)))
 +            return adapter;
-+        if (wined3d_settings.renderer == WINED3D_RENDERER_WEBGPU)
-+            return wined3d_adapter_no3d_create(ordinal, wined3d_creation_flags | WINED3D_NO3D);
++        /* No OpenGL behind it either: 2D only, unless GL was asked for. */
++        return wined3d_adapter_no3d_create(ordinal, wined3d_creation_flags | WINED3D_NO3D);
 +    }
 +
      if (wined3d_settings.renderer == WINED3D_RENDERER_VULKAN)
@@ -124,7 +132,7 @@ diff -ruN a/dlls/wined3d/view.c b/dlls/wined3d/view.c
          void *parent, const struct wined3d_parent_ops *parent_ops)
 diff -ruN a/dlls/wined3d/wined3d_main.c b/dlls/wined3d/wined3d_main.c
 --- a/dlls/wined3d/wined3d_main.c	2026-10-07 19:06:14.370359547 +0000
-+++ b/dlls/wined3d/wined3d_main.c	2026-10-07 19:06:14.457815670 +0000
++++ b/dlls/wined3d/wined3d_main.c	2026-10-07 19:52:42.893558290 +0000
 @@ -452,6 +452,11 @@
                  ERR_(winediag)("Using the OpenGL renderer.\n");
                  wined3d_settings.renderer = WINED3D_RENDERER_OPENGL;
@@ -137,6 +145,17 @@ diff -ruN a/dlls/wined3d/wined3d_main.c b/dlls/wined3d/wined3d_main.c
              else if (!strcmp(buffer, "gdi") || !strcmp(buffer, "no3d"))
              {
                  ERR_(winediag)("Disabling 3D support.\n");
+@@ -958,7 +963,9 @@
+             break;
+ 
+         case DLL_THREAD_DETACH:
+-            if (!wined3d_context_gl_set_current(NULL))
++            /* Nothing of OpenGL's can be current unless opengl32 was loaded
++             * (it is delay-loaded, by the OpenGL backend only). */
++            if (GetModuleHandleW(L"opengl32.dll") && !wined3d_context_gl_set_current(NULL))
+             {
+                 ERR("Failed to clear current context.\n");
+             }
 diff -ruN a/dlls/wined3d/wined3d_private.h b/dlls/wined3d/wined3d_private.h
 --- a/dlls/wined3d/wined3d_private.h	2026-10-07 19:06:14.388163961 +0000
 +++ b/dlls/wined3d/wined3d_private.h	2026-10-07 19:06:14.458719912 +0000

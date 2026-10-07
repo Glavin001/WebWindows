@@ -14,8 +14,6 @@ import * as P from '../d3dgpu/protocol.mjs';
 
 /** The handle the host gives wined3d.dll for its unix calls. */
 export const WINED3D_UNIXLIB = 0x3000;
-/** ... and opengl32.dll, which wined3d imports: its unix side is a stub. */
-export const OPENGL_UNIXLIB = 0x3001;
 
 const STATUS_SUCCESS = 0;
 const STATUS_NOT_SUPPORTED = 0xc00000bb;

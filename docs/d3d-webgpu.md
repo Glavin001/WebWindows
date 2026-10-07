@@ -351,8 +351,10 @@ game ─► d3d9.dll ─► wined3d.dll (adapter_wgpu) ─► d3dgpu batches in 
 ```
 
 * **Selection.** With `renderer` unset (or `webgpu`), wined3d asks the host
-  for the WebGPU unix library first; without one (Node, no WebGPU) it falls
-  back as before. The command stream runs on the application's thread
+  for the WebGPU unix library; without one (Node, no WebGPU) it runs
+  without 3D. OpenGL is only an explicit choice (`renderer=gl`): wined3d
+  delay-loads `opengl32.dll`, so the WebGPU path never loads it and the
+  bundle doesn't ship it. The command stream runs on the application's thread
   (`csmt` off) until the runtime has threads.
 * **Resources.** Buffers get a buffer object with a CPU shadow; uploads and
   unmaps are mirrored as `WriteBuffer`. Textures have a GPU location

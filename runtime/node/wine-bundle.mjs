@@ -32,7 +32,7 @@ const GUI_DLLS = [
 ];
 // Direct3D (wined3d with its WebGPU backend): loaded only by programs that
 // mention Direct3D, since wined3d is large.
-const D3D_DLLS = ['opengl32', 'wined3d', 'd3d9'];
+const D3D_DLLS = ['wined3d', 'd3d9'];
 const DEFAULT_BASE = 0x10000000;
 const PRELINK_BASE = 0x60000000;
 const PROGRAMS = ['winemine', 'notepad'];
