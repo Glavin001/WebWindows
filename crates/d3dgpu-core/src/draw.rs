@@ -788,7 +788,7 @@ impl Core {
                 continue;
             };
             let Some((gf, input)) = vfmt::vertex_format(el.ty, &vopts) else {
-                return Err(String::from(format!("vertex element type {:?} is not supported", el.ty)));
+                return Err(format!("vertex element type {:?} is not supported", el.ty));
             };
             vkey.inputs[*reg as usize] = match input {
                 ShaderInput::Float => InputKind::Float,
@@ -804,10 +804,10 @@ impl Core {
                 _ => self.st.streams.get(stream as usize).map(|s| s.stride).unwrap_or(0),
             };
             if stride % 4 != 0 || el.offset % 4 != 0 {
-                return Err(String::from(format!(
+                return Err(format!(
                     "unaligned vertex layout (stride {stride}, offset {}) needs repacking, not done yet",
                     el.offset
-                )));
+                ));
             }
             let instance =
                 self.st.streams.get(stream as usize).is_some_and(|s| s.freq & (1 << 31) != 0) && instances > 1;
@@ -910,18 +910,18 @@ impl Core {
         };
         let front = match &self.caches.front {
             Some((v, s, f)) if *v == self.st.version && *s == up_stride => f.clone(),
-            _ => match {
+            _ => {
                 let t = crate::now_ns();
                 let f = self.prepare_front(&src);
                 self.stats.prepare_ns += crate::now_ns() - t;
-                f
-            } {
-                Ok(f) => {
-                    self.caches.front = Some((self.st.version, up_stride, f.clone()));
-                    f
+                match f {
+                    Ok(f) => {
+                        self.caches.front = Some((self.st.version, up_stride, f.clone()));
+                        f
+                    }
+                    Err(why) => return self.skip(why),
                 }
-                Err(why) => return self.skip(why),
-            },
+            }
         };
         let (vs_module, ps_module, psv, vsv) =
             (front.vs_module.clone(), front.ps_module.clone(), front.psv.clone(), front.vsv.clone());
