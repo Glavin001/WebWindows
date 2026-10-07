@@ -1,0 +1,69 @@
+// Fast mode: translates code discovered while running, using the translator
+// compiled to WebAssembly (crates/wwt-wasm). Missed addresses are recorded in
+// the machine's profile so the next ahead-of-time pass includes them.
+
+export class FastTranslator {
+  static async load(bytes) {
+    const { instance } = await WebAssembly.instantiate(bytes, {});
+    return new FastTranslator(instance.exports);
+  }
+
+  constructor(exports) {
+    this.x = exports;
+  }
+
+  take(ptr) {
+    const mem = new Uint8Array(this.x.memory.buffer);
+    const len = new DataView(this.x.memory.buffer).getUint32(ptr, true);
+    const out = mem.slice(ptr + 4, ptr + 4 + len);
+    this.x.wwt_free(ptr, len + 4);
+    return out;
+  }
+
+  /** Translates code in `code` (located at `base`) reachable from `entries`. */
+  translate(code, base, entries, { known = [], opt = 0, memChecks = true, smcChecks = true } = {}) {
+    const x = this.x;
+    const cp = x.wwt_alloc(code.length);
+    new Uint8Array(x.memory.buffer).set(code, cp);
+    const put = (arr) => {
+      const p = x.wwt_alloc(Math.max(arr.length, 1) * 4);
+      const v = new DataView(x.memory.buffer);
+      arr.forEach((e, i) => v.setUint32(p + i * 4, e >>> 0, true));
+      return p;
+    };
+    const ep = put(entries);
+    const kp = put(known);
+    const flags = (memChecks ? 0 : 1) | (smcChecks ? 0 : 2);
+    const res = x.wwt_translate(cp, code.length, base >>> 0, ep, entries.length, kp, known.length, opt, flags);
+    x.wwt_free(cp, code.length);
+    x.wwt_free(ep, Math.max(entries.length, 1) * 4);
+    x.wwt_free(kp, Math.max(known.length, 1) * 4);
+    return this.take(res);
+  }
+
+  kernel() {
+    return this.take(this.x.wwt_kernel());
+  }
+
+  abi() {
+    return JSON.parse(new TextDecoder().decode(this.take(this.x.wwt_abi())));
+  }
+}
+
+/**
+ * Installs run-time translation on a machine: each miss translates a window
+ * of guest memory starting at the address and loads the result.
+ */
+export function enableFastMode(machine, translator, { window = 0x40000, log } = {}) {
+  machine.onMiss = (cpu, addr) => {
+    const end = Math.min(addr + window, machine.guestLimit);
+    const code = machine.u8.slice(addr, end);
+    const t0 = performance.now();
+    const known = machine.entriesIn(addr, end);
+    const bytes = translator.translate(code, addr, [addr], { known });
+    if (!bytes.length) return 0;
+    const rec = machine.loadModuleSync(bytes, `fast@${addr.toString(16)}`, { keepExisting: true });
+    log?.(`fast mode: translated ${addr.toString(16)} (${rec.count} functions, ${bytes.length} bytes) in ${(performance.now() - t0).toFixed(1)} ms`);
+    return machine.lookup(addr);
+  };
+}

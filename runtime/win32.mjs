@@ -237,6 +237,10 @@ export class Process {
     if (this.trace) this.stderr(new TextEncoder().encode(`[api] ${dll}!${name}\n`));
     const args = new Args(m, esp + 4);
     const r = def.fn.call(this, args, cpu);
+    if (r && typeof r === 'object' && r.jump !== undefined) {
+      // The handler set the registers itself (longjmp).
+      return r.jump;
+    }
     if (typeof r === 'bigint') {
       m.setReg(cpu, EAX, Number(r & 0xffffffffn));
       m.setReg(cpu, EDX, Number((r >> 32n) & 0xffffffffn));
@@ -778,6 +782,15 @@ Process.prototype.loadLibrary = function (name) {
   return h;
 };
 
+function saveJmp(proc, a, cpu) {
+  const m = proc.m;
+  const buf = a.u32(0);
+  const esp = m.reg(cpu, ESP);
+  const vals = [m.reg(cpu, 5), m.reg(cpu, 3), m.reg(cpu, 7), m.reg(cpu, 6), esp + 4, m.u32[esp >>> 2], m.u32[proc.teb >>> 2], 0xffffffff];
+  vals.forEach((v, i) => (m.u32[(buf >>> 2) + i] = v >>> 0));
+  return 0;
+}
+
 // msvcrt: FILE structures are 32 bytes; stdin/stdout/stderr are _iob[0..2].
 const FILE_SIZE = 32;
 
@@ -871,6 +884,42 @@ const msvcrt = {
   atexit: fn(1, function (a) {
     this.atexit.push(a.u32(0));
     return 0;
+  }),
+  // jmp_buf layout (msvcrt _JUMP_BUFFER): Ebp Ebx Edi Esi Esp Eip
+  // Registration TryLevel ...
+  _setjmp3: fn(2, function (a, cpu) {
+    return saveJmp(this, a, cpu);
+  }),
+  _setjmp: fn(1, function (a, cpu) {
+    return saveJmp(this, a, cpu);
+  }),
+  longjmp: fn(2, function (a, cpu) {
+    const m = this.m;
+    const buf = a.u32(0);
+    const at = (i) => m.u32[(buf >>> 2) + i];
+    m.setReg(cpu, 5, at(0));
+    m.setReg(cpu, 3, at(1));
+    m.setReg(cpu, 7, at(2));
+    m.setReg(cpu, 6, at(3));
+    m.setReg(cpu, ESP, at(4));
+    m.u32[this.teb >>> 2] = at(6);
+    m.setReg(cpu, EAX, a.u32(1) || 1);
+    return { jump: at(5) };
+  }),
+  qsort: fn(4, function (a) {
+    const [base, n, size, cmp] = [a.u32(0), a.u32(1), a.u32(2), a.u32(3)];
+    const m = this.m;
+    const items = [];
+    for (let i = 0; i < n; i++) items.push(m.u8.slice(base + i * size, base + (i + 1) * size));
+    // Compare through two scratch slots in guest memory.
+    const tmp = this.heap.alloc(size * 2);
+    items.sort((x, y) => {
+      m.u8.set(x, tmp);
+      m.u8.set(y, tmp + size);
+      return m.callGuest(this.cpu, cmp, [tmp, tmp + size]) | 0;
+    });
+    this.heap.release(tmp);
+    items.forEach((it, i) => m.u8.set(it, base + i * size));
   }),
   _cexit: fn(0, () => {}),
   _c_exit: fn(0, () => {}),

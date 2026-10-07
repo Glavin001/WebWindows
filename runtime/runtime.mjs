@@ -87,6 +87,7 @@ export class Machine {
     this.profile = new Set(); // addresses that missed (for the next AOT pass)
     this.modules = [];
     this.funcCount = 0;
+    this.entries = new Set();
   }
 
   async init() {
@@ -167,13 +168,23 @@ export class Machine {
   // ---- Modules and lookup -------------------------------------------------
 
   /** Instantiates a translated module and registers its functions. */
-  async loadModule(bytes, name = 'module') {
+  async loadModule(bytes, name = 'module', opts = {}) {
     const module = await WebAssembly.compile(bytes);
+    return this.instantiateModule(module, name, opts, (m, imports) => WebAssembly.instantiate(m, imports));
+  }
+
+  /** Synchronous variant, for run-time translation inside a miss. */
+  loadModuleSync(bytes, name = 'module', opts = {}) {
+    const module = new WebAssembly.Module(bytes);
+    return this.instantiateModule(module, name, opts, (m, imports) => new WebAssembly.Instance(m, imports));
+  }
+
+  instantiateModule(module, name, opts, instantiate) {
     const funcsSec = WebAssembly.Module.customSections(module, this.abi.funcs_section)[0];
     const metaSec = WebAssembly.Module.customSections(module, this.abi.meta_section)[0];
     const addrs = new Uint32Array(funcsSec.slice(4));
     const meta = metaSec ? JSON.parse(new TextDecoder().decode(metaSec)) : null;
-    if (meta && meta.abi_version !== this.abi.version) {
+    if (meta && meta.abi_version !== undefined && meta.abi_version !== this.abi.version) {
       throw new Error(`${name}: ABI version ${meta.abi_version}, runtime expects ${this.abi.version}`);
     }
     const base = this.table.length;
@@ -189,16 +200,30 @@ export class Machine {
       code_write: (cpu, addr) => this.codeWrite(cpu, addr),
       math: hostMath,
     };
-    const instance = await WebAssembly.instantiate(module, { env });
-    for (let i = 0; i < addrs.length; i++) this.register(addrs[i], base + i);
-    this.funcCount += addrs.length;
-    const rec = { name, base, count: addrs.length, meta, instance };
-    this.modules.push(rec);
-    this.log(`loaded ${name}: ${addrs.length} functions at table ${base}`);
-    return rec;
+    const finish = (instance) => {
+      for (let i = 0; i < addrs.length; i++) {
+        if (opts.keepExisting && this.lookup(addrs[i])) continue;
+        this.register(addrs[i], base + i);
+      }
+      this.funcCount += addrs.length;
+      const rec = { name, base, count: addrs.length, meta, instance };
+      this.modules.push(rec);
+      this.log(`loaded ${name}: ${addrs.length} functions at table ${base}`);
+      return rec;
+    };
+    const r = instantiate(module, { env });
+    return r instanceof Promise ? r.then((x) => finish(x.instance ?? x)) : finish(r);
+  }
+
+  /** Registered function entries in [lo, hi). */
+  entriesIn(lo, hi) {
+    const out = [];
+    for (const a of this.entries) if (a >= lo && a < hi) out.push(a);
+    return out;
   }
 
   register(addr, index) {
+    this.entries.add(addr >>> 0);
     const page = addr >>> 12;
     let l2 = this.u32[(this.l1 >>> 2) + page];
     if (l2 === this.zeroL2) {

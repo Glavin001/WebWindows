@@ -2071,7 +2071,8 @@ impl<'a> Lifter<'a> {
         // Fast paths: rep movs/stos forward without harmful overlap.
         let head = self.new_block();
         let body = self.new_block();
-        let done = self.target_block(self.next);
+        // The rest of the x86 block continues in `done`.
+        let done = self.new_block();
         self.terminate(Term::Jump(head));
         self.switch_to(head);
         let z = self.is_zero(ECX);
@@ -2161,7 +2162,8 @@ impl<'a> Lifter<'a> {
             self.terminate(Term::Jump(head));
         }
         let _ = w;
-        false
+        self.switch_to(done);
+        true
     }
 
     /// One iteration of a string instruction, updating esi/edi by ±size.

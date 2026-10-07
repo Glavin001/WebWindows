@@ -1,0 +1,13 @@
+[package]
+name = "wwt-wasm"
+description = "The translator compiled to WebAssembly, for run-time (fast mode) translation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wwt = { path = "../wwt" }

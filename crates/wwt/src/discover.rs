@@ -85,6 +85,9 @@ pub struct Discovery {
     pub invalid: BTreeSet<u32>,
     /// Where each seed came from, for reporting.
     pub seed_kinds: BTreeMap<u32, SeedKind>,
+    /// Function entries translated elsewhere (fast mode): treated as
+    /// functions but not decoded or translated again.
+    pub external: BTreeSet<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -143,7 +146,7 @@ impl Discovery {
         let mut work: VecDeque<u32> = self.leaders.iter().copied().collect();
         let mut done: BTreeSet<u32> = BTreeSet::new();
         while let Some(start) = work.pop_front() {
-            if !done.insert(start) {
+            if !done.insert(start) || self.external.contains(&start) {
                 continue;
             }
             let mut va = start;
