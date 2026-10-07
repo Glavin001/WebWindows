@@ -409,6 +409,69 @@ impl PeFile {
         self.sections.iter().find(|s| s.contains_rva(rva))
     }
 
+    /// Names for code addresses (virtual addresses): the COFF symbol table
+    /// when the file still has one (MinGW keeps it unless stripped), then
+    /// named exports. Used only for diagnostics, so a malformed table just
+    /// yields fewer names.
+    pub fn code_names(&self) -> Vec<(u32, String)> {
+        let mut out = vec![];
+        let d = &self.data;
+        let coff = match rd_u32(d, 0x3c) {
+            Ok(o) => o as usize + 4,
+            Err(_) => return out,
+        };
+        let (Ok(sym_ptr), Ok(nsyms)) = (rd_u32(d, coff + 8), rd_u32(d, coff + 12)) else {
+            return out;
+        };
+        let (sym_ptr, nsyms) = (sym_ptr as usize, nsyms as usize);
+        let strtab = sym_ptr + nsyms * 18;
+        let mut i = 0;
+        while sym_ptr != 0 && i < nsyms {
+            let e = sym_ptr + i * 18;
+            let Some(ent) = d.get(e..e + 18) else { break };
+            let value = u32::from_le_bytes([ent[8], ent[9], ent[10], ent[11]]);
+            let section = i16::from_le_bytes([ent[12], ent[13]]);
+            let class = ent[16];
+            let aux = ent[17] as usize;
+            i += 1 + aux;
+            // External or static symbols in an executable section.
+            if section <= 0 || !(class == 2 || class == 3) {
+                continue;
+            }
+            let Some(sec) = self.sections.get(section as usize - 1) else {
+                continue;
+            };
+            if !sec.is_executable() {
+                continue;
+            }
+            let name = if ent[0..4] == [0, 0, 0, 0] {
+                let off = u32::from_le_bytes([ent[4], ent[5], ent[6], ent[7]]) as usize;
+                let start = strtab + off;
+                let Some(rest) = d.get(start..) else { continue };
+                let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
+                String::from_utf8_lossy(&rest[..end]).into_owned()
+            } else {
+                let end = ent[..8].iter().position(|&b| b == 0).unwrap_or(8);
+                String::from_utf8_lossy(&ent[..end]).into_owned()
+            };
+            // Skip section names and compiler-local labels.
+            if name.is_empty() || name.starts_with('.') {
+                continue;
+            }
+            let va = self
+                .image_base
+                .wrapping_add(sec.virtual_address)
+                .wrapping_add(value);
+            out.push((va, name));
+        }
+        for e in &self.exports {
+            if let (Some(n), ExportTarget::Rva(rva)) = (&e.name, &e.target) {
+                out.push((self.image_base.wrapping_add(*rva), n.clone()));
+            }
+        }
+        out
+    }
+
     pub fn entry_point(&self) -> Option<u32> {
         (self.entry_rva != 0).then_some(self.image_base + self.entry_rva)
     }

@@ -100,7 +100,8 @@ enum Cmd {
         #[command(flatten)]
         opts: TranslateOpts,
     },
-    /// Print the generated WebAssembly as text.
+    /// Print the generated WebAssembly as text (or, given a .wasm file,
+    /// that module, e.g. an Emscripten build to compare against).
     Wat {
         file: PathBuf,
         #[command(flatten)]
@@ -227,6 +228,11 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Wat { file, opts } => {
+            let bytes = std::fs::read(&file)?;
+            if bytes.starts_with(b"\0asm") {
+                println!("{}", wasmprinter::print_bytes(&bytes)?);
+                return Ok(());
+            }
             let pe = load(&file)?;
             let t = wwt::translate_pe(&pe, &opts.config(), &opts.seeds()?)?;
             println!("{}", wasmprinter::print_bytes(&t.wasm)?);

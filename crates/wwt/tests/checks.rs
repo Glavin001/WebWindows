@@ -1,0 +1,55 @@
+//! Which guest-memory checks code generation emits: loads near an address
+//! that already passed a check skip theirs, and nothing else does.
+
+use wwt::translate::{build_module, translate_snippet};
+
+/// Number of guest-limit checks (reads of the `guest_limit` global) in the
+/// module translated from `code`.
+fn guest_checks(code: &[u8]) -> usize {
+    let cfg = wwt::Config::default();
+    let (f, unsupported) = translate_snippet(code, 0x401000, &cfg);
+    assert!(unsupported.is_empty(), "{unsupported:?}");
+    let wasm = build_module(&[f], &cfg);
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&wasm)
+        .expect("valid module");
+    let text = wasmprinter::print_bytes(&wasm).unwrap();
+    text.lines().filter(|l| l.trim() == "global.get 2").count()
+}
+
+#[test]
+fn nearby_loads_share_a_check() {
+    // mov eax, [ecx]; add eax, [ecx+4]; add eax, [ecx+8]; ret
+    assert_eq!(guest_checks(&[0x8b, 0x01, 0x03, 0x41, 0x04, 0x03, 0x41, 0x08, 0xc3]), 1);
+}
+
+#[test]
+fn redefined_base_is_checked_again() {
+    // mov eax, [ecx]; mov ecx, [edx]; add eax, [ecx+4]; ret
+    assert_eq!(guest_checks(&[0x8b, 0x01, 0x8b, 0x0a, 0x03, 0x41, 0x04, 0xc3]), 3);
+}
+
+#[test]
+fn distant_load_is_checked() {
+    // mov eax, [ecx]; add eax, [ecx+0x2000]; ret
+    assert_eq!(
+        guest_checks(&[0x8b, 0x01, 0x03, 0x81, 0x00, 0x20, 0x00, 0x00, 0xc3]),
+        2
+    );
+}
+
+#[test]
+fn negative_displacements_share_a_check() {
+    // mov eax, [ecx-8]; add eax, [ecx-4]; ret
+    assert_eq!(guest_checks(&[0x8b, 0x41, 0xf8, 0x03, 0x41, 0xfc, 0xc3]), 1);
+}
+
+#[test]
+fn store_check_covers_later_loads_but_stores_keep_theirs() {
+    // mov [ecx], eax; mov eax, [ecx+4]; mov [ecx+8], eax; ret
+    // Each store has the precise check on its slow path; the load has none.
+    assert_eq!(
+        guest_checks(&[0x89, 0x01, 0x8b, 0x41, 0x04, 0x89, 0x41, 0x08, 0xc3]),
+        2
+    );
+}

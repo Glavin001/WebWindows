@@ -22,6 +22,7 @@ pub mod kernel;
 pub mod lift;
 pub mod opt;
 pub mod pe;
+pub mod reducible;
 pub mod translate;
 
 pub use translate::{translate_pe, translate_region, Config, Translation};

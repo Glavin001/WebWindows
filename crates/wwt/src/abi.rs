@@ -137,6 +137,19 @@ pub mod addr {
     pub const STOP: u32 = 0xFFFF_FFF0;
 }
 
+/// The store map (import `store_map`): one byte per 4 KB page of the 4 GB
+/// address space. Stores to a page whose byte is zero need no further
+/// checks; any other value sends the store down a slow path that checks the
+/// address precisely and invalidates translated code on the page.
+pub mod store_map {
+    /// The page holds translated code: a store invalidates the page's
+    /// translations (resets its lookup entry to `zero_l2`, clears this bit).
+    pub const CODE: u8 = 1;
+    /// The page is in the null region, is the last guest page (where an
+    /// access can straddle the guest limit) or lies above the guest limit.
+    pub const EDGE: u8 = 2;
+}
+
 /// Names of the module imports every translated module expects.
 pub mod imports {
     pub const MODULE: &str = "env";
@@ -145,9 +158,11 @@ pub mod imports {
     pub const TABLE_BASE: &str = "table_base";
     pub const LOOKUP_L1: &str = "lookup_l1";
     pub const GUEST_LIMIT: &str = "guest_limit";
-    pub const CODE_BITMAP: &str = "code_bitmap";
+    pub const STORE_MAP: &str = "store_map";
+    /// The empty second level of the lookup: translated code points a
+    /// page's first-level entry here when a store hits its code.
+    pub const ZERO_L2: &str = "zero_l2";
     pub const FAULT: &str = "fault";
-    pub const CODE_WRITE: &str = "code_write";
     pub const MATH: &str = "math";
 }
 
@@ -157,7 +172,7 @@ pub const FUNCS_SECTION: &str = "wwt.funcs";
 /// Custom section with JSON metadata about the translation.
 pub const META_SECTION: &str = "wwt.meta";
 /// Bumped whenever generated code changes incompatibly, to invalidate caches.
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 
 #[derive(Serialize)]
 struct AbiJson {
