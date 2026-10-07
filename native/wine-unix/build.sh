@@ -13,6 +13,11 @@ WINE_BUILD=${WINE_BUILD:-/opt/wine-build}
 out=$root/target/wine-unix
 if ! command -v emcc > /dev/null; then export PATH="${EMSDK:-/opt/emsdk}/upstream/emscripten:$PATH"; fi
 mkdir -p "$out/include" "$out/obj"
+# Headers Wine generates from IDL (d3d11.h for win32u's d3dkmt.c, ...): a
+# Wine build tree only has the ones its DLLs needed, so make them all.
+idl_headers=$(for f in "$WINE_SRC"/include/*.idl; do n=$(basename "$f" .idl); \
+  grep -q "^include/$n.h:" "$WINE_BUILD/Makefile" && echo "include/$n.h"; done)
+make -s -C "$WINE_BUILD" -j"$(nproc)" $idl_headers
 sh "$here/gen-config.sh" "$WINE_BUILD/include/config.h" "$out/include/config.h"
 python3 "$here/prepare.py" "$WINE_SRC" "$WINE_BUILD" "$out/src"
 
