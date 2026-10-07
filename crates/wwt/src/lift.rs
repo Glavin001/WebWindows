@@ -24,6 +24,9 @@ pub fn only_faults(i: &Instruction) -> bool {
             M::Int
                 | M::Int1
                 | M::Int3
+                | M::Iret
+                | M::Iretd
+                | M::Retf
                 | M::Into
                 | M::Ud0
                 | M::Ud1
@@ -662,6 +665,40 @@ impl<'a> Lifter<'a> {
         self.effect(Op::FaultIf { cond, code, info });
     }
 
+    /// Loads a segment register (index in es, cs, ss, ds, fs, gs order).
+    /// Programs run in Windows' flat segments: the selectors Windows gives
+    /// user code (0x23 code, 0x2b data, 0x53 the TEB, or null) load and read
+    /// back; anything else raises a general protection fault, with the
+    /// selector as the fault information when it names an LDT entry. Only
+    /// the TEB segment has a base (fs), so loads do not change addressing.
+    fn load_segment(&mut self, idx: u32, v: V) {
+        let sel = self.bini(BinOp::I32And, v, 0xffff);
+        let allowed: &[u32] = if idx == 2 { &[0x2b] } else { &[0, 0x23, 0x2b, 0x53] };
+        let mut ok = self.c32(0);
+        for &a in allowed {
+            let e = self.bini(BinOp::I32Eq, sel, a);
+            ok = self.bin(BinOp::I32Or, ok, e);
+        }
+        let bad = self.bini(BinOp::I32Xor, ok, 1);
+        // info = sel & ~7 for an LDT selector (TI set), else 0.
+        let ti = self.bini(BinOp::I32And, sel, 4);
+        let ti = self.bini(BinOp::I32ShrU, ti, 2);
+        let zero = self.c32(0);
+        let mask = self.bin(BinOp::I32Sub, zero, ti);
+        let idx_bits = self.bini(BinOp::I32And, sel, !7);
+        let info = self.bin(BinOp::I32And, idx_bits, mask);
+        self.fault_if(bad, fault::GENERAL_PROTECTION, info);
+        self.store_native(sel, 2, crate::abi::cpu::SEG_SEL + idx * 2);
+    }
+
+    /// A general protection fault at the current instruction.
+    fn gp_fault(&mut self) {
+        self.terminate(Term::Fault {
+            code: fault::GENERAL_PROTECTION,
+            eip: self.eip,
+        });
+    }
+
     fn unsupported(&mut self, i: &Instruction, why: &str) {
         let text = format!("{i}");
         self.unsupported.push((self.eip, format!("{text} ({why})")));
@@ -719,13 +756,17 @@ impl<'a> Lifter<'a> {
             });
             return false;
         }
-        // Far pointers in memory (jmp/call far [m], lfs, ...): segment loads
-        // are not supported. These mostly come from data decoded as code.
+        // Far pointers in memory (jmp/call far [m], lfs, ...) and far
+        // returns: Windows programs run in one flat segment, and these load
+        // selectors, which fault with a general protection fault as they do
+        // for the selectors user code would pass. (They mostly come from
+        // data decoded as code.)
         if matches!(
             i.memory_size(),
             MemorySize::SegPtr16 | MemorySize::SegPtr32 | MemorySize::Fword6 | MemorySize::Fword10
-        ) {
-            self.unsupported(i, "far pointer operand");
+        ) || matches!(m, M::Iret | M::Iretd | M::Retf)
+        {
+            self.gp_fault();
             return false;
         }
         if fpu::is_fpu(i) {
@@ -1097,7 +1138,15 @@ impl<'a> Lifter<'a> {
                 });
                 return false;
             }
-            M::Int | M::Into | M::Int1 => {
+            M::Int1 => {
+                // icebp: a single-step trap, reported after the instruction.
+                self.terminate(Term::Fault {
+                    code: fault::SINGLE_STEP,
+                    eip: self.next,
+                });
+                return false;
+            }
+            M::Int | M::Into => {
                 let n = if m == M::Int {
                     i.immediate8() as u32
                 } else {
@@ -1168,11 +1217,9 @@ impl<'a> Lifter<'a> {
         let k0 = i.op0_kind();
         let k1 = i.op1_kind();
         if k0 == OpKind::Register && i.op0_register().is_segment_register() {
-            // Loading a segment register: only flat selectors are supported;
-            // record the selector so it reads back.
             let v = self.read_op(i, 1);
             let idx = i.op0_register() as u32 - Register::ES as u32;
-            self.store_native(v, 2, crate::abi::cpu::SEG_SEL + idx * 2);
+            self.load_segment(idx, v);
             return;
         }
         if k1 == OpKind::Register && i.op1_register().is_segment_register() {
@@ -1264,21 +1311,30 @@ impl<'a> Lifter<'a> {
         let size = i.stack_pointer_increment() as u32;
         match i.op0_kind() {
             OpKind::Register if i.op0_register().is_segment_register() => {
-                let v = self.pop_val(size);
+                // A bad selector faults before esp moves.
+                let v = self.load(ESP, size, Space::Trusted);
                 let idx = i.op0_register() as u32 - Register::ES as u32;
-                self.store_native(v, 2, crate::abi::cpu::SEG_SEL + idx * 2);
+                self.load_segment(idx, v);
+                let sp = self.bini(BinOp::I32Add, ESP, size);
+                self.set_gpr(ESP, sp);
             }
             OpKind::Register => {
                 let v = self.pop_val(size);
                 self.write_reg(i.op0_register(), v);
             }
             _ => {
-                // The address is computed after esp is incremented.
+                // The address is computed after esp is incremented, but a
+                // fault in the store leaves esp as it was (faults are
+                // precise: the CONTEXT shows the state before the
+                // instruction).
                 let v = self.load(ESP, size, Space::Trusted);
+                let old = self.copy(ESP);
                 let sp = self.bini(BinOp::I32Add, ESP, size);
                 self.set_gpr(ESP, sp);
                 let (a, s) = self.ea(i);
+                self.set_gpr(ESP, old);
                 self.store(a, v, size, s);
+                self.set_gpr(ESP, sp);
             }
         }
     }
@@ -2393,7 +2449,7 @@ impl<'a> Lifter<'a> {
                     _ => self.terminate(Term::JmpInd(target)),
                 }
             }
-            _ => self.unsupported(i, "far jump"),
+            _ => self.gp_fault(),
         }
         false
     }
@@ -2431,7 +2487,7 @@ impl<'a> Lifter<'a> {
                     cont,
                 });
             }
-            _ => self.unsupported(i, "far call"),
+            _ => self.gp_fault(),
         }
         false
     }

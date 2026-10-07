@@ -36,6 +36,12 @@ pub fn kernel_wat() -> String {
     (return_call_indirect (type $fn) (local.get $cpu)
       (call $miss (local.get $cpu) (local.get $t))))
 
+  ;; Table slot 1: continues at cpu.eip. The host returns this slot from a
+  ;; miss it turns into an exception, after pointing cpu.eip at the
+  ;; exception dispatcher.
+  (func $resume (export "resume") (type $fn) (param $cpu i32) (result i32)
+    (i32.load offset={eip} (local.get $cpu)))
+
   ;; Runs guest code from `eip` until it returns to the stop address.
   (func (export "run") (param $cpu i32) (param $eip i32) (result i32)
     (loop $next

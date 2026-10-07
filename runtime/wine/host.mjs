@@ -19,6 +19,7 @@ import { HANDLE_ROUTED, WIN32U_UNIXLIB } from './unix.mjs';
 
 import layout from './layout.json' with { type: 'json' };
 import { installAssemblies } from './sxs.mjs';
+import { installExceptions } from './exceptions.mjs';
 
 export const L = layout;
 
@@ -351,6 +352,7 @@ export class WineHost {
     this.w32(ex('__wine_unixlib_handle'), 0x1000);
     this.w32(ex('__wine_unixlib_handle') + 4, 0);
     this.kiUserCallbackDispatcher = ex('KiUserCallbackDispatcher');
+    installExceptions(this, ex);
 
     // The main executable, mapped by the "Unix side" as Wine does.
     const exe = this.mapImageFile(exeDosPath, this.fileAt(exeDosPath));

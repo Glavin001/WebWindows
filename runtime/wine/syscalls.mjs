@@ -3,9 +3,10 @@
 // image sections, one thread). Each function receives `a(i)`, the i-th
 // 32-bit argument, and returns an NTSTATUS (or {jump} to resume elsewhere).
 
-import { ProcessExit, GuestFault, hex } from '../runtime.mjs';
+import { ProcessExit, hex } from '../runtime.mjs';
 import { parsePe } from './host.mjs';
 import { WIN32U_UNIXLIB } from './unix.mjs';
+import { ntRaiseException, restoreContext, saveContext } from './exceptions.mjs';
 
 import L from './layout.json' with { type: 'json' };
 import {
@@ -105,17 +106,8 @@ function memInfo(h, addr, buf) {
 
 /** Restores registers from a CONTEXT and resumes there. */
 function continueContext(h, cpu, ctx) {
-  const C = L.CONTEXT;
-  const m = h.m;
-  const regs = [C.Eax, C.Ecx, C.Edx, C.Ebx, C.Esp, C.Ebp, C.Esi, C.Edi];
-  regs.forEach((off, i) => m.setReg(cpu, i, h.u32(ctx + off)));
-  // EFlags: arithmetic flags explicitly, direction flag, system bits.
-  const ef = h.u32(ctx + C.EFlags);
-  const abi = m.abi;
-  m.u32[(cpu + abi.cpu.FK) >>> 2] = 0;
-  m.u32[(cpu + abi.cpu.FR) >>> 2] = ef & 0x8d5;
-  m.u32[(cpu + abi.cpu.DF) >>> 2] = (ef >>> 10) & 1;
-  return { jump: h.u32(ctx + C.Eip) };
+  const eip = restoreContext(h, cpu, ctx);
+  return eip === null ? STATUS.SUCCESS : { jump: eip };
 }
 
 // ---- system calls ------------------------------------------------------------
@@ -435,14 +427,19 @@ export const SYSCALLS = {
   NtContinueEx(a, cpu) {
     return continueContext(this, cpu, a(0));
   },
-  NtRaiseException(a) {
-    const rec = a(0);
-    const code = this.u32(rec);
-    const addr = this.u32(rec + 12);
-    const nparams = this.u32(rec + 16);
-    const params = [];
-    for (let i = 0; i < Math.min(nparams, 4); i++) params.push(hex(this.u32(rec + 20 + i * 4)));
-    throw new GuestFault(code, addr, 0, `exception ${hex(code)} raised at ${hex(addr)} params [${params.join(', ')}] (no SEH dispatch yet)`);
+  NtRaiseException(a, cpu) {
+    return ntRaiseException(this, cpu, a(0), a(1), a(2));
+  },
+  NtGetContextThread(a, cpu) {
+    if (a(0) !== 0xfffffffe) return STATUS.NOT_IMPLEMENTED;
+    // The thread as it returns from this call: eip in the system call stub.
+    const ctx = a(1);
+    const want = this.u32(ctx);
+    const esp = this.m.reg(cpu, 4);
+    saveContext(this, cpu, ctx, this.u32(esp));
+    this.w32(ctx + L.CONTEXT.Esp, esp + 4);
+    this.w32(ctx + L.CONTEXT.ContextFlags, want);
+    return STATUS.SUCCESS;
   },
   NtSetContextThread(a, cpu) {
     if (a(0) === 0xfffffffe) return continueContext(this, cpu, a(1));

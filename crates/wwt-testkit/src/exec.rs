@@ -103,7 +103,7 @@ impl Executor {
              code: i32,
              eip: i32,
              info: i32|
-             -> Result<()> {
+             -> Result<i32> {
                 caller.data_mut().fault = Some((code as u32, eip as u32, info as u32));
                 Err(anyhow!("guest fault"))
             },
@@ -187,7 +187,11 @@ impl Executor {
                             fault::INTEGER_DIVIDE_BY_ZERO | fault::INTEGER_OVERFLOW => "DE",
                             fault::ILLEGAL_INSTRUCTION => "UD",
                             fault::BREAKPOINT => "BP",
-                            fault::ACCESS_VIOLATION | fault::PRIVILEGED_INSTRUCTION => "AV",
+                            fault::ACCESS_VIOLATION
+                            | fault::ACCESS_VIOLATION_WRITE
+                            | fault::ACCESS_VIOLATION_EXECUTE
+                            | fault::GENERAL_PROTECTION
+                            | fault::PRIVILEGED_INSTRUCTION => "AV",
                             fault::UNSUPPORTED => "UNSUPPORTED",
                             _ => "??",
                         }

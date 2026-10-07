@@ -130,6 +130,8 @@ export class Machine {
     const { instance } = await WebAssembly.instantiate(this.kernelBytes, { env });
     this.kernel = instance.exports;
     this.table.set(0, this.kernel.miss_entry);
+    this.table.grow(1);
+    this.table.set(1, this.kernel.resume);
   }
 
   refreshViews() {
@@ -248,6 +250,12 @@ export class Machine {
     return this.u32[(l2 >>> 2) + (addr & 0xfff)];
   }
 
+  /** Table slot that continues at `eip` (for a miss turned into an exception). */
+  resumeAt(cpu, eip) {
+    this.u32[((cpu >>> 0) + this.abi.cpu.EIP) >>> 2] = eip >>> 0;
+    return 1;
+  }
+
   /** A store hit a page with translated code: drop the page's translations. */
   codeWrite(cpu, addr) {
     const page = addr >>> 12;
@@ -257,10 +265,16 @@ export class Machine {
   }
 
   miss(cpu, addr) {
-    this.profile.add(addr >>> 0);
+    addr >>>= 0;
+    const F = this.abi.fault;
+    // With exception dispatch, jumping to memory with nothing there raises
+    // an access violation in the guest.
+    if (this.onFault && this.canExecute && !this.canExecute(addr)) return this.resumeAt(cpu, this.fault(cpu, F.ACCESS_VIOLATION_EXECUTE, addr, addr));
+    this.profile.add(addr);
     if (this.onMiss) {
-      const idx = this.onMiss(cpu, addr >>> 0);
+      const idx = this.onMiss(cpu, addr);
       if (idx) return idx;
+      if (this.onFault) return this.resumeAt(cpu, this.fault(cpu, F.ILLEGAL_INSTRUCTION, addr, 0));
     }
     throw new GuestFault(
       this.abi.fault.ACCESS_VIOLATION,
@@ -271,9 +285,15 @@ export class Machine {
     );
   }
 
+  /**
+   * A fault in translated code. `onFault` (set by a host with exception
+   * dispatch) returns the address to continue at; otherwise the fault stops
+   * the program.
+   */
   fault(cpu, code, eip, info) {
     if (this.onFault) {
-      this.onFault(cpu, code >>> 0, eip >>> 0, info >>> 0);
+      const next = this.onFault(cpu, code >>> 0, eip >>> 0, info >>> 0);
+      if (next !== undefined) return next >>> 0;
     }
     const names = Object.entries(this.abi.fault).find(([, v]) => v === code >>> 0);
     throw new GuestFault(
@@ -282,6 +302,15 @@ export class Machine {
       info >>> 0,
       `${names ? names[0] : hex(code)} at ${hex(eip)} (address/info ${hex(info)})`,
     );
+  }
+
+  /** Full eflags of a thread, with its lazy arithmetic flags evaluated. */
+  eflags(cpu) {
+    const A = this.abi.cpu;
+    const f = (o) => this.i32[(cpu + o) >>> 2];
+    const evaluate = this.modules[0].instance.exports.eflags;
+    const arith = evaluate(f(A.FK), f(A.FR), f(A.FA), f(A.FB), f(A.FC));
+    return ((arith & 0x8d5) | (f(A.DF) << 10) | f(A.EFLAGS_SYS) | 2) >>> 0;
   }
 
   // ---- Host calls -----------------------------------------------------------
