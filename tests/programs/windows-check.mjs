@@ -5,11 +5,13 @@
 //   node tests/programs/windows-check.mjs <dir with *.exe and results.json>
 
 import { spawnSync } from 'node:child_process';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 const dir = process.argv[2] ?? 'target/programs';
-const results = JSON.parse(readFileSync(join(dir, 'results.json'), 'utf8'));
+const results = readdirSync(dir)
+  .filter((f) => /^results.*\.json$/.test(f))
+  .flatMap((f) => JSON.parse(readFileSync(join(dir, f), 'utf8')));
 let bad = 0;
 let ran = 0;
 for (const r of results) {

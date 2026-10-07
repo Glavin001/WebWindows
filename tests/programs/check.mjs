@@ -14,7 +14,7 @@
 // with cvise (see tests/programs/reduce.sh).
 
 import { spawn } from 'node:child_process';
-import { mkdirSync, readdirSync, copyFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readdirSync, copyFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -43,7 +43,11 @@ if (!files.length && csmith === 0) {
 }
 
 const csmithInc = join(root, 'tests/csmith/runtime');
-const wwt = existsSync(join(root, 'target/release/wwt')) ? join(root, 'target/release/wwt') : join(root, 'target/debug/wwt');
+// The most recently built translator.
+const wwt = ['target/release/wwt', 'target/debug/wwt']
+  .map((p) => join(root, p))
+  .filter((p) => existsSync(p))
+  .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
 
 /** Runs a command, resolving with { status, stdout, stderr, error, signal }. */
 function sh(cmd, argv, { timeout = 0 } = {}) {
@@ -145,5 +149,5 @@ await pool();
 const count = (s) => results.filter((r) => r.status === s).length;
 const summary = `${results.length} runs: ${count('pass')} pass, ${count('fail')} fail, ${count('skip')} skipped, ${count('build-error')} build errors`;
 console.log(summary);
-writeFileSync(join(work, 'results.json'), JSON.stringify(results, null, 2));
+writeFileSync(join(work, csmith ? 'results-csmith.json' : 'results.json'), JSON.stringify(results, null, 2));
 process.exit(count('fail') + count('build-error') ? 1 : 0);

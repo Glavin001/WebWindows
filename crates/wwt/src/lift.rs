@@ -2310,6 +2310,12 @@ impl<'a> Lifter<'a> {
     // ---- Branches and calls ----------------------------------------------
 
     fn branch(&mut self, cond: V, taken: u32, fall: u32) {
+        if taken == fall {
+            // A conditional jump to the next instruction.
+            let t = self.target_block(taken);
+            self.terminate(Term::Jump(t));
+            return;
+        }
         let t = self.target_block(taken);
         let f = self.target_block(fall);
         self.terminate(Term::Branch { cond, t, f });

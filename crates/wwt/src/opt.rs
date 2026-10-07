@@ -347,7 +347,12 @@ pub fn simplify(f: &mut Function) {
             }
             *u = v;
         }
-        // A branch on a constant becomes a jump.
+        // A branch with one target, or on a constant, becomes a jump.
+        if let Term::Branch { t, f: fb, .. } = &term {
+            if t == fb {
+                term = Term::Jump(*t);
+            }
+        }
         if let Term::Branch { cond, t, f: fb } = &term {
             let c = gconst.get(cond).or_else(|| lconst.get(cond)).copied();
             if let Some(c) = c {
