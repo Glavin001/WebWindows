@@ -13,7 +13,7 @@
 // Failing programs are copied to target/program-failures/ for reduction
 // with cvise (see tests/programs/reduce.sh).
 
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdirSync, readdirSync, copyFileSync, writeFileSync, existsSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,39 +45,59 @@ if (!files.length && csmith === 0) {
 const csmithInc = join(root, 'tests/csmith/runtime');
 const wwt = existsSync(join(root, 'target/release/wwt')) ? join(root, 'target/release/wwt') : join(root, 'target/debug/wwt');
 
-function sh(cmd, argv, o = {}) {
-  return spawnSync(cmd, argv, { encoding: 'latin1', maxBuffer: 64 << 20, ...o });
+/** Runs a command, resolving with { status, stdout, stderr, error, signal }. */
+function sh(cmd, argv, { timeout = 0 } = {}) {
+  return new Promise((resolveP) => {
+    const child = spawn(cmd, argv, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const out = [];
+    const err = [];
+    let timedOut = false;
+    const timer = timeout ? setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, timeout) : null;
+    child.stdout.on('data', (d) => out.push(d));
+    child.stderr.on('data', (d) => err.push(d));
+    child.on('error', (e) => resolveP({ status: -1, stdout: '', stderr: String(e), error: e }));
+    child.on('close', (status, signal) => {
+      if (timer) clearTimeout(timer);
+      resolveP({
+        status,
+        signal,
+        error: timedOut ? new Error('timed out') : null,
+        stdout: Buffer.concat(out).toString('latin1'),
+        stderr: Buffer.concat(err).toString('latin1'),
+      });
+    });
+  });
 }
 
 const programs = files.map((f) => ({ name: basename(f, '.c'), src: f, cflags: [] }));
 for (let i = 0; i < csmith; i++) {
   const s = seed + i;
   const src = join(work, `csmith-${s}.c`);
-  const r = sh('csmith', ['--seed', String(s), '--max-funcs', '6', '--max-block-depth', '4', '-o', src]);
+  const r = await sh('csmith', ['--seed', String(s), '--max-funcs', '6', '--max-block-depth', '4', '-o', src]);
   if (r.status !== 0) throw new Error(`csmith failed: ${r.stderr}`);
   programs.push({ name: `csmith-${s}`, src, cflags: ['-I', csmithInc, '-w'] });
 }
 
-function build(p, opt) {
+async function build(p, opt) {
   const base = join(work, `${p.name}-${opt}`);
   // The reference runs x87 code at double precision, which is what the
   // translator implements by default (registers are f64).
-  const nat = sh('gcc', ['-m32', `-${opt}`, ...p.cflags, '-o', base + '.native', p.src, join(here, 'pc53.c'), '-lm']);
+  const nat = await sh('gcc', ['-m32', `-${opt}`, ...p.cflags, '-o', base + '.native', p.src, join(here, 'pc53.c'), '-lm']);
   if (nat.status !== 0) return { error: 'native build: ' + nat.stderr.slice(0, 500) };
-  const win = sh('i686-w64-mingw32-gcc', [`-${opt}`, ...p.cflags, '-o', base + '.exe', p.src]);
+  const win = await sh('i686-w64-mingw32-gcc', [`-${opt}`, ...p.cflags, '-o', base + '.exe', p.src]);
   if (win.status !== 0) return { error: 'mingw build: ' + win.stderr.slice(0, 500) };
   return { native: base + '.native', exe: base + '.exe' };
 }
 
-function runOne(p, opt) {
-  const b = build(p, opt);
+async function runOne(p, opt) {
+  const b = await build(p, opt);
   if (b.error) return { status: 'build-error', detail: b.error };
-  const nat = sh(b.native, [], { timeout: 10000 });
+  const nat = await sh(b.native, [], { timeout: 10000 });
   if (nat.error || nat.signal) return { status: 'skip', detail: 'native run timed out or crashed' };
   const wasm = b.exe + '.wasm';
-  const tr = sh(wwt, ['translate', b.exe, '-o', wasm]);
+  const tr = await sh(wwt, ['translate', b.exe, '-o', wasm]);
   if (tr.status !== 0) return { status: 'fail', detail: 'translate: ' + tr.stderr.slice(-800) };
-  const run = sh('node', [join(root, 'runtime/node/run.mjs'), '--wasm', wasm, b.exe], { timeout: 120000 });
+  const run = await sh('node', [join(root, 'runtime/node/run.mjs'), '--wasm', wasm, b.exe], { timeout: 120000 });
   if (run.error) return { status: 'fail', detail: `translated run: ${run.error.message}` };
   const want = { out: nat.stdout, code: nat.status & 0xff };
   const got = { out: run.stdout, code: run.status & 0xff };
@@ -100,24 +120,25 @@ const results = [];
 const todo = [];
 for (const p of programs) for (const opt of opts) todo.push([p, opt]);
 
-// Run with a simple worker pool of child processes (builds and runs are
-// subprocesses, so parallelism comes from overlapping them).
+// Builds and runs are subprocesses; overlap `jobs` of them.
 async function pool() {
-  const { Worker } = await import('node:worker_threads');
-  void Worker;
-  for (const [p, opt] of todo) {
-    const r = runOne(p, opt);
-    results.push({ name: p.name, opt, ...r });
-    const tag = { pass: 'ok  ', fail: 'FAIL', skip: 'skip', 'build-error': 'BLD ' }[r.status];
-    process.stdout.write(`${tag} ${p.name} -${opt}${r.detail && r.status !== 'pass' ? '  ' + r.detail : ''}\n`);
-    if (r.status === 'fail') {
-      mkdirSync(failDir, { recursive: true });
-      copyFileSync(p.src, join(failDir, `${p.name}-${opt}.c`));
+  let next = 0;
+  async function worker() {
+    while (next < todo.length) {
+      const [p, opt] = todo[next++];
+      const r = await runOne(p, opt);
+      results.push({ name: p.name, opt, ...r });
+      const tag = { pass: 'ok  ', fail: 'FAIL', skip: 'skip', 'build-error': 'BLD ' }[r.status];
+      process.stdout.write(`${tag} ${p.name} -${opt}${r.detail && r.status !== 'pass' ? '  ' + r.detail : ''}\n`);
+      if (r.status === 'fail') {
+        mkdirSync(failDir, { recursive: true });
+        copyFileSync(p.src, join(failDir, `${p.name}-${opt}.c`));
+      }
     }
   }
+  await Promise.all(Array.from({ length: jobs }, worker));
 }
 await pool();
-void jobs;
 
 const count = (s) => results.filter((r) => r.status === s).length;
 const summary = `${results.length} runs: ${count('pass')} pass, ${count('fail')} fail, ${count('skip')} skipped, ${count('build-error')} build errors`;

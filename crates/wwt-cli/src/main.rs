@@ -9,7 +9,11 @@ use wwt::pe::PeFile;
 use wwt::Config;
 
 #[derive(Parser)]
-#[command(name = "wwt", version, about = "Translate 32-bit Windows programs to WebAssembly")]
+#[command(
+    name = "wwt",
+    version,
+    about = "Translate 32-bit Windows programs to WebAssembly"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -156,12 +160,21 @@ fn main() -> Result<()> {
             for s in &pe.sections {
                 println!(
                     "  {:8} rva {:#08x} size {:#08x} raw {:#08x} flags {:#010x}",
-                    s.name, s.virtual_address, s.mem_size(), s.raw_size, s.characteristics
+                    s.name,
+                    s.virtual_address,
+                    s.mem_size(),
+                    s.raw_size,
+                    s.characteristics
                 );
             }
             println!("imports:");
             for i in &pe.imports {
-                println!("  {}!{} @ iat {:#x}", i.dll, i.name, pe.image_base + i.iat_rva);
+                println!(
+                    "  {}!{} @ iat {:#x}",
+                    i.dll,
+                    i.name,
+                    pe.image_base + i.iat_rva
+                );
             }
             if !pe.exports.is_empty() {
                 println!("exports:");
@@ -290,7 +303,13 @@ fn pack(file: &Path, out: &Path, opts: &TranslateOpts) -> Result<()> {
     std::fs::write(out.join("abi.json"), wwt::abi::abi_json())?;
     // Copy the JavaScript runtime that ships next to the CLI.
     let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime");
-    for f in ["runtime.mjs", "win32.mjs", "pe.mjs", "index.html", "worker.mjs"] {
+    for f in [
+        "runtime.mjs",
+        "win32.mjs",
+        "pe.mjs",
+        "index.html",
+        "worker.mjs",
+    ] {
         let src = runtime.join(f);
         if src.exists() {
             std::fs::copy(&src, out.join(f))?;

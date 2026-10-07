@@ -280,6 +280,11 @@ pub fn simplify(f: &mut Function) {
             let cst = |v: V, lconst: &HashMap<V, u64>| -> Option<u64> {
                 gconst.get(&v).or_else(|| lconst.get(&v)).copied()
             };
+            // A copy's source, before folding turns it into a constant.
+            let copy_src = match inst.op {
+                Op::Copy(s) => Some(s),
+                _ => None,
+            };
             // Fold.
             let ty = inst.dst.map(|d| f.vtypes[d as usize]);
             let new_op = match &inst.op {
@@ -290,7 +295,9 @@ pub fn simplify(f: &mut Function) {
                         _ => simplify_bin(*op, *a, *b, ca, cb),
                     }
                 }
-                Op::Un(op, a) => cst(*a, &lconst).and_then(|x| fold_un(*op, x)).map(Op::Const),
+                Op::Un(op, a) => cst(*a, &lconst)
+                    .and_then(|x| fold_un(*op, x))
+                    .map(Op::Const),
                 Op::Select { cond, t, f: fv } => match cst(*cond, &lconst) {
                     Some(c) => Some(Op::Copy(if c as u32 != 0 { *t } else { *fv })),
                     None if t == fv => Some(Op::Copy(*t)),
@@ -313,6 +320,13 @@ pub fn simplify(f: &mut Function) {
                 match inst.op {
                     Op::Const(c) => {
                         lconst.insert(d, c);
+                        // Later uses of a state vreg can read the temporary
+                        // instead, letting the state write die.
+                        if let Some(src) = copy_src {
+                            if d < NUM_STATE && src >= NUM_STATE {
+                                lcopy.insert(d, src);
+                            }
+                        }
                     }
                     Op::Copy(s) if s != d => {
                         lcopy.insert(d, s);
@@ -351,9 +365,11 @@ fn simplify_bin(op: BinOp, a: V, b: V, ca: Option<u64>, cb: Option<u64>) -> Opti
     let ca32 = ca.map(|c| c as u32);
     let cb32 = cb.map(|c| c as u32);
     match (op, ca32, cb32) {
-        (I32Add | I32Sub | I32Or | I32Xor | I32Shl | I32ShrU | I32ShrS | I32Rotl | I32Rotr, _, Some(0)) => {
-            Some(Op::Copy(a))
-        }
+        (
+            I32Add | I32Sub | I32Or | I32Xor | I32Shl | I32ShrU | I32ShrS | I32Rotl | I32Rotr,
+            _,
+            Some(0),
+        ) => Some(Op::Copy(a)),
         (I32Add | I32Or | I32Xor, Some(0), _) => Some(Op::Copy(b)),
         (I32And, _, Some(u32::MAX)) => Some(Op::Copy(a)),
         (I32And, Some(u32::MAX), _) => Some(Op::Copy(b)),
@@ -388,8 +404,7 @@ pub fn state_bit(v: V) -> StateMask {
 
 /// State written back at fault points: everything except the lazy flag
 /// state, whose precision at faults we do not guarantee.
-pub const FAULT_SYNC: StateMask =
-    !(1 << FK | 1 << FR | 1 << FA | 1 << FB | 1 << FC | 1 << CPU);
+pub const FAULT_SYNC: StateMask = !(1 << FK | 1 << FR | 1 << FA | 1 << FB | 1 << FC | 1 << CPU);
 pub const ALL_STATE: StateMask = !(1 << CPU);
 
 /// A dense bit set.

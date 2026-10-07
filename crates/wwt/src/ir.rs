@@ -95,9 +95,9 @@ pub fn state_home_size(v: V) -> u32 {
 
 pub fn state_name(v: V) -> Option<&'static str> {
     const NAMES: [&str; 32] = [
-        "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "fk", "fr", "fa", "fb", "fc",
-        "df", "fsbase", "gsbase", "ftop", "fcw", "fsw", "mxcsr", "xmm0", "xmm1", "xmm2", "xmm3",
-        "xmm4", "xmm5", "xmm6", "xmm7", "s28", "s29", "s30", "cpu",
+        "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "fk", "fr", "fa", "fb", "fc", "df",
+        "fsbase", "gsbase", "ftop", "fcw", "fsw", "mxcsr", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4",
+        "xmm5", "xmm6", "xmm7", "s28", "s29", "s30", "cpu",
     ];
     NAMES.get(v as usize).copied()
 }
@@ -249,8 +249,20 @@ impl BinOp {
         use BinOp::*;
         matches!(
             self,
-            I32Add | I32Mul | I32And | I32Or | I32Xor | I32Eq | I32Ne | I64Add | I64Mul | I64And
-                | I64Or | I64Xor | I64Eq | I64Ne
+            I32Add
+                | I32Mul
+                | I32And
+                | I32Or
+                | I32Xor
+                | I32Eq
+                | I32Ne
+                | I64Add
+                | I64Mul
+                | I64And
+                | I64Or
+                | I64Xor
+                | I64Eq
+                | I64Ne
         )
     }
     /// Operations that trap in WebAssembly for some inputs.
@@ -427,17 +439,46 @@ pub enum Op {
     Bin(BinOp, V, V),
     Un(UnOp, V),
     /// cond != 0 ? t : f
-    Select { cond: V, t: V, f: V },
-    Load { addr: V, mem: Mem },
-    Store { addr: V, val: V, mem: Mem },
+    Select {
+        cond: V,
+        t: V,
+        f: V,
+    },
+    Load {
+        addr: V,
+        mem: Mem,
+    },
+    Store {
+        addr: V,
+        val: V,
+        mem: Mem,
+    },
     /// Atomic read-modify-write; produces the old value.
-    AtomicRmw { op: RmwOp, addr: V, val: V, mem: Mem },
+    AtomicRmw {
+        op: RmwOp,
+        addr: V,
+        val: V,
+        mem: Mem,
+    },
     /// Atomic compare-exchange; produces the old value.
-    AtomicCmpxchg { addr: V, expected: V, new: V, mem: Mem },
+    AtomicCmpxchg {
+        addr: V,
+        expected: V,
+        new: V,
+        mem: Mem,
+    },
     /// memmove(dst, src, len) in guest memory.
-    MemCopy { dst: V, src: V, len: V },
+    MemCopy {
+        dst: V,
+        src: V,
+        len: V,
+    },
     /// memset(dst, val, len) in guest memory.
-    MemFill { dst: V, val: V, len: V },
+    MemFill {
+        dst: V,
+        val: V,
+        len: V,
+    },
     /// Reads a condition from the current flag state. Lowered away by the
     /// flag pass before optimization.
     Cond(Cc),
@@ -446,9 +487,17 @@ pub enum Op {
     Eflags,
     CallHelper(Helper, Vec<V>),
     /// Host math function on f64 values.
-    Math { op: MathOp, a: V, b: V },
+    Math {
+        op: MathOp,
+        a: V,
+        b: V,
+    },
     /// Raises a fault when `cond` is non-zero, after writing back registers.
-    FaultIf { cond: V, code: u32, info: V },
+    FaultIf {
+        cond: V,
+        code: u32,
+        info: V,
+    },
 }
 
 impl Op {
@@ -574,7 +623,10 @@ pub enum Term {
     /// Indirect `jmp`: leave the function, continuing at a computed address.
     JmpInd(V),
     /// Raise a fault at `eip`.
-    Fault { code: u32, eip: u32 },
+    Fault {
+        code: u32,
+        eip: u32,
+    },
     /// Placeholder during construction.
     None,
 }
@@ -869,7 +921,12 @@ impl fmt::Display for Op {
             }
             Op::Math { op, a, b } => write!(f, "math.{op:?}({}, {})", VName(*a), VName(*b)),
             Op::FaultIf { cond, code, info } => {
-                write!(f, "fault_if {} code={code:#x} info={}", VName(*cond), VName(*info))
+                write!(
+                    f,
+                    "fault_if {} code={code:#x} info={}",
+                    VName(*cond),
+                    VName(*info)
+                )
             }
         }
     }

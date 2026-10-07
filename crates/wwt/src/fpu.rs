@@ -39,7 +39,11 @@ pub fn f80_to_f64(b: &[u8]) -> f64 {
     let (mut q, rem, half) = if shift >= 64 {
         (0u64, m as u128, 1u128 << (shift - 1))
     } else {
-        (m >> shift, (m & ((1u64 << shift) - 1)) as u128, 1u128 << (shift - 1))
+        (
+            m >> shift,
+            (m & ((1u64 << shift) - 1)) as u128,
+            1u128 << (shift - 1),
+        )
     };
     if rem > half || (rem == half && q & 1 == 1) {
         q += 1;
@@ -90,7 +94,20 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        for v in [0.0, -0.0, 1.0, -2.5, 1e300, 1e-300, 5e-324, f64::MAX, f64::MIN_POSITIVE, f64::INFINITY, f64::NEG_INFINITY, 3.141592653589793] {
+        for v in [
+            0.0,
+            -0.0,
+            1.0,
+            -2.5,
+            1e300,
+            1e-300,
+            5e-324,
+            f64::MAX,
+            f64::MIN_POSITIVE,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            3.141592653589793,
+        ] {
             let b = f64_to_f80(v);
             assert_eq!(f80_to_f64(&b).to_bits(), v.to_bits(), "{v}");
         }

@@ -74,7 +74,10 @@ pub fn undefined_flags(i: &iced_x86::Instruction, case: &Case) -> (u32, bool) {
     let mut skip_result = false;
     use Mnemonic as M;
     let m = i.mnemonic();
-    if matches!(m, M::Shl | M::Sal | M::Shr | M::Sar | M::Rol | M::Ror | M::Rcl | M::Rcr | M::Shld | M::Shrd) {
+    if matches!(
+        m,
+        M::Shl | M::Sal | M::Shr | M::Sar | M::Rol | M::Ror | M::Rcl | M::Rcr | M::Shld | M::Shrd
+    ) {
         let w = match i.op0_kind() {
             OpKind::Register => i.op0_register().size() as u32 * 8,
             _ => i.memory_size().size() as u32 * 8,
@@ -110,7 +113,10 @@ pub fn undefined_flags(i: &iced_x86::Instruction, case: &Case) -> (u32, bool) {
 fn shift_count_zero(i: &iced_x86::Instruction, case: &Case) -> bool {
     use Mnemonic as M;
     let m = i.mnemonic();
-    if !matches!(m, M::Shl | M::Sal | M::Shr | M::Sar | M::Rol | M::Ror | M::Rcl | M::Rcr | M::Shld | M::Shrd) {
+    if !matches!(
+        m,
+        M::Shl | M::Sal | M::Shr | M::Sar | M::Rol | M::Ror | M::Rcl | M::Rcr | M::Shld | M::Shrd
+    ) {
         return false;
     }
     let count_op = if matches!(m, M::Shld | M::Shrd) { 2 } else { 1 };

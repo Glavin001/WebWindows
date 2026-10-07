@@ -117,10 +117,7 @@ pub fn cf(kind: u32) -> E {
             ),
             K(1),
         ),
-        SHR => and(
-            bin(BinOp::I32ShrU, Fa, bin(BinOp::I32Sub, Fb, K(1))),
-            K(1),
-        ),
+        SHR => and(bin(BinOp::I32ShrU, Fa, bin(BinOp::I32Sub, Fb, K(1))), K(1)),
         SAR => and(
             bin(BinOp::I32ShrS, sext(Fa, w), bin(BinOp::I32Sub, Fb, K(1))),
             K(1),
@@ -147,10 +144,7 @@ pub fn sf(kind: u32) -> E {
 pub fn pf(kind: u32) -> E {
     match op_of(kind) {
         EXPLICIT => bit(Fr, 2),
-        _ => not1(and(
-            Un(UnOp::I32Popcnt, Box::new(and(Fr, K(0xff)))),
-            K(1),
-        )),
+        _ => not1(and(Un(UnOp::I32Popcnt, Box::new(and(Fr, K(0xff)))), K(1))),
     }
 }
 

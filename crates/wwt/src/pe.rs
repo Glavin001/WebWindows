@@ -148,13 +148,19 @@ impl PeFile {
         );
         let coff = pe_off + 4;
         let machine = rd_u16(&data, coff)?;
-        ensure!(machine == 0x14c, "not an i386 PE file (machine {machine:#x})");
+        ensure!(
+            machine == 0x14c,
+            "not an i386 PE file (machine {machine:#x})"
+        );
         let num_sections = rd_u16(&data, coff + 2)? as usize;
         let opt_size = rd_u16(&data, coff + 16)? as usize;
         let characteristics = rd_u16(&data, coff + 18)?;
         let opt = coff + 20;
         let magic = rd_u16(&data, opt)?;
-        ensure!(magic == 0x10b, "not a PE32 optional header (magic {magic:#x})");
+        ensure!(
+            magic == 0x10b,
+            "not a PE32 optional header (magic {magic:#x})"
+        );
 
         let entry_rva = rd_u32(&data, opt + 16)?;
         let image_base = rd_u32(&data, opt + 28)?;
@@ -412,7 +418,9 @@ impl PeFile {
     /// relocations are applied when `base` differs from the preferred base.
     pub fn load_image(&self, base: u32) -> Result<Vec<u8>> {
         let mut img = vec![0u8; self.size_of_image as usize];
-        let hdr = (self.size_of_headers as usize).min(self.data.len()).min(img.len());
+        let hdr = (self.size_of_headers as usize)
+            .min(self.data.len())
+            .min(img.len());
         img[..hdr].copy_from_slice(&self.data[..hdr]);
         for s in &self.sections {
             let n = s.raw_size.min(s.mem_size()) as usize;

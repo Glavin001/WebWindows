@@ -256,10 +256,7 @@ impl Discovery {
     fn prev_inst(&self, va: u32) -> Option<Instruction> {
         (1..=15u32).find_map(|back| {
             let a = va.checked_sub(back)?;
-            self.insts
-                .get(&a)
-                .filter(|i| i.next_ip32() == va)
-                .copied()
+            self.insts.get(&a).filter(|i| i.next_ip32() == va).copied()
         })
     }
 }
@@ -352,7 +349,14 @@ fn sym_mem_addr(insts: &[Instruction], idx: usize, i: &Instruction, depth: u32) 
     if i.memory_index() != Register::None {
         let ix = sym_reg(insts, idx, i.memory_index(), depth);
         let sc = i.memory_index_scale();
-        s = Sym::add(s, if sc == 1 { ix } else { Sym::Mul(Box::new(ix), sc) });
+        s = Sym::add(
+            s,
+            if sc == 1 {
+                ix
+            } else {
+                Sym::Mul(Box::new(ix), sc)
+            },
+        );
     }
     s
 }
@@ -437,7 +441,10 @@ fn find_bound(insts: &[Instruction]) -> Option<u32> {
     for w in insts.windows(2).rev() {
         let (c, j) = (&w[0], &w[1]);
         if c.mnemonic() == Mnemonic::Cmp
-            && matches!(c.op1_kind(), OpKind::Immediate32 | OpKind::Immediate8to32 | OpKind::Immediate8)
+            && matches!(
+                c.op1_kind(),
+                OpKind::Immediate32 | OpKind::Immediate8to32 | OpKind::Immediate8
+            )
         {
             let imm = c.immediate(1) as u32;
             return match j.condition_code() {
@@ -475,8 +482,10 @@ fn plausible_function_start(src: &dyn CodeSource, va: u32) -> bool {
         let Some(i) = decode_one(src, a) else {
             return false;
         };
-        if matches!(i.mnemonic(), Mnemonic::Int3 | Mnemonic::Hlt | Mnemonic::In | Mnemonic::Out)
-            || i.is_privileged()
+        if matches!(
+            i.mnemonic(),
+            Mnemonic::Int3 | Mnemonic::Hlt | Mnemonic::In | Mnemonic::Out
+        ) || i.is_privileged()
         {
             return false;
         }

@@ -78,7 +78,10 @@ impl Executor {
         let wasm = wwt::translate::build_module(&funcs, cfg);
         let module = Module::new(&self.engine, &wasm)?;
 
-        let memory = SharedMemory::new(&self.engine, MemoryType::shared(MEMORY_PAGES as u32, MEMORY_PAGES as u32))?;
+        let memory = SharedMemory::new(
+            &self.engine,
+            MemoryType::shared(MEMORY_PAGES as u32, MEMORY_PAGES as u32),
+        )?;
         let mut store = Store::new(&self.engine, State::default());
         let table = Table::new(
             &mut store,
@@ -95,15 +98,26 @@ impl Executor {
         table.set(&mut store, 0, Ref::Func(Some(miss)))?;
         let fault_fn = Func::wrap(
             &mut store,
-            |mut caller: Caller<'_, State>, _cpu: i32, code: i32, eip: i32, info: i32| -> Result<()> {
+            |mut caller: Caller<'_, State>,
+             _cpu: i32,
+             code: i32,
+             eip: i32,
+             info: i32|
+             -> Result<()> {
                 caller.data_mut().fault = Some((code as u32, eip as u32, info as u32));
                 Err(anyhow!("guest fault"))
             },
         );
         let code_write = Func::wrap(&mut store, |_cpu: i32, _addr: i32| {});
-        let math = Func::wrap(&mut store, |op: i32, a: f64, b: f64| -> f64 { host_math(op as u32, a, b) });
+        let math = Func::wrap(&mut store, |op: i32, a: f64, b: f64| -> f64 {
+            host_math(op as u32, a, b)
+        });
         let g = |store: &mut Store<State>, v: u32| {
-            Global::new(store, GlobalType::new(ValType::I32, Mutability::Const), Val::I32(v as i32))
+            Global::new(
+                store,
+                GlobalType::new(ValType::I32, Mutability::Const),
+                Val::I32(v as i32),
+            )
         };
         // The lookup's first level points every page at an empty second level.
         for p in 0..(1u32 << 20) {
@@ -155,7 +169,13 @@ impl Executor {
                 *reg = r32(&memory, CPU + cpu::gpr(n as u32));
             }
             let st = |o| r32(&memory, CPU + o);
-            let arith = wwt::flags::eflags_of_state(st(cpu::FK), st(cpu::FR), st(cpu::FA), st(cpu::FB), st(cpu::FC));
+            let arith = wwt::flags::eflags_of_state(
+                st(cpu::FK),
+                st(cpu::FR),
+                st(cpu::FA),
+                st(cpu::FB),
+                st(cpu::FC),
+            );
             let eflags = arith | st(cpu::DF) << 10 | st(cpu::EFLAGS_SYS) | 2;
             let (eip, fault_kind) = match r {
                 Ok(next) => (next as u32, String::new()),
@@ -207,9 +227,17 @@ fn load_fx(m: &SharedMemory, fx: &[u8]) {
         let v = wwt::fpu::f80_to_f64(st);
         write_bytes(m, CPU + cpu::FPU_ST + phys as u32 * 8, &v.to_le_bytes());
     }
-    w32(m, CPU + cpu::MXCSR, u32::from_le_bytes(fx[24..28].try_into().unwrap()));
+    w32(
+        m,
+        CPU + cpu::MXCSR,
+        u32::from_le_bytes(fx[24..28].try_into().unwrap()),
+    );
     for i in 0..8 {
-        write_bytes(m, CPU + cpu::XMM + i * 16, &fx[160 + i as usize * 16..176 + i as usize * 16]);
+        write_bytes(
+            m,
+            CPU + cpu::XMM + i * 16,
+            &fx[160 + i as usize * 16..176 + i as usize * 16],
+        );
     }
 }
 
@@ -264,7 +292,11 @@ pub fn ieee_remainder(a: f64, b: f64) -> f64 {
     }
     let ab = b.abs();
     // r = |a| mod 2|b| (exact), then fold into [-|b|/2, |b|/2].
-    let mut r = if ab < f64::MAX / 2.0 { a.abs() % (2.0 * ab) } else { a.abs() };
+    let mut r = if ab < f64::MAX / 2.0 {
+        a.abs() % (2.0 * ab)
+    } else {
+        a.abs()
+    };
     let mut odd = false;
     if r >= ab {
         r -= ab;
@@ -273,5 +305,9 @@ pub fn ieee_remainder(a: f64, b: f64) -> f64 {
     if r > ab - r || (r == ab - r && odd) {
         r -= ab;
     }
-    if a.is_sign_negative() { -r } else { r }
+    if a.is_sign_negative() {
+        -r
+    } else {
+        r
+    }
 }

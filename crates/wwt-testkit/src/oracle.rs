@@ -48,9 +48,9 @@ pub fn oracle_available() -> bool {
 
 fn sig_to_fault(sig: u32) -> &'static str {
     match sig {
-        8 => "DE",   // SIGFPE
-        4 => "UD",   // SIGILL
-        5 => "BP",   // SIGTRAP
+        8 => "DE",      // SIGFPE
+        4 => "UD",      // SIGILL
+        5 => "BP",      // SIGTRAP
         11 | 7 => "AV", // SIGSEGV, SIGBUS
         _ => "??",
     }

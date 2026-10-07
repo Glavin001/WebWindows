@@ -61,7 +61,20 @@ impl Rng {
     /// A 32-bit value biased toward edge cases.
     pub fn value(&mut self) -> u32 {
         match self.below(10) {
-            0 => self.pick(&[0, 1, 2, 0xffff_ffff, 0x8000_0000, 0x7fff_ffff, 0x80, 0x7f, 0xff, 0x8000, 0x7fff, 0xffff]),
+            0 => self.pick(&[
+                0,
+                1,
+                2,
+                0xffff_ffff,
+                0x8000_0000,
+                0x7fff_ffff,
+                0x80,
+                0x7f,
+                0xff,
+                0x8000,
+                0x7fff,
+                0xffff,
+            ]),
             1 => self.below(64) as u32,
             2 => (self.below(64) as u32).wrapping_neg(),
             3 => 1u32 << self.below(32),
@@ -195,11 +208,36 @@ pub fn group_of(code: Code) -> Option<Group> {
     // Segment registers, far branches and 16-bit branches are out of scope.
     for i in 0..op.op_count() {
         match op.op_kind(i) {
-            K::seg_reg | K::farbr2_2 | K::farbr4_2 | K::br16_1 | K::br16_2 | K::es | K::cs
-            | K::ss | K::ds | K::fs | K::gs | K::cr_reg | K::dr_reg | K::tr_reg | K::bnd_reg
-            | K::r32_or_mem_mpx | K::mem_mpx | K::mem_mib | K::bnd_or_mem_mpx | K::seg_rBX_al
-            | K::xbegin_2 | K::xbegin_4 | K::brdisp_2 | K::brdisp_4 | K::sibmem => {
-                return if code.mnemonic() == Mnemonic::Xlatb { Some(Group::Integer) } else { None }
+            K::seg_reg
+            | K::farbr2_2
+            | K::farbr4_2
+            | K::br16_1
+            | K::br16_2
+            | K::es
+            | K::cs
+            | K::ss
+            | K::ds
+            | K::fs
+            | K::gs
+            | K::cr_reg
+            | K::dr_reg
+            | K::tr_reg
+            | K::bnd_reg
+            | K::r32_or_mem_mpx
+            | K::mem_mpx
+            | K::mem_mib
+            | K::bnd_or_mem_mpx
+            | K::seg_rBX_al
+            | K::xbegin_2
+            | K::xbegin_4
+            | K::brdisp_2
+            | K::brdisp_4
+            | K::sibmem => {
+                return if code.mnemonic() == Mnemonic::Xlatb {
+                    Some(Group::Integer)
+                } else {
+                    None
+                }
             }
             _ => {}
         }
@@ -226,14 +264,25 @@ pub fn group_of(code: Code) -> Option<Group> {
         let has_fpu_or_simd = (0..op.op_count()).any(|i| {
             matches!(
                 op.op_kind(i),
-                K::st0 | K::sti_opcode | K::mm_reg | K::mm_rm | K::mm_or_mem | K::xmm_reg | K::xmm_rm | K::xmm_or_mem
+                K::st0
+                    | K::sti_opcode
+                    | K::mm_reg
+                    | K::mm_rm
+                    | K::mm_or_mem
+                    | K::xmm_reg
+                    | K::xmm_rm
+                    | K::xmm_or_mem
             )
         });
         if !has_fpu_or_simd {
             return Some(Group::Integer);
         }
     }
-    if feats.contains(&CpuidFeature::FPU) || feats.contains(&CpuidFeature::FPU287) || feats.contains(&CpuidFeature::FPU387) || feats.contains(&CpuidFeature::CMOV) && format!("{:?}", code.mnemonic()).starts_with('F') {
+    if feats.contains(&CpuidFeature::FPU)
+        || feats.contains(&CpuidFeature::FPU287)
+        || feats.contains(&CpuidFeature::FPU387)
+        || feats.contains(&CpuidFeature::CMOV) && format!("{:?}", code.mnemonic()).starts_with('F')
+    {
         return Some(Group::X87);
     }
     if feats.iter().all(|f| {
@@ -248,7 +297,9 @@ pub fn group_of(code: Code) -> Option<Group> {
 }
 
 pub fn forms(group: Group) -> Vec<Code> {
-    Code::values().filter(|&c| group_of(c) == Some(group)).collect()
+    Code::values()
+        .filter(|&c| group_of(c) == Some(group))
+        .collect()
 }
 
 const R8: [Register; 8] = [
@@ -321,10 +372,18 @@ impl<'r> Builder<'r> {
         let off = 0x40 + self.rng.below(0x100 - size.min(0x80) as u64) as u32;
         let target = MEM_BASE + off;
         let avoid: Vec<usize> = self.used.iter().map(|r| full32(*r).number()).collect();
-        let candidates: Vec<Register> = [Register::EBX, Register::ESI, Register::EDI, Register::EBP, Register::EAX, Register::ECX, Register::EDX]
-            .into_iter()
-            .filter(|r| !avoid.contains(&r.number()) && !self.pinned[r.number()])
-            .collect();
+        let candidates: Vec<Register> = [
+            Register::EBX,
+            Register::ESI,
+            Register::EDI,
+            Register::EBP,
+            Register::EAX,
+            Register::ECX,
+            Register::EDX,
+        ]
+        .into_iter()
+        .filter(|r| !avoid.contains(&r.number()) && !self.pinned[r.number()])
+        .collect();
         match self.rng.below(4) {
             0 => MemoryOperand::with_displ(target as u64, 4),
             1 if !candidates.is_empty() => {
@@ -449,7 +508,11 @@ fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Ca
             }
             K::imm8 => {
                 imm_count += 1;
-                let v = if imm_count == 2 { 0 } else { b.rng.value() as u8 };
+                let v = if imm_count == 2 {
+                    0
+                } else {
+                    b.rng.value() as u8
+                };
                 ins.set_immediate8(v);
                 if imm_count == 2 {
                     OpKind::Immediate8_2nd
@@ -488,7 +551,15 @@ fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Ca
             }
             K::sti_opcode => {
                 // st(7) is kept empty so pushes do not overflow.
-                let r = b.rng.pick(&[Register::ST0, Register::ST1, Register::ST2, Register::ST3, Register::ST4, Register::ST5, Register::ST6]);
+                let r = b.rng.pick(&[
+                    Register::ST0,
+                    Register::ST1,
+                    Register::ST2,
+                    Register::ST3,
+                    Register::ST4,
+                    Register::ST5,
+                    Register::ST6,
+                ]);
                 ins.set_op_register(i, r);
                 OpKind::Register
             }
@@ -530,8 +601,21 @@ fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Ca
     let mut eflags = (b.rng.next() as u32 & 0x8d5) | 2;
     use Mnemonic as M;
     match m {
-        M::Movsb | M::Movsw | M::Movsd | M::Stosb | M::Stosw | M::Stosd | M::Lodsb | M::Lodsw
-        | M::Lodsd | M::Cmpsb | M::Cmpsw | M::Cmpsd | M::Scasb | M::Scasw | M::Scasd => {
+        M::Movsb
+        | M::Movsw
+        | M::Movsd
+        | M::Stosb
+        | M::Stosw
+        | M::Stosd
+        | M::Lodsb
+        | M::Lodsw
+        | M::Lodsd
+        | M::Cmpsb
+        | M::Cmpsw
+        | M::Cmpsd
+        | M::Scasb
+        | M::Scasw
+        | M::Scasd => {
             b.regs[6] = MEM_BASE + 0x80 + b.rng.below(8) as u32;
             b.regs[7] = MEM_BASE + 0x100 + b.rng.below(8) as u32;
             if b.rng.chance(15) {
@@ -575,10 +659,20 @@ fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Ca
                 }
             }
         }
-        M::Shl | M::Sal | M::Shr | M::Sar | M::Rol | M::Ror | M::Rcl | M::Rcr | M::Shld
+        M::Shl
+        | M::Sal
+        | M::Shr
+        | M::Sar
+        | M::Rol
+        | M::Ror
+        | M::Rcl
+        | M::Rcr
+        | M::Shld
         | M::Shrd => {
             // Interesting counts in cl.
-            let c = b.rng.pick(&[0u32, 1, 2, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63]);
+            let c = b
+                .rng
+                .pick(&[0u32, 1, 2, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63]);
             if !b.pinned[1] {
                 b.regs[1] = (b.regs[1] & !0xff) | c;
             }
@@ -591,7 +685,11 @@ fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Ca
             if b.rng.chance(80) && !b.pinned[2] {
                 b.regs[2] = b.rng.below(4) as u32;
                 if m == M::Idiv && b.rng.chance(50) {
-                    b.regs[2] = if b.regs[0] & 0x8000_0000 != 0 { u32::MAX } else { 0 };
+                    b.regs[2] = if b.regs[0] & 0x8000_0000 != 0 {
+                        u32::MAX
+                    } else {
+                        0
+                    };
                 }
             }
         }
@@ -603,12 +701,19 @@ fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Ca
     }
     // Memory operands of bit-test instructions with a register offset can
     // reach outside the operand; keep the offset small.
-    if matches!(m, M::Bt | M::Bts | M::Btr | M::Btc) && ins.op0_kind() == OpKind::Memory && ins.op1_kind() == OpKind::Register {
+    if matches!(m, M::Bt | M::Bts | M::Btr | M::Btc)
+        && ins.op0_kind() == OpKind::Memory
+        && ins.op1_kind() == OpKind::Register
+    {
         let r = ins.op1_register();
         let n = full32(r).number();
         if !b.pinned[n] {
             let off = (b.rng.below(128) as i32 - 64) as u32;
-            b.regs[n] = if r.size() == 2 { (b.regs[n] & 0xffff_0000) | (off & 0xffff) } else { off };
+            b.regs[n] = if r.size() == 2 {
+                (b.regs[n] & 0xffff_0000) | (off & 0xffff)
+            } else {
+                off
+            };
         }
     }
     let mut enc = Encoder::new(32);
@@ -629,8 +734,10 @@ fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Ca
                 iced_x86::MemorySize::Float80 => {
                     let v = nice_f64(b.rng).to_bits();
                     let e = wwt::fpu::f64_to_f80(f64::from_bits(v));
-                    b.mem_patch.push((off, u32::from_le_bytes(e[0..4].try_into().unwrap())));
-                    b.mem_patch.push((off + 4, u32::from_le_bytes(e[4..8].try_into().unwrap())));
+                    b.mem_patch
+                        .push((off, u32::from_le_bytes(e[0..4].try_into().unwrap())));
+                    b.mem_patch
+                        .push((off + 4, u32::from_le_bytes(e[4..8].try_into().unwrap())));
                     let hi = u16::from_le_bytes([e[8], e[9]]) as u32;
                     b.mem_patch.push((off + 8, hi | 0x5a5a_0000));
                 }
@@ -674,7 +781,15 @@ fn one_case_at(code: Code, rng: &mut Rng, ip: u32, allow_mem: bool) -> Option<Ca
 pub fn nice_f64(rng: &mut Rng) -> f64 {
     match rng.below(12) {
         0 => rng.pick(&[0.0, -0.0, 1.0, -1.0, 0.5, -0.5, 1.5, 2.5, -2.5, 3.0]),
-        1 => rng.pick(&[f64::INFINITY, f64::NEG_INFINITY, 1e300, -1e-300, 65536.0, -2147483648.0, 2147483647.0]),
+        1 => rng.pick(&[
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            1e300,
+            -1e-300,
+            65536.0,
+            -2147483648.0,
+            2147483647.0,
+        ]),
         2 => (rng.below(2000) as f64 - 1000.0) / 2.0,
         3 => (rng.next() as i32) as f64,
         4 => std::f64::consts::PI * (rng.below(9) as f64 - 4.0) / 4.0,
@@ -695,7 +810,11 @@ pub fn fpu_state(rng: &mut Rng, m: Mnemonic) -> Vec<u8> {
     // Only integer stores and frndint honor the rounding mode (arithmetic
     // always rounds to nearest, as WebAssembly does).
     let honors_rc = matches!(m, Mnemonic::Fist | Mnemonic::Fistp | Mnemonic::Frndint);
-    let rc = if honors_rc && rng.chance(50) { rng.below(4) as u16 } else { 0 };
+    let rc = if honors_rc && rng.chance(50) {
+        rng.below(4) as u16
+    } else {
+        0
+    };
     let cw: u16 = 0x027f | rc << 10;
     fx[0..2].copy_from_slice(&cw.to_le_bytes());
     let top = rng.below(8) as u16;
@@ -711,13 +830,24 @@ pub fn fpu_state(rng: &mut Rng, m: Mnemonic) -> Vec<u8> {
         if tag >> phys & 1 == 0 {
             continue;
         }
-        let v = if matches!(m, Mnemonic::Fsin | Mnemonic::Fcos | Mnemonic::Fsincos | Mnemonic::Fptan) {
+        let v = if matches!(
+            m,
+            Mnemonic::Fsin | Mnemonic::Fcos | Mnemonic::Fsincos | Mnemonic::Fptan
+        ) {
             (rng.below(2000) as f64 - 1000.0) / 300.0
         } else if matches!(m, Mnemonic::Fprem | Mnemonic::Fprem1) && i < 2 {
             // Keep the quotient below 2^60 so the CPU reduces completely.
             let x = nice_f64(rng);
-            let x = if x.is_finite() && x != 0.0 { x.clamp(-1e15, 1e15) } else { 3.25 };
-            if i == 1 && x.abs() < 1e-3 { x.signum() * (1.0 + x.abs()) } else { x }
+            let x = if x.is_finite() && x != 0.0 {
+                x.clamp(-1e15, 1e15)
+            } else {
+                3.25
+            };
+            if i == 1 && x.abs() < 1e-3 {
+                x.signum() * (1.0 + x.abs())
+            } else {
+                x
+            }
         } else if m == Mnemonic::Fyl2xp1 && i == 0 {
             // Defined only for |x| < 1 - sqrt(2)/2.
             (rng.below(2000) as f64 - 1000.0) / 3500.0
@@ -736,6 +866,26 @@ pub fn extra_cases(group: Group, rng: &mut Rng) -> Vec<Case> {
     let mut out = vec![];
     if group == Group::Fusion {
         return fusion_cases(4000, rng);
+    }
+    if group == Group::X87 {
+        // fwait: a no-op with all exceptions masked.
+        for _ in 0..8 {
+            let mut regs = [0u32; 8];
+            for r in regs.iter_mut() {
+                *r = rng.value();
+            }
+            regs[4] = STACK;
+            out.push(Case {
+                form: "Wait".into(),
+                code: "9b".into(),
+                regs,
+                eflags: 2,
+                mem_seed: rng.next(),
+                mem_patch: vec![],
+                fx: Some(hex(&fpu_state(rng, Mnemonic::Wait))),
+            });
+        }
+        return out;
     }
     if group != Group::Integer {
         return out;
@@ -774,9 +924,29 @@ pub fn fusion_cases(n: usize, rng: &mut Rng) -> Vec<Case> {
         .filter(|c| {
             matches!(
                 c.mnemonic(),
-                M::Add | M::Sub | M::Cmp | M::Test | M::And | M::Or | M::Xor | M::Inc | M::Dec
-                    | M::Neg | M::Shl | M::Shr | M::Sar | M::Adc | M::Sbb | M::Imul | M::Bt
-                    | M::Bsf | M::Rol | M::Rcr | M::Mul | M::Cmpxchg | M::Xadd
+                M::Add
+                    | M::Sub
+                    | M::Cmp
+                    | M::Test
+                    | M::And
+                    | M::Or
+                    | M::Xor
+                    | M::Inc
+                    | M::Dec
+                    | M::Neg
+                    | M::Shl
+                    | M::Shr
+                    | M::Sar
+                    | M::Adc
+                    | M::Sbb
+                    | M::Imul
+                    | M::Bt
+                    | M::Bsf
+                    | M::Rol
+                    | M::Rcr
+                    | M::Mul
+                    | M::Cmpxchg
+                    | M::Xadd
             )
         })
         .collect();
@@ -788,16 +958,23 @@ pub fn fusion_cases(n: usize, rng: &mut Rng) -> Vec<Case> {
             (m.starts_with('J') && m != "Jmp" && m != "Jecxz" && m != "Jcxz")
                 || m.starts_with("Set")
                 || m.starts_with("Cmov")
-                || matches!(c.mnemonic(), M::Adc | M::Sbb | M::Lahf | M::Pushfd | M::Rcl | M::Inc)
+                || matches!(
+                    c.mnemonic(),
+                    M::Adc | M::Sbb | M::Lahf | M::Pushfd | M::Rcl | M::Inc
+                )
         })
         .collect();
     let mut out = vec![];
     while out.len() < n {
         let p = rng.pick(&producers);
         let c = rng.pick(&consumers);
-        let Some(mut first) = one_case_at(p, rng, INS, true) else { continue };
+        let Some(mut first) = one_case_at(p, rng, INS, true) else {
+            continue;
+        };
         let len1 = first.code.len() as u32 / 2;
-        let Some(second) = one_case_at(c, rng, INS + len1, false) else { continue };
+        let Some(second) = one_case_at(c, rng, INS + len1, false) else {
+            continue;
+        };
         if len1 + second.code.len() as u32 / 2 > 15 {
             continue;
         }
@@ -805,7 +982,8 @@ pub fn fusion_cases(n: usize, rng: &mut Rng) -> Vec<Case> {
         first.code.push_str(&second.code);
         // Skip pairs whose consumer reads flags the producer left undefined.
         let bytes = first.code_bytes();
-        let mut d = iced_x86::Decoder::with_ip(32, &bytes, INS as u64, iced_x86::DecoderOptions::NONE);
+        let mut d =
+            iced_x86::Decoder::with_ip(32, &bytes, INS as u64, iced_x86::DecoderOptions::NONE);
         let i1 = d.decode();
         let i2 = d.decode();
         let (undef, _) = crate::compare::undefined_flags(&i1, &first);
