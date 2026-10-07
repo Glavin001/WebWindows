@@ -1053,6 +1053,12 @@ const msvcrt = {
     const i = this.m.u8.subarray(a.u32(0), a.u32(0) + a.u32(2)).indexOf(a.u32(1) & 0xff);
     return i < 0 ? 0 : a.u32(0) + i;
   }),
+  clock: fn(0, function () {
+    // Milliseconds since the first call (CLOCKS_PER_SEC is 1000); callers
+    // only use differences.
+    this.clockStart ??= performance.now();
+    return Math.floor(performance.now() - this.clockStart);
+  }),
   isprint: fn(1, function (a) {
     const c = a.u32(0);
     return c >= 0x20 && c < 0x7f ? 1 : 0;

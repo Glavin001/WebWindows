@@ -140,6 +140,10 @@ async function runOne(p, opt) {
   const nat = await sh(b.native, [], { timeout: 10000 });
   if (nat.error || nat.signal) return { status: 'skip', detail: 'native run timed out or crashed' };
   if (torture && nat.status !== 0) return { status: 'skip', detail: `native exit ${nat.status}` };
+  // msvcrt.dll is not a C99 runtime (no %hhd, for example); Wine's matches it.
+  if (torture && wine && /dg-require-effective-target\s+c99_runtime/.test(readFileSync(p.src, 'latin1'))) {
+    return { status: 'skip', detail: 'needs a C99 runtime (msvcrt.dll is not one)' };
+  }
   const wasm = b.exe + '.wasm';
   const tr = await sh(wwt, ['translate', b.exe, '-o', wasm]);
   if (tr.status !== 0) return { status: 'fail', detail: 'translate: ' + tr.stderr.slice(-800) };
