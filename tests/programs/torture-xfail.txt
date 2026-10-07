@@ -9,6 +9,8 @@ signed1bitfield-1  O1,O2,O3,Os  PR115154: main calls check(0)
 pr108789           *            PR108789: add() re-reads *a after storing the aliased *r
 pr111151           *            PR111151: main is folded to abort()
 pr90348            O1,O2,O3,Os  PR90348: buf shares in[]'s stack slot, so set_one writes in[0]
+pr109925           O2           PR109925 (x86-64): h[] shares g[]'s stack slot, so the second loop's h[0] = 4 lands in g[0]
+pr114965           O1,O2,O3,Os  PR114965 (x86-64): main's loop has no exit but abort()
 
 # Limits of the translator, documented in docs/milestone-1.md.
 pr39228            *            x87 registers are f64: LDBL_MAX rounds to infinity, so 1.01L*LDBL_MAX > LDBL_MAX is false
