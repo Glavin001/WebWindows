@@ -32,8 +32,11 @@ export class D3DBridge {
    * @param {string} adapter  the WebGPU adapter's name
    * @param {{worker?: Worker, onWindow?: (w: object) => void}} [present]
    *   with a render worker presenting to a canvas: where window changes go
+   * @param {(w: object) => void} [onWindow]  told where the window is in
+   *   either case (a page locks the pointer for a fullscreen game)
    */
-  constructor(sab, adapter = 'WebGPU', present = null) {
+  constructor(sab, adapter = 'WebGPU', present = null, onWindow = present?.onWindow) {
+    this.onWindow = onWindow;
     this.ctrl = new Int32Array(sab, 0, P.CTRL_BYTES / 4);
     this.bytes = new Uint8Array(sab);
     this.adapter = adapter;
@@ -95,7 +98,6 @@ export class D3DBridge {
       }
       case 3: {
         // window: struct wgpu_window_params {x, y, width, height, buffer_width, buffer_height, visible}
-        if (!this.present) return STATUS_NOT_SUPPORTED;
         const w = {
           x: dv.getInt32(args, true),
           y: dv.getInt32(args + 4, true),
@@ -105,10 +107,12 @@ export class D3DBridge {
           bufferHeight: u32(args + 20),
           visible: !!u32(args + 24),
         };
+        this.onWindow?.(w);
+        // Without a canvas, frames are read back and drawn into the window.
+        if (!this.present) return STATUS_NOT_SUPPORTED;
         // The canvas's drawing buffer is the back buffer's size; the page
         // scales it to the window.
         this.present.worker?.postMessage({ type: 'resize', width: w.bufferWidth, height: w.bufferHeight });
-        this.present.onWindow?.(w);
         return STATUS_SUCCESS;
       }
       default:
@@ -226,7 +230,7 @@ export async function startD3D(workerUrl, log = () => {}, present = {}) {
     return null;
   }
   log(`d3d: render worker on ${ready.adapter}`);
-  const bridge = new D3DBridge(sab, ready.adapter, ready.present ? { worker, onWindow: present.onWindow } : null);
+  const bridge = new D3DBridge(sab, ready.adapter, ready.present ? { worker, onWindow: present.onWindow } : null, present.onWindow);
   bridge.worker = worker;
   return bridge;
 }

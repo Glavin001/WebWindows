@@ -125,6 +125,15 @@ const RELATIVE = 0x10000;
 // cursor position. Esc (the browser's) releases the lock.
 let clip = null;
 const locked = () => document.pointerLockElement === canvas;
+// A Direct3D window over the whole screen (a fullscreen game) also gets
+// the locked pointer: such games draw their own cursor from relative
+// movement (UT2004's menus), which an absolute pointer leaves behind at
+// the canvas's edge.
+const fullscreenD3D = () => {
+  const w = window.d3dWindow;
+  return !!(w && w.visible && screen && w.x <= 0 && w.y <= 0 && w.width >= screen.width && w.height >= screen.height);
+};
+const wantsLock = () => !!clip || fullscreenD3D();
 let rest = [0, 0];
 const mouse = (e, flags = 0, data = 0) => {
   if (!locked()) return screen?.ring.mouse(...at(e), flags, data);
@@ -138,19 +147,19 @@ const mouse = (e, flags = 0, data = 0) => {
 };
 function setClip(rect) {
   clip = rect;
-  if (!clip && locked()) document.exitPointerLock();
+  if (!wantsLock() && locked()) document.exitPointerLock();
   updateMouseHint();
 }
 function updateMouseHint() {
   const s = $('status');
   s.textContent = s.textContent.replace(/ \(.*\)$/, '');
-  if (clip && !locked() && screen && !canvas.hidden) s.textContent += ' (click the screen to capture the mouse; Esc releases it)';
+  if (wantsLock() && !locked() && screen && !canvas.hidden) s.textContent += ' (click the screen to capture the mouse; Esc releases it)';
 }
 document.addEventListener('pointerlockchange', updateMouseHint);
 canvas.addEventListener('pointermove', (e) => mouse(e));
 canvas.addEventListener('pointerdown', (e) => {
   canvas.focus();
-  if (clip && !locked()) Promise.resolve(canvas.requestPointerLock?.()).catch(() => {});
+  if (wantsLock() && !locked()) Promise.resolve(canvas.requestPointerLock?.()).catch(() => {});
   // Throws while a pointer lock request is pending; the click must still
   // reach the program.
   if (!locked()) {
@@ -220,6 +229,7 @@ function newD3DCanvas() {
 }
 function placeD3D(w) {
   window.d3dWindow = w;
+  updateMouseHint();
   if (!d3dCanvas || !screen) return;
   const pct = (v, total) => `${(v / total) * 100}%`;
   Object.assign(d3dCanvas.style, {

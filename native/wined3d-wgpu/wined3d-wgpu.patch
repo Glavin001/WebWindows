@@ -268,3 +268,34 @@ diff -ruN a/include/wine/wined3d.h b/include/wine/wined3d.h
  };
  
  enum wined3d_light_type
+--- a/dlls/wined3d/ffp_hlsl.c	2026-10-08 13:34:35.380812117 +0000
++++ b/dlls/wined3d/ffp_hlsl.c	2026-10-08 13:34:35.397459168 +0000
+@@ -329,8 +329,28 @@
+                     continue;
+                 break;
+ 
++            /* As the GLSL backend generates them (glsl_shader.c). */
++            case WINED3DTSS_TCI_CAMERASPACENORMAL:
++                shader_addline(&texcoord, "float4(normal, 1.0)");
++                break;
++
++            case WINED3DTSS_TCI_CAMERASPACEPOSITION:
++                shader_addline(&texcoord, "ec_pos");
++                break;
++
++            case WINED3DTSS_TCI_CAMERASPACEREFLECTIONVECTOR:
++                shader_addline(&texcoord, "float4(reflect(ffp_normalize(ec_pos.xyz), normal), 1.0)");
++                break;
++
++            case WINED3DTSS_TCI_SPHEREMAP:
++                shader_addline(buffer, "    float3 r%u = reflect(ffp_normalize(ec_pos.xyz), normal);\n", i);
++                shader_addline(buffer, "    float m%u = 2.0 * length(float3(r%u.x, r%u.y, r%u.z + 1.0));\n", i, i, i, i);
++                shader_addline(&texcoord, "float4(r%u.x / m%u + 0.5, r%u.y / m%u + 0.5, 0.0, 1.0)", i, i, i, i);
++                break;
++
+             default:
+                 FIXME("Unhandled texgen %#x.\n", settings->texgen[i]);
++                shader_addline(&texcoord, "float4(0.0, 0.0, 0.0, 1.0)");
+                 break;
+         }
+ 
