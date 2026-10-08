@@ -1,0 +1,18 @@
+== torture traps
+xfail pr111151 -O2  PR111151: main is folded to abort()
+xfail pr39228 -O2  x87 registers are f64: LDBL_MAX rounds to infinity, so 1.01L*LDBL_MAX > LDBL_MAX is false
+xfail pr39228 -O0  x87 registers are f64: LDBL_MAX rounds to infinity, so 1.01L*LDBL_MAX > LDBL_MAX is false
+xfail pr90348 -O2  PR90348: buf shares in[]'s stack slot, so set_one writes in[0]
+xfail return-addr -O0  prints stack addresses
+xfail return-addr -O2  prints stack addresses
+xfail signed1bitfield-1 -O2  PR115154: main calls check(0)
+3292 runs: 3244 pass, 0 fail, 38 skipped, 10 expected failures, 0 build errors
+== torture wine traps
+xfail pr108789 -O2  PR108789: add() re-reads *a after storing the aliased *r
+xfail pr111151 -O2  PR111151: main is folded to abort()
+xfail pr39228 -O2  x87 registers are f64: LDBL_MAX rounds to infinity, so 1.01L*LDBL_MAX > LDBL_MAX is false
+xfail pr90348 -O2  PR90348: buf shares in[]'s stack slot, so set_one writes in[0]
+xfail return-addr -O2  prints stack addresses
+xfail signed1bitfield-1 -O2  PR115154: main calls check(0)
+1646 runs: 1618 pass, 0 fail, 22 skipped, 6 expected failures, 0 build errors
+TT-DONE
