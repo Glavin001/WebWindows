@@ -219,6 +219,8 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
         if (Atomics.add(frame, 0, 1) === 0) postMessage({ type: 'screen' });
       },
       inputSource: (d) => ring.drain(d),
+      // The page locks the pointer while the program confines the cursor.
+      onClip: (rect) => postMessage({ type: 'clip', rect }),
     });
     unix = await loadWineUnix(machine, {
       factory: async () => (await import(new URL(manifest.unix.module, base).href)).default,

@@ -61,6 +61,10 @@ EM_JS( void, host_window_destroyed, (UINT hwnd), {
 
 /* Next queued input event: returns 0 when there is none, otherwise fills
  * the INPUT structure (type, then the mouse or keyboard fields). */
+EM_JS( void, host_clip_cursor, (int clipped, int left, int top, int right, int bottom), {
+    Module.display?.clipCursor?.(clipped, left, top, right, bottom);
+});
+
 EM_JS( int, host_next_input, (INPUT *input), {
     return Module.display?.nextInput(ptr(input)) ?? 0;
 });
@@ -245,6 +249,28 @@ static void BROWSER_SetCursor( HWND hwnd, HCURSOR cursor )
 {
 }
 
+/* A program confines the cursor (games that read relative mouse movement
+ * keep moving it back to their window's centre): the page locks the pointer
+ * and sends movement instead of positions, which wineserver adds to the
+ * cursor position. A clip of the whole screen, or none, releases it. */
+static BOOL BROWSER_ClipCursor( const RECT *clip, BOOL reset )
+{
+    int width, height;
+
+    host_screen_size( &width, &height );
+    if (clip && !reset && (clip->left > 0 || clip->top > 0 || clip->right < width || clip->bottom < height))
+    {
+        TRACE( "clip %s\n", wine_dbgstr_rect( clip ) );
+        host_clip_cursor( 1, clip->left, clip->top, clip->right, clip->bottom );
+    }
+    else
+    {
+        TRACE( "no clip\n" );
+        host_clip_cursor( 0, 0, 0, 0, 0 );
+    }
+    return TRUE;
+}
+
 static const struct user_driver_funcs browser_driver_funcs =
 {
     .pUpdateDisplayDevices = BROWSER_UpdateDisplayDevices,
@@ -257,6 +283,7 @@ static const struct user_driver_funcs browser_driver_funcs =
     .pShowWindow = BROWSER_ShowWindow,
     .pProcessEvents = BROWSER_ProcessEvents,
     .pSetCursor = BROWSER_SetCursor,
+    .pClipCursor = BROWSER_ClipCursor,
 };
 
 void browser_driver_init(void)

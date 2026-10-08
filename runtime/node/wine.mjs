@@ -11,7 +11,8 @@
 //                     empty cache does not count)
 //   --input SCRIPT    scripted input, timed from the first frame:
 //                     "500:click 20,80; 900:text Hi; 1200:key Enter"
-//                     (click/rclick/move X,Y; key CODE as in KeyboardEvent.code,
+//                     (click/rclick/move X,Y; nudge DX,DY moves by that much;
+//                     key CODE as in KeyboardEvent.code,
 //                     keydown/keyup CODE to hold it;
 //                     text types letters, digits and spaces)
 //   --mem32           a 64-bit program on a 32-bit memory, below 4 GB, with the
@@ -187,6 +188,8 @@ function parseInput(text) {
     const shift = windowsKey('ShiftLeft');
     let push;
     if (action === 'move') push = (d) => d.mouse(...xy());
+    // A movement, as from a locked pointer (games that read relative motion).
+    else if (action === 'nudge') push = (d) => d.mouse(...xy(), Display.RELATIVE);
     else if (action === 'click' || action === 'rclick') {
       const [down, up] = action === 'click' ? [0x2, 0x4] : [0x8, 0x10];
       push = (d) => {
