@@ -111,15 +111,16 @@ function newMemory64(pages) {
  * WebAssembly trap ("wasm-function[N]:0xOFFSET": V8 and SpiderMonkey, not
  * JavaScriptCore), which memory traps need to find the faulting x86
  * instruction (see `Machine.trapSite`). Checked once, on a module that
- * loads past the end of its memory.
+ * runs `unreachable`: a trap with the same stack trace as a bounds trap,
+ * but no memory access (Chrome 156's headless shell crashes the page on an
+ * out-of-bounds access in a worker; Chrome itself traps).
  */
 let trapsMappableResult;
 export function trapsMappable() {
   if (trapsMappableResult !== undefined) return trapsMappableResult;
-  // (func (result i32) i32.const 0x20000 i32.load) with a one-page memory.
+  // (func (export "f") unreachable)
   const bytes = new Uint8Array([
-    0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 5, 1, 0x60, 0, 1, 0x7f, 3, 2, 1, 0, 5, 3, 1, 0, 1, 7, 5, 1, 1, 102, 0, 0,
-    10, 11, 1, 9, 0, 0x41, 0x80, 0x80, 0x08, 0x28, 2, 0, 0x0b,
+    0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 4, 1, 0x60, 0, 0, 3, 2, 1, 0, 7, 5, 1, 1, 102, 0, 0, 10, 5, 1, 3, 0, 0x00, 0x0b,
   ]);
   try {
     new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports.f();

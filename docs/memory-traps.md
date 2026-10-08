@@ -94,9 +94,10 @@ placed there would overwrite.
 ### Which engines
 
 `trapsMappable()` (runtime/runtime.mjs) runs a one-function module that
-loads past the end of its memory. It checks whether the trap's stack
-trace has the `wasm-function[N]:0xOFFSET` form the runtime needs. The
-runtimes default to memory traps only where it does:
+executes `unreachable`. It checks whether the trap's stack trace has the
+`wasm-function[N]:0xOFFSET` form the runtime needs (a bounds trap's stack
+trace has the same form). The runtimes default to memory traps only where
+it does:
 
 * **V8 (Node, Chrome):** yes. Tested here in Node 22 and headless
   Chromium (`tests/web/traps.mjs`).
@@ -106,6 +107,14 @@ runtimes default to memory traps only where it does:
 * **JavaScriptCore (Safari):** its traces carry no offsets, so the probe
   fails and Safari stays faithful. In memory-trap mode there, a bad
   address would stop the program instead of raising an access violation.
+* **Chrome 156's headless shell** (`chrome-headless-shell`, Playwright's
+  default for headless runs) crashes the page on an out-of-bounds access in
+  a worker, where Chrome 156 itself traps. The headless shell from Chrome
+  140 traps correctly. The probe doesn't touch memory, so that browser
+  still starts; a program that hits a bad address there crashes the page.
+  `tests/web/traps.mjs`, which makes such accesses, runs on Chromium
+  itself (`channel: 'chromium'`); the other browser tests don't, and pass
+  on the headless shell.
 
 ## Settings
 

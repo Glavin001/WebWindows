@@ -29,7 +29,10 @@ const port = 18000 + Math.floor(Math.random() * 1000);
 const server = spawn('node', [join(root, 'runtime/web/serve.mjs'), String(port), root], { stdio: 'ignore' });
 await new Promise((r) => setTimeout(r, 500));
 
-const browser = await chromium.launch(process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {});
+// Chromium itself, not Playwright's default headless shell: Chrome 156's
+// headless shell crashes the page on an out-of-bounds access in a worker,
+// which is what this test makes (Chrome raises the trap).
+const browser = await chromium.launch(process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : { channel: 'chromium' });
 let failed = false;
 const check = (name, ok, detail) => {
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${detail}`);
