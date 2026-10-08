@@ -299,3 +299,17 @@ diff -ruN a/include/wine/wined3d.h b/include/wine/wined3d.h
                  break;
          }
  
+--- a/dlls/wined3d/shader.c	2026-10-08 17:54:17.780287686 +0000
++++ b/dlls/wined3d/shader.c	2026-10-08 17:54:17.795187427 +0000
+@@ -2510,7 +2510,10 @@
+             FIXME("No backend version-checking for this shader type.\n");
+             backend_version = 0;
+     }
+-    if (version->major > backend_version)
++    /* wined3d's own fixed-function shaders are exempt: MaxShaderModelVS/PS
++     * limit what applications see, and rejecting these left them freed but
++     * still cached and drawn with. */
++    if (version->major > backend_version && !shader->is_ffp_vs && !shader->is_ffp_ps)
+     {
+         WARN("Shader version %u.%u not supported by the current shader backend.\n",
+                 version->major, version->minor);
