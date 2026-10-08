@@ -438,13 +438,17 @@ impl Presenter for SurfacePresenter {
         };
         let view = frame.texture.create_view(&Default::default());
         let gamma = self.gamma.view(ctx);
+        // A window on the screen is opaque whatever the back buffer's alpha
+        // holds (games leave A8R8G8B8 alpha at 0), and the page composites
+        // the canvas with alpha.
+        let _ = alpha_is_one;
         let p = BlitParams {
             src_rect: Rect::new(0, 0, size.0 as i32, size.1 as i32),
             src_size: size,
             dst_rect: Rect::new(0, 0, self.config.width as i32, self.config.height as i32),
             linear: true,
             filterable: true,
-            alpha_one: alpha_is_one,
+            alpha_one: true,
             gamma: gamma.as_ref(),
         };
         ctx.blit(src, &view, self.config.format, &p);
