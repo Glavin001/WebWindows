@@ -100,10 +100,15 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
   const files = new Map();
   const compiled = new Map();
   const sys32 = 'c:\\windows\\system32';
-  // Direct3D 8/9 programs (imports or LoadLibrary, so by name): they get
-  // wined3d's WebGPU backend. DirectDraw keeps wined3d without 3D. (The
+  // Direct3D 8/9 and OpenGL programs (imports or LoadLibrary, so by name,
+  // in the program or a DLL of its folder: Quake II's OpenGL renderer is
+  // ref_gl.dll): they get wined3d's WebGPU backend, OpenGL through
+  // opengl32's Direct3D 9. DirectDraw keeps wined3d without 3D. (The
   // backend's bridge serves i386 Wine so far.)
-  const wantsD3D = !x64 && /d3d[89]\.dll/i.test(new TextDecoder('latin1').decode(exe));
+  const names3d = (bytes) => /d3d[89]\.dll|opengl32/i.test(new TextDecoder('latin1').decode(bytes));
+  const wantsD3D =
+    !x64 &&
+    (names3d(exe) || Object.entries(folder).some(([rel, b]) => /\.dll$/i.test(rel) && names3d(b instanceof Uint8Array ? b : new Uint8Array(b))));
   // wined3d's WebGPU backend executes on a render worker of its own, which
   // presents to the page's canvas over the screen. It starts now, loading
   // its core and setting up WebGPU while Wine's DLLs load.
@@ -214,6 +219,8 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
         if (Atomics.add(frame, 0, 1) === 0) postMessage({ type: 'screen' });
       },
       inputSource: (d) => ring.drain(d),
+      // The page locks the pointer while the program confines the cursor.
+      onClip: (rect) => postMessage({ type: 'clip', rect }),
     });
     unix = await loadWineUnix(machine, {
       factory: async () => (await import(new URL(manifest.unix.module, base).href)).default,

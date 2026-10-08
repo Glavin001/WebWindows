@@ -194,6 +194,10 @@ export class Machine {
     this.storeMapSize = Math.max(L1_ENTRIES, Math.ceil(this.guestLimit / PAGE));
     this.storeMap = take(this.storeMapSize, PAGE);
     this.cpuArea = take(this.cpuSize * 128, PAGE);
+    // The millisecond counter translated loops compare with their thread's
+    // slice deadline (cpu.PREEMPT_AT). A host with a clock points tickAddr
+    // at its own (the Wine host: KUSER_SHARED_DATA's tick count).
+    this.tickAddr = take(16);
     this.nativeNext = p;
     this.nativeEnd = this.guestLimit + this.nativeSize;
     if (p > this.nativeEnd) throw new Error('native region too small for the lookup tables');
@@ -287,10 +291,22 @@ export class Machine {
       cpu = this.cpuArea + size * this.cpuSlots++;
     }
     this.u8.fill(0, cpu, cpu + size);
+    this.w32(cpu + this.abi.cpu.PREEMPT_AT, 0xffffffff);
     // x87 control word: 64-bit precision, round to nearest, all masked.
     this.dv.setUint16(cpu + this.abi.cpu.FPU_CW, 0x037f, true);
     this.dv.setUint32(cpu + this.abi.cpu.MXCSR, 0x1f80, true);
     return cpu;
+  }
+
+  /**
+   * A translated loop's slice deadline passed. `onPreempt` (a host with
+   * threads) returns whether it switched threads, the current one to resume
+   * at `eip`; otherwise the deadline goes away.
+   */
+  preempt(cpu, eip) {
+    if (this.onPreempt) return this.onPreempt(cpu, eip) ? 1 : 0;
+    this.w32(cpu + this.abi.cpu.PREEMPT_AT, 0xffffffff);
+    return 0;
   }
 
   /** Returns a thread's CPU state slot for reuse. */
@@ -404,6 +420,8 @@ export class Machine {
       // The builtins themselves, so engines call them directly.
       sin: Math.sin,
       cos: Math.cos,
+      preempt: (cpu, eip) => this.preempt(this.addr(cpu), this.addr(eip)),
+      tick: this.wide(this.tickAddr),
     };
     if (this.code64) env.code_pages = BigInt(this.codePages);
     const finish = (instance) => {
@@ -412,7 +430,7 @@ export class Machine {
         this.register(addrs[i], base + i);
       }
       this.funcCount += addrs.length;
-      const rec = { name, base, count: addrs.length, meta, instance };
+      const rec = { name, base, count: addrs.length, meta, instance, addrs };
       this.modules.push(rec);
       this.log(`loaded ${name}: ${addrs.length} functions at table ${base}`);
       return rec;
@@ -441,7 +459,12 @@ export class Machine {
     const page = this.codePage(addr);
     let l2 = this.l1At(page);
     if (l2 === this.zeroL2) {
-      l2 = this.nativeAlloc(L2_BYTES, PAGE);
+      // A store into translated code points the page back at zero_l2 (in
+      // translated code); the page's old table is reused, or code that
+      // patches itself every frame would use up the native region.
+      this.pageL2 ??= new Map();
+      l2 = this.pageL2.get(page);
+      if (l2 === undefined) this.pageL2.set(page, (l2 = this.nativeAlloc(L2_BYTES, PAGE)));
       this.u8.fill(0, l2, l2 + L2_BYTES);
       this.setL1(page, l2);
       this.u8[this.storeMap + page] |= STORE_CODE;

@@ -12,6 +12,9 @@ const INPUT_MOUSE = 0;
 const INPUT_KEYBOARD = 1;
 
 export class Display {
+  /** A flag for mouse(): x and y are a movement, not a position. */
+  static RELATIVE = 0x10000;
+
   /**
    * @param {object} [opts]
    * @param {number} [opts.width]
@@ -22,6 +25,8 @@ export class Display {
    *        called after a part of the screen changed
    * @param {(display: Display) => void} [opts.inputSource]  called before input is taken;
    *        queues newly arrived events with mouse(), key() or pushInput()
+   * @param {(rect: {left: number, top: number, right: number, bottom: number} | null) => void} [opts.onClip]
+   *        called when a program confines the cursor to a rectangle, or stops (null)
    */
   constructor(opts = {}) {
     this.size = { width: opts.width ?? 800, height: opts.height ?? 600 };
@@ -29,6 +34,7 @@ export class Display {
     this.screen = new Uint8ClampedArray(opts.buffer ?? new ArrayBuffer(bytes), 0, bytes);
     this.onChange = opts.onChange ?? (() => {});
     this.inputSource = opts.inputSource ?? null;
+    this.onClip = opts.onClip ?? null;
     /** hwnd -> { shown, left, top, right, bottom, ox, oy, width, height, pixels } */
     this.windows = new Map();
     /** top-level windows, bottom first */
@@ -148,17 +154,28 @@ export class Display {
 
   // ---- Input --------------------------------------------------------------
 
-  /** Queues a mouse event: screen coordinates and MOUSEEVENTF_* flags (button changes). */
+  /**
+   * Queues a mouse event: screen coordinates and MOUSEEVENTF_* flags (button
+   * changes). With RELATIVE in the flags, x and y are a movement instead
+   * (from a locked pointer), which wineserver adds to the cursor position.
+   */
   mouse(x, y, flags = 0, data = 0) {
-    // MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE: hardware input (as display
-    // drivers send it) is in screen pixels, not SendInput's 0..65535.
+    const relative = flags & Display.RELATIVE;
+    // MOUSEEVENTF_MOVE, and MOUSEEVENTF_ABSOLUTE for a position: hardware
+    // input (as display drivers send it) is in screen pixels, not
+    // SendInput's 0..65535.
     this.pushInput({
       type: INPUT_MOUSE,
       dx: Math.round(x),
       dy: Math.round(y),
       data,
-      flags: 0x8001 | flags,
+      flags: (relative ? 0x0001 : 0x8001) | (flags & 0xffff),
     });
+  }
+
+  /** The driver's ClipCursor: a program confines the cursor (clipped) or lets it go. */
+  clipCursor(clipped, left, top, right, bottom) {
+    this.onClip?.(clipped ? { left, top, right, bottom } : null);
   }
 
   /** Queues a key press or release: virtual-key code, scan code, KEYEVENTF_* flags. */

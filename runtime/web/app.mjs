@@ -116,21 +116,53 @@ const at = (e) => {
 };
 // MOUSEEVENTF_* for buttons 0 (left), 1 (middle), 2 (right): [down, up].
 const BUTTONS = [[0x2, 0x4], [0x20, 0x40], [0x8, 0x10]];
-canvas.addEventListener('pointermove', (e) => screen?.ring.mouse(...at(e)));
+// Display.RELATIVE: the event's x and y are a movement, not a position.
+const RELATIVE = 0x10000;
+// Where the program confines the cursor (ClipCursor), or null. Games that
+// read relative mouse movement (Quake moves the cursor back to its window's
+// centre every frame) confine it to their window: then a click locks the
+// pointer, and movement goes to Wine as movement, which it adds to the
+// cursor position. Esc (the browser's) releases the lock.
+let clip = null;
+const locked = () => document.pointerLockElement === canvas;
+let rest = [0, 0];
+const mouse = (e, flags = 0, data = 0) => {
+  if (!locked()) return screen?.ring.mouse(...at(e), flags, data);
+  if (flags) return screen?.ring.mouse(0, 0, flags | RELATIVE, data);
+  // Movement in canvas pixels, fractions carried to the next event.
+  const r = canvas.getBoundingClientRect();
+  const x = (e.movementX * canvas.width) / r.width + rest[0], y = (e.movementY * canvas.height) / r.height + rest[1];
+  const dx = Math.trunc(x), dy = Math.trunc(y);
+  rest = [x - dx, y - dy];
+  if (dx || dy) screen?.ring.mouse(dx, dy, RELATIVE);
+};
+function setClip(rect) {
+  clip = rect;
+  if (!clip && locked()) document.exitPointerLock();
+  updateMouseHint();
+}
+function updateMouseHint() {
+  const s = $('status');
+  s.textContent = s.textContent.replace(/ \(.*\)$/, '');
+  if (clip && !locked() && screen && !canvas.hidden) s.textContent += ' (click the screen to capture the mouse; Esc releases it)';
+}
+document.addEventListener('pointerlockchange', updateMouseHint);
+canvas.addEventListener('pointermove', (e) => mouse(e));
 canvas.addEventListener('pointerdown', (e) => {
   canvas.focus();
-  canvas.setPointerCapture(e.pointerId);
-  if (BUTTONS[e.button]) screen?.ring.mouse(...at(e), BUTTONS[e.button][0]);
+  if (clip && !locked()) Promise.resolve(canvas.requestPointerLock?.()).catch(() => {});
+  if (!locked()) canvas.setPointerCapture(e.pointerId);
+  if (BUTTONS[e.button]) mouse(e, BUTTONS[e.button][0]);
   e.preventDefault();
 });
 canvas.addEventListener('pointerup', (e) => {
-  if (BUTTONS[e.button]) screen?.ring.mouse(...at(e), BUTTONS[e.button][1]);
+  if (BUTTONS[e.button]) mouse(e, BUTTONS[e.button][1]);
 });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 canvas.addEventListener(
   'wheel',
   (e) => {
-    screen?.ring.mouse(...at(e), 0x800, e.deltaY < 0 ? 120 : -120);
+    mouse(e, 0x800, e.deltaY < 0 ? 120 : -120);
     e.preventDefault();
   },
   { passive: false },
@@ -201,6 +233,7 @@ async function run(exeName, exeBytes, files, exePath) {
   $('status').textContent = `running ${exeName}…`;
   $('run').disabled = true;
   worker?.terminate();
+  setClip(null);
   worker = new Worker(new URL('worker.mjs', import.meta.url), { type: 'module' });
   const dec = new TextDecoder('latin1');
   const wine = $('wine').checked;
@@ -228,12 +261,15 @@ async function run(exeName, exeBytes, files, exePath) {
       if (m.type === 'stdout' || m.type === 'stderr') out.textContent += dec.decode(m.bytes);
       else if (m.type === 'log') logEl.textContent += m.text + '\n';
       else if (m.type === 'd3d-window') placeD3D(m);
+      else if (m.type === 'clip') setClip(m.rect);
       else if (m.type === 'screen') {
         canvas.hidden = false;
         canvas.focus();
         $('status').textContent = `${exeName} is running`;
+        updateMouseHint();
         window.screenShown = true;
       } else if (m.type === 'exit') {
+        setClip(null);
         $('status').textContent = m.code === null ? `${exeName} stopped with an error` : `${exeName} exited with code ${m.code} (${m.runMs?.toFixed(0)} ms)`;
         $('run').disabled = false;
         worker.terminate();

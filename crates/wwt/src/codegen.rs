@@ -71,7 +71,8 @@ const T_FN: u32 = 0;
 const T_FAULT: u32 = 1;
 const T_MATH: u32 = 2;
 const T_F64_F64: u32 = 3;
-const T_FIRST_HELPER: u32 = 4;
+const T_PREEMPT: u32 = 4;
+const T_FIRST_HELPER: u32 = 5;
 
 // Imported function indices. Native implementations (`Term::Native`,
 // `Term::NativeTry`) follow, one import each, in the order of
@@ -82,7 +83,8 @@ const F_MATH: u32 = 1;
 /// through JavaScript (the other operations go through `math`).
 const F_SIN: u32 = 2;
 const F_COS: u32 = 3;
-const F_FIRST_NATIVE: u32 = 4;
+const F_PREEMPT: u32 = 4;
+const F_FIRST_NATIVE: u32 = 5;
 
 // Imported global indices.
 const G_TABLE_BASE: u32 = 0;
@@ -90,8 +92,9 @@ const G_LOOKUP_L1: u32 = 1;
 const G_GUEST_CHECK: u32 = 2;
 const G_STORE_MAP: u32 = 3;
 const G_ZERO_L2: u32 = 4;
+const G_TICK: u32 = 5;
 /// 64-bit code only.
-const G_CODE_PAGES: u32 = 5;
+const G_CODE_PAGES: u32 = 6;
 
 /// How far (bytes) a load may be from an address that passed a check and
 /// still skip its own (see `check_covered`).
@@ -269,6 +272,8 @@ impl<'a> ModuleGen<'a> {
             .ty()
             .function([ValType::I32, ValType::F64, ValType::F64], [ValType::F64]);
         types.ty().function([ValType::F64], [ValType::F64]);
+        // preempt(cpu, eip) -> yield?
+        types.ty().function([at, ct], [ValType::I32]);
         let mut helper_type_idx = vec![];
         for h in &self.helpers {
             let (params, ret) = h.signature();
@@ -325,6 +330,11 @@ impl<'a> ModuleGen<'a> {
             imports::COS,
             EntityType::Function(T_F64_F64),
         );
+        imp.import(
+            imports::MODULE,
+            imports::PREEMPT,
+            EntityType::Function(T_PREEMPT),
+        );
         // Native implementations follow (F_FIRST_NATIVE on).
         for (&(n, _), &t) in self.natives.iter().zip(&native_type_idx) {
             imp.import(imports::MODULE, n, EntityType::Function(t));
@@ -357,6 +367,7 @@ impl<'a> ModuleGen<'a> {
             imports::GUEST_LIMIT,
             imports::STORE_MAP,
             imports::ZERO_L2,
+            imports::TICK,
         ];
         if self.code64 {
             globals.push(imports::CODE_PAGES);
@@ -470,6 +481,11 @@ impl<'a> ModuleGen<'a> {
 
     pub fn gen_function(&self, f: &Function) -> wasm_encoder::Function {
         let fixed;
+        // Blocks from here on are made by the passes below, not lifted.
+        let lifted = f.blocks.len();
+        // Where the optimizer kept the state a preemption check writes back.
+        let preempt = opt::preempt_points(f);
+        let irreducible = !reducible::is_reducible(f);
         let f = if reducible::is_reducible(f) && !self.cfg.osr {
             f
         } else {
@@ -486,6 +502,9 @@ impl<'a> ModuleGen<'a> {
         };
         let a = opt::analyze(f);
         let mut g = FnGen::new(self, f, &a);
+        g.lifted = lifted;
+        g.preempt = preempt;
+        g.irreducible = irreducible;
         g.run();
         g.finish()
     }
@@ -537,6 +556,13 @@ struct FnGen<'g, 'a> {
     /// Scratch address in the memory's address type.
     tmp_ma: u32,
     label_local: u32,
+    /// Blocks numbered from here on were added by code generation's own
+    /// passes (`reducible`, `osr`), not lifted from x86 code.
+    lifted: usize,
+    /// `opt::preempt_points` of the lifted function, and whether it was
+    /// irreducible: where its back edges' state survived the optimizer.
+    preempt: Vec<bool>,
+    irreducible: bool,
     emitted: Vec<bool>,
     /// Addresses whose guest-limit check passed, as (vreg, lo, hi): some
     /// address in `vreg + [lo, hi]` passed (lo = hi: that one did). Loads
@@ -594,6 +620,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
             tmp_i64b: 0,
             tmp_ma: 0,
             label_local: 0,
+            lifted: n,
+            preempt: vec![],
+            irreducible: false,
             emitted: vec![false; n],
             facts_local: vec![],
             facts_tree: vec![],
@@ -1231,8 +1260,77 @@ impl<'g, 'a> FnGen<'g, 'a> {
         (self.ctx.len() - 1 - pos) as u32
     }
 
+    /// At a loop's back edge: once the thread's slice deadline has passed,
+    /// writes the state back and asks the host whether to switch threads;
+    /// if so, the loop's frames return the yield address and the thread
+    /// resumes at the loop header later. Two loads and a compare otherwise.
+    fn preempt_check(&mut self, src: BlockId, tgt: BlockId) {
+        let Some(resume) = self.resume_addr(src, tgt) else {
+            return;
+        };
+        self.emit(W::GlobalGet(G_TICK));
+        self.emit(W::I32Load(memarg(0, 2)));
+        self.emit(W::LocalGet(0));
+        self.emit(W::I32Load(memarg(cpu::PREEMPT_AT, 2)));
+        self.emit(W::I32GeU);
+        self.emit(W::If(BlockType::Empty));
+        self.ctx.push(Ctx::If);
+        self.sync(self.a.dirty_end[src as usize]);
+        self.emit(W::LocalGet(0));
+        self.code_const(resume);
+        self.emit(W::Call(F_PREEMPT));
+        self.emit(W::If(BlockType::Empty));
+        self.code_const(if self.code64() {
+            abi::addr::YIELD64
+        } else {
+            abi::addr::YIELD as u64
+        });
+        self.emit(W::Return);
+        self.emit(W::End);
+        self.ctx.pop();
+        self.emit(W::End);
+    }
+
+    /// The x86 address a back edge continues at, where a preempted thread
+    /// resumes. A block made by restructuring has none of its own: a
+    /// multi-entry loop's dispatch header carries its first entry's address
+    /// whichever entry the label selects, and a merged jump table's block
+    /// that of one of the table jumps. An edge into one resumes at the entry
+    /// it was meant for when that is known (the label setter in front of a
+    /// dispatch header carries its entry's address); otherwise it gets no
+    /// check.
+    ///
+    /// The edge must also leave a block whose dirty state the optimizer kept
+    /// for it (`opt::preempt_points`): a lifted block it marked, or a label
+    /// setter, whose predecessors' edges into the loop entry it marked.
+    fn resume_addr(&self, src: BlockId, tgt: BlockId) -> Option<u64> {
+        let s = &self.f.blocks[src as usize];
+        if (src as usize) < self.lifted {
+            if !self.preempt.get(src as usize).copied().unwrap_or(false)
+                || tgt as usize >= self.lifted
+            {
+                return None;
+            }
+            return Some(self.f.blocks[tgt as usize].addr);
+        }
+        let setter = self.irreducible
+            && matches!(s.term, Term::Jump(t) if t == tgt)
+            && matches!(
+                s.insts.as_slice(),
+                [Inst {
+                    dst: Some(_),
+                    op: Op::Const(_),
+                    ..
+                }]
+            );
+        setter.then_some(s.addr)
+    }
+
     fn do_branch(&mut self, src: BlockId, tgt: BlockId) {
         if self.ctx.contains(&Ctx::Dispatch) {
+            if self.rpo_num[tgt as usize] <= self.rpo_num[src as usize] {
+                self.preempt_check(src, tgt);
+            }
             self.emit(W::I32Const(tgt as i32));
             self.emit(W::LocalSet(self.label_local));
             let l = self.label(Ctx::Dispatch);
@@ -1240,6 +1338,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             return;
         }
         if self.rpo_num[tgt as usize] <= self.rpo_num[src as usize] {
+            self.preempt_check(src, tgt);
             let l = self.label(Ctx::Loop(tgt));
             self.emit(W::Br(l));
         } else if self.merge[tgt as usize] {

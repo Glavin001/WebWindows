@@ -7,10 +7,12 @@
 //   --screenshot F    save it as a PNG when the program goes idle or exits
 //   --folder          the program's directory as C:\app (games with data files)
 //   --audio-out F     save what the program played as a WAV file (48 kHz stereo)
-//   --run-for MS      ... or after this long
+//   --run-for MS      ... or after this long (running: translating with an
+//                     empty cache does not count)
 //   --input SCRIPT    scripted input, timed from the first frame:
 //                     "500:click 20,80; 900:text Hi; 1200:key Enter"
-//                     (click/rclick/move X,Y; key CODE as in KeyboardEvent.code,
+//                     (click/rclick/move X,Y; nudge DX,DY moves by that much;
+//                     key CODE as in KeyboardEvent.code,
 //                     keydown/keyup CODE to hold it;
 //                     text types letters, digits and spaces)
 //   --mem32           a 64-bit program on a 32-bit memory, below 4 GB, with the
@@ -29,6 +31,15 @@
 // 64-bit programs run on Wine's x86_64 DLLs from WINE_BUILD64 (default
 // /opt/wine-build64, tools/wine/build.sh with ARCH=x86_64) on a 64-bit
 // (memory64) memory, at their own addresses.
+//
+// When a run goes idle (with --screenshot), each thread's wait and EBP
+// backtrace are printed. Diagnostics in the environment:
+//   WWT_SYSCALL_COUNTS=1   the most frequent system calls, at idle
+//   WWT_TRACE_CALLS=A,B    the first calls of these system calls, with
+//                          arguments and status (WWT_TRACE_LIMIT, default 40)
+//   WWT_FAST_LOG=1         fast mode's run-time translations
+//   WWT_THREAD_DUMP=MS     the scheduler's thread states after MS, and when
+//                          nothing can run
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -83,6 +94,9 @@ let x64 = false;
 let mem64 = false;
 let mem32 = !hasMemory64();
 
+/** Time spent translating images, which --run-for does not count. */
+let translateMs = 0;
+
 /** Translates an image with the CLI, caching by content hash. */
 function translate(path, bytes) {
   mkdirSync(cacheDir, { recursive: true });
@@ -108,9 +122,11 @@ function translate(path, bytes) {
     // rename, so a reader never sees a partial file.
     const tmp = join(cacheDir, `${hash}.${process.pid}`);
     writeFileSync(`${tmp}.bin`, bytes);
+    const t0 = performance.now();
     execFileSync(wwt(), ['translate', `${tmp}.bin`, '-o', `${tmp}.wasm`, ...extra], {
       stdio: ['ignore', 'ignore', 'inherit'],
     });
+    translateMs += performance.now() - t0;
     renameSync(`${tmp}.wasm`, out);
     rmSync(`${tmp}.bin`);
   }
@@ -172,6 +188,8 @@ function parseInput(text) {
     const shift = windowsKey('ShiftLeft');
     let push;
     if (action === 'move') push = (d) => d.mouse(...xy());
+    // A movement, as from a locked pointer (games that read relative motion).
+    else if (action === 'nudge') push = (d) => d.mouse(...xy(), Display.RELATIVE);
     else if (action === 'click' || action === 'rclick') {
       const [down, up] = action === 'click' ? [0x2, 0x4] : [0x8, 0x10];
       push = (d) => {
@@ -301,9 +319,11 @@ const display = new Display({
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 // Blocks the thread; a wait nothing can end means the program is idle.
 const started = performance.now();
+// How long the program has run, translation (an empty cache) not counted.
+const ranFor = () => performance.now() - started - translateMs;
 const wait = (ms) => {
   if (display.hasInput()) return 1;
-  if (screenshot && performance.now() - started > runFor) throw new ProgramIdle();
+  if (screenshot && ranFor() > runFor) throw new ProgramIdle();
   // Scripted input still to come wakes the program when it is due.
   const due = script.length && firstFrame !== null ? Math.max(0, firstFrame + script[0].at - performance.now()) : -1;
   if (due >= 0 && (ms < 0 || due < ms)) {
@@ -344,7 +364,7 @@ if (useUnix) {
 const tw = join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm');
 if (existsSync(tw)) {
   enableFastMode(machine, await FastTranslator.load(readFileSync(tw)), {
-    log: trace ? (s) => stderr(`[fast] ${s}\n`) : undefined,
+    log: trace || process.env.WWT_FAST_LOG ? (s) => stderr(`[fast] ${s}\n`) : undefined,
   });
 }
 const d3d = d3dRecord ? new D3DRecorder() : null;
@@ -402,7 +422,7 @@ const host = new WineHost(machine, {
 host.boot(`${sys32}\\ntdll.dll`, exeDos);
 // A program that never waits (a game's busy frame loop) still stops on time.
 if (screenshot) host.threads.onSlice = () => {
-  if (performance.now() - started > runFor) throw new ProgramIdle();
+  if (ranFor() > runFor) throw new ProgramIdle();
 };
 await host.startClock();
 const r = host.run();
@@ -415,6 +435,14 @@ saveRecording();
 if (r.error instanceof ProgramIdle || r.error?.cause instanceof ProgramIdle) {
   writeFileSync(screenshot, await display.png());
   stderr(`idle; screenshot in ${screenshot}\n`);
+  if (process.env.WWT_SYSCALL_COUNTS) stderr(`  system calls: ${[...host.counts].sort((x, y) => y[1] - x[1]).slice(0, 20).map(([n, c]) => `${n} ${c}`).join(', ')}\n`);
+  // What each thread was waiting in, to tell a game waiting for input from
+  // one stuck waiting for itself.
+  for (const t of host.threads.threads) {
+    if (t.state === 'dead') continue;
+    const at = t.pending?.ret ? ` from ${host.describeAddress?.(t.pending.ret) ?? hex(t.pending.ret)}` : '';
+    stderr(`  thread ${hex(t.tid)}: ${t.state}${t.suspend ? ` (suspended ${t.suspend})` : ""}${t.nest ? ` (nest ${t.nest})` : ""}${t.pending ? ` in ${t.pending.name}${at}` : ''}; frames ${host.backtrace(t).join(' < ')}\n`);
+  }
   process.exit(0);
 }
 if (r.error) {

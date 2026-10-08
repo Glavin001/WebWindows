@@ -105,8 +105,14 @@ function 0x4013e0:
     br v470 ? b11 : b12
   b9 @0x401191:
     v146 = const 0x4
+    v147 = esp
     v148 = I32Sub esp, v146
     esp = v148
+    fk = const 0x203
+    fr = v148
+    fa = v147
+    fb = const 0x4
+    fc = const 0x0
     jump b2
   b10 @0x40132f:
     v149 = const 0x40d044
@@ -406,6 +412,12 @@ function 0x4013e0:
     v374 = const 0xffffffe4
     v375 = I32Add ebp, v374
     v377 = load4.trusted [v375]
+    v378 = I32Sub v377, ebx
+    fk = const 0x203
+    fr = v378
+    fa = v377
+    fb = ebx
+    fc = const 0x0
     v481 = I32Ne v377, ebx
     br v481 ? b31 : b42
   b39 @0x4013c7:

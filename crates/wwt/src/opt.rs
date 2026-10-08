@@ -594,6 +594,8 @@ pub struct Analysis {
     pub dense: Vec<u32>,
     pub global: Vec<V>,
     pub live_in: Vec<BitSet>,
+    /// Blocks at whose end all dirty state is live: see `preempt_points`.
+    pub preempt: Vec<bool>,
 }
 
 impl Analysis {
@@ -627,9 +629,37 @@ pub fn dirty_trace(b: &Block, dirty_in: StateMask) -> Vec<StateMask> {
     out
 }
 
+/// Blocks whose edges may get a preemption check in code generation
+/// (`codegen::preempt_check`): a thread that has used up its time slice
+/// writes its state back there and later resumes at the edge's target, so
+/// all dirty state must still be in its vregs at the block's end. These are
+/// blocks with a retreating edge in reverse postorder (loop back edges),
+/// and in an irreducible function also blocks with an edge into a block
+/// with several predecessors, since making it reducible turns edges into
+/// loop entries into back edges.
+pub fn preempt_points(f: &Function) -> Vec<bool> {
+    let order = f.rpo();
+    let mut rpo = vec![usize::MAX; f.blocks.len()];
+    for (i, &b) in order.iter().enumerate() {
+        rpo[b as usize] = i;
+    }
+    let irreducible = !crate::reducible::is_reducible(f);
+    let preds = f.predecessors();
+    (0..f.blocks.len())
+        .map(|b| {
+            f.blocks[b]
+                .term
+                .successors()
+                .iter()
+                .any(|&s| rpo[s as usize] <= rpo[b] || irreducible && preds[s as usize].len() > 1)
+        })
+        .collect()
+}
+
 pub fn analyze(f: &Function) -> Analysis {
     let n = f.blocks.len();
     let order = f.rpo();
+    let preempt = preempt_points(f);
     // Forward: dirty state.
     let mut dirty_in = vec![0 as StateMask; n];
     let mut dirty_end = vec![0 as StateMask; n];
@@ -692,7 +722,7 @@ pub fn analyze(f: &Function) -> Analysis {
     while changed {
         changed = false;
         for &b in &post {
-            let live = block_live_in(f, b, &dirty_in, &dirty_end, &dense, &live_in, ng);
+            let live = block_live_in(f, b, &dirty_in, &dirty_end, &dense, &live_in, ng, &preempt);
             if live != live_in[b as usize] {
                 live_in[b as usize] = live;
                 changed = true;
@@ -705,6 +735,7 @@ pub fn analyze(f: &Function) -> Analysis {
         dense,
         global,
         live_in,
+        preempt,
     }
 }
 
@@ -725,6 +756,7 @@ fn term_live(
     dense: &[u32],
     live_in: &[BitSet],
     ng: usize,
+    preempt: &[bool],
 ) -> BitSet {
     let blk = &f.blocks[b as usize];
     let mut live = BitSet::new(ng);
@@ -748,6 +780,8 @@ fn term_live(
             }
             if t.syncs() {
                 add_mask(&mut live, dirty_end & term_sync(f, b));
+            } else if preempt[b as usize] {
+                add_mask(&mut live, dirty_end);
             }
         }
     }
@@ -761,6 +795,7 @@ fn term_live(
     live
 }
 
+#[allow(clippy::too_many_arguments)]
 fn block_live_in(
     f: &Function,
     b: BlockId,
@@ -769,9 +804,10 @@ fn block_live_in(
     dense: &[u32],
     live_in: &[BitSet],
     ng: usize,
+    preempt: &[bool],
 ) -> BitSet {
     let blk = &f.blocks[b as usize];
-    let mut live = term_live(f, b, dirty_end[b as usize], dense, live_in, ng);
+    let mut live = term_live(f, b, dirty_end[b as usize], dense, live_in, ng, preempt);
     let trace = dirty_trace(blk, dirty_in[b as usize]);
     for (k, inst) in blk.insts.iter().enumerate().rev() {
         // Strong liveness: a pure instruction whose result is dead does not
@@ -812,7 +848,15 @@ pub fn dce(f: &mut Function) -> usize {
         let mut round = 0;
         for b in 0..f.blocks.len() {
             let blk = &f.blocks[b];
-            let mut live_g = term_live(f, b as BlockId, a.dirty_end[b], &a.dense, &a.live_in, ng);
+            let mut live_g = term_live(
+                f,
+                b as BlockId,
+                a.dirty_end[b],
+                &a.dense,
+                &a.live_in,
+                ng,
+                &a.preempt,
+            );
             // Local liveness for temporaries that never leave the block.
             let mut live_local: std::collections::HashSet<V> = std::collections::HashSet::new();
             for u in blk.term.uses() {

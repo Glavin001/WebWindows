@@ -291,6 +291,11 @@ function 0x404400:
     v321 = I32And v316, v320
     v322 = I32Extend8S v321
     eax = v322
+    fk = const 0x205
+    fr = v322
+    fa = v322
+    fb = const 0x0
+    fc = const 0x0
     v2875 = I32Eqz v322
     br v2875 ? b9 : b4
   b17 @0x404570:
@@ -1436,6 +1441,11 @@ function 0x404400:
     v1404 = I32And v1403, v1401
     v1405 = const 0xff
     v1406 = I32And v1404, v1405
+    fk = const 0x5
+    fr = v1406
+    fa = v1403
+    fb = const 0x0
+    fc = const 0x0
     v2923 = const 0x0
     v2924 = I32Ne v1406, v2923
     br v2924 ? b14 : b115
@@ -2987,6 +2997,12 @@ function 0x404400:
     v3009 = const 0x1
     v3011 = I32Add eax, v3009
     eax = v3011
+    v3014 = I32Sub v2989, v3011
+    fk = const 0x203
+    fr = v3014
+    fa = v2989
+    fb = v3011
+    fc = const 0x0
     v3027 = I32Eq v2989, v3011
     br v3027 ? b193 : b189
   b192 @0x407786:

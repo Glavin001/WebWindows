@@ -52,13 +52,17 @@ const GUI_DLLS = [
   'advapi32', 'sechost', 'user32', 'gdi32', 'win32u', 'imm32', 'combase', 'comctl32', 'coml2', 'cryptbase',
   'ole32', 'rpcrt4', 'uxtheme', 'comdlg32', 'shcore', 'shell32', 'shlwapi', 'comctl32_v6', 'oleaut32',
 ];
-// Sound, DirectDraw, Direct3D and DirectInput (Milestone 5): fetched only
-// for programs that use one of them (wined3d alone is megabytes), see
+// Sound, DirectDraw, Direct3D, DirectInput and Winsock (games): fetched
+// only for programs that use one of them (wined3d alone is megabytes), see
 // runtime/web/worker.mjs. wined3d draws Direct3D with its WebGPU backend
-// and needs no opengl32.
+// and needs no opengl32; opengl32 is native/opengl32 (OpenGL 1.1 over
+// Direct3D 9); d3dcompiler_47 compiles HLSL for programs that do it at run
+// time. Winsock has no network behind it (single-player games
+// talk to their own server in memory).
 const MEDIA_DLLS = [
   'version', 'winmm', 'msacm32', 'dsound', 'mmdevapi', 'winepulse.drv', 'ddraw', 'wined3d', 'd3d9',
-  'dinput', 'dinput8', 'hid', 'setupapi',
+  'd3dcompiler_47', 'opengl32', 'dinput', 'dinput8', 'hid', 'setupapi',
+  'ws2_32', 'wsock32', 'iphlpapi', 'dnsapi', 'nsi',
 ];
 // Networking and cryptography (PuTTY, curl): likewise fetched only for
 // programs that import one of them.
