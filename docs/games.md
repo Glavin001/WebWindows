@@ -10,6 +10,32 @@ of their files are in the repository.
 | Quake II demo 3.14 | Software renderer (`ref_soft`, DirectDraw/GDI) | `demo1` renders and runs, in Node and in the browser |
 | Quake II demo 3.14 | OpenGL (`ref_gl`, through `native/opengl32` over Direct3D 9) | `demo1` renders (recorded in Node, replayed on the GPU); not yet tried in a browser |
 | Quake (shareware) on FTEQW | Direct3D 9 | Starts; exits before its window opens |
+| Far Cry demo (2004) | Direct3D 9 (shader model 1 + fixed function) | In the browser: menu, new game, the Fort level, walking and mouse look; rendering bugs (sky, some stretched geometry, render-to-texture) |
+| Unreal Tournament 2004 demo | Direct3D 8/9 | In the browser: menus, Instant Action, a DeathMatch on DM-Rankin, walking and turning |
+
+## Unreal Tournament 2004 demo
+
+From the demo's `System` folder, pick `UT2004.exe` (it starts fullscreen at
+800x600). Reaching the menu takes about three and a half minutes in headless
+Chrome. Its menus draw their own cursor from DirectInput's relative mouse
+movement, so the page locks the pointer for a fullscreen Direct3D window
+(click the screen; Esc releases it).
+
+What it needed:
+
+* **Rich edit.** `Window.dll` loads `RICHED32.DLL` by name and subclasses its
+  class; the bundle's `richedit` group (riched20, riched32) is fetched when
+  the program's files name it (tests/wine/win32/wndclass.c).
+* **AVI files.** `WinDrv.dll` imports `AVIFIL32` (with `msvfw32`), in the
+  media group.
+* **Deep recursion.** Loading packages recursed deeper than the browser's
+  stack holds when every guest call nests a WebAssembly call; translated
+  calls now unwind to the dispatch loop past 1000 nested calls
+  (tests/wine/win32/recursion.c).
+* **Fixed-function texture coordinate generation.** Wine 11's HLSL
+  fixed-function shaders only passed texture coordinates through; camera
+  space normal, position, reflection vector and sphere map coordinates are
+  now generated (the patch on `ffp_hlsl.c`). Without them maps drew black.
 
 ## Quake II demo
 
