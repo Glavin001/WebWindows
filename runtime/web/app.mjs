@@ -5,6 +5,7 @@
 
 import { InputRing } from '../wine/input-ring.mjs';
 import { windowsKey, KEYEVENTF_KEYUP } from './keys.mjs';
+import { hasMemory64 } from '../runtime.mjs';
 
 const $ = (id) => document.getElementById(id);
 const out = $('out');
@@ -18,6 +19,11 @@ const bundleUrl = params.get('bundle') ?? new URL('../../target/wine-bundle/', i
 // 64-bit programs run on Wine's x86_64 DLLs from their own bundle.
 const bundle64Url = params.get('bundle64') ?? new URL('../../target/wine-bundle64/', import.meta.url).href;
 if (params.get('wine')) $('wine').checked = true;
+// 64-bit Wine needs 64-bit WebAssembly memory, which WebKit (Safari, and
+// every browser on iOS) does not ship yet. 64-bit console programs run
+// without it, below 4 GB.
+const memory64 = hasMemory64();
+$('mem64note').hidden = memory64;
 
 if (!crossOriginIsolated) {
   $('status').textContent = 'This page needs cross-origin isolation (COOP/COEP headers) for shared memory; serve it with runtime/web/serve.mjs.';
@@ -176,6 +182,7 @@ function run(exeName, exeBytes, files, exePath) {
         wine,
         bundleUrl,
         bundle64Url,
+        memory64,
         display: screen && { width: screen.width, height: screen.height, screen: screen.screen, frame: screen.frame, input: screen.input },
       },
       [exeBytes],
@@ -195,9 +202,11 @@ $('run').onclick = async () => {
 // needed), and Wine's own programs from each bundle that carries Wine's
 // Unix side, in their 32-bit and 64-bit builds.
 const samples = [];
-function addSample(label, url, wine) {
+function addSample(label, url, wine, needsMemory64 = false) {
   samples.push({ url, wine });
-  $('sample').add(new Option(label, String(samples.length - 1)));
+  const option = new Option(needsMemory64 && !memory64 ? `${label} (needs 64-bit WebAssembly memory)` : label, String(samples.length - 1));
+  option.disabled = needsMemory64 && !memory64;
+  $('sample').add(option);
   $('samples').hidden = false;
 }
 addSample('hello.exe — 32-bit console', new URL('../../tests/programs/hello.exe', import.meta.url).href, false);
@@ -206,7 +215,7 @@ for (const [url, bits] of [[bundleUrl, '32-bit'], [bundle64Url, '64-bit']]) {
   fetch(new URL('manifest.json', url))
     .then((r) => (r.ok ? r.json() : null))
     .then((manifest) => {
-      for (const p of manifest?.programs ?? []) addSample(`${p.split('/').pop()} — ${bits} on Wine`, new URL(p, url).href, true);
+      for (const p of manifest?.programs ?? []) addSample(`${p.split('/').pop()} — ${bits} on Wine`, new URL(p, url).href, true, bits === '64-bit');
     })
     .catch(() => {});
 }

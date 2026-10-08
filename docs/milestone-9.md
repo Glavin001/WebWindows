@@ -298,6 +298,17 @@ Emscripten's memory64 output also uses a 64-bit function table, which V8
 supports from Node 24 (and Chrome 133); Node 22's memory64 does not include
 it, so 64-bit Wine with the Unix side needs Node 24.
 
+WebKit (Safari, and every browser on iOS, which must use it) has no
+memory64 in a stable release yet (Safari Technology Preview has it since
+August 2026). There the page runs 64-bit console programs below 4 GB on a
+32-bit memory, greys out the 64-bit Wine samples and says why, and refuses
+a 64-bit program on Wine with that reason. The page tests for memory64 by
+validating a module that declares a shared 64-bit memory: creating one is
+no test, since WebKit ignores the descriptor's `address`/`index` key and
+makes a 32-bit memory, which is how an iPhone reached a compile error
+instead. `tests/web/nomemory64.mjs` checks this in Chromium with that
+validation failing.
+
 In the browser, `runtime/node/wine-bundle.mjs --arch x64` builds a second
 bundle (`target/wine-bundle64`: the x86_64 DLLs, prelinked off MinGW's
 shared default base `0x1_8000_0000` and translated, the wasm64 Unix side,

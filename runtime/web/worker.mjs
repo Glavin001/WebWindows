@@ -59,9 +59,12 @@ async function cacheWrite(dir, name, bytes) {
  * 64-bit programs use the x86_64 bundle (Wine's x86_64 DLLs and the wasm64
  * Unix side) on a 64-bit memory.
  */
-async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, key, bundleUrl, bundle64Url, display: shared }) {
+async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, key, bundleUrl, bundle64Url, memory64, display: shared }) {
   const x64 = peArch(exe) === 'x64';
-  if (x64 && !hasMemory64()) throw new Error('64-bit programs on Wine need a browser with 64-bit WebAssembly memory (Chrome 133, Firefox 134 or later)');
+  if (x64 && !memory64) {
+    // A limit of the browser, not a bug: no stack trace.
+    throw Object.assign(new Error('64-bit programs on Wine need a browser with 64-bit WebAssembly memory (Chrome 133, Firefox 134 or later; not yet Safari or any browser on iOS)'), { plain: true });
+  }
   const base = new URL(x64 ? bundle64Url : bundleUrl, self.location.href);
   const manifest = await (await fetch(new URL('manifest.json', base))).json();
   const t0 = performance.now();
@@ -184,6 +187,8 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
 
 onmessage = async (e) => {
   const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, bundle64Url, display } = e.data;
+  // The page tests for 64-bit WebAssembly memory once (hasMemory64).
+  const memory64 = e.data.memory64 ?? hasMemory64();
   const enc = new TextEncoder();
   try {
     const t0 = performance.now();
@@ -193,7 +198,7 @@ onmessage = async (e) => {
     const key = `${await sha256(exe)}-abi${abi.version}`;
     const dir = noCache ? null : await cacheDir();
     if (wine) {
-      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, bundle64Url, display });
+      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, bundle64Url, memory64, display });
       if (r.error) postMessage({ type: 'stderr', bytes: enc.encode(`\n*** ${r.error.message}\n`) });
       postMessage({ type: 'exit', code: r.error ? null : r.exitCode, translated: false, runMs: r.runMs, wine: true });
       return;
@@ -202,7 +207,7 @@ onmessage = async (e) => {
     // has one (Chrome 133, Firefox 134), otherwise below 4 GB in a 32-bit
     // memory.
     const arch = peArch(exe);
-    const mem64 = arch === 'x64' && hasMemory64();
+    const mem64 = arch === 'x64' && memory64;
     if (arch === 'x64') log(mem64 ? '64-bit program: 64-bit WebAssembly memory' : '64-bit program: this browser has no 64-bit WebAssembly memory; running it below 4 GB');
     const mkey = `${key}${mem64 ? '-m64' : ''}`;
     // The profile lists code found at run time on earlier launches (as
@@ -267,7 +272,7 @@ onmessage = async (e) => {
     }
     postMessage({ type: 'exit', code: error ? null : exitCode, translated, runMs });
   } catch (err) {
-    postMessage({ type: 'stderr', bytes: enc.encode(`\n*** ${err.stack ?? err}\n`) });
+    postMessage({ type: 'stderr', bytes: enc.encode(`\n*** ${err.plain ? err.message : (err.stack ?? err)}\n`) });
     postMessage({ type: 'exit', code: null });
   }
 };

@@ -72,6 +72,7 @@ jobs:
           node tests/web/browser.mjs
           node tests/web/browser.mjs tests/fixtures/binaries/jumps-O2.exe "longjmp returned 50 at depth 25"
           node tests/web/browser.mjs target/programs-x64/jumps-O2.exe "longjmp returned 50 at depth 25"
+          node tests/web/nomemory64.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:

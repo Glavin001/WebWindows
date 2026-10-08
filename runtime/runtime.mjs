@@ -85,7 +85,14 @@ export function hex(v) {
  * (`address: 'i64'`, BigInt sizes) or the earlier one Node 22 has behind
  * --experimental-wasm-memory64 (`index: 'i64'`, Number sizes).
  */
+// A module with one shared 64-bit memory (1 page, at most 1): an engine
+// without memory64 rejects it. Creating a memory is no test, since an engine
+// that does not know the descriptor's `address` or `index` key ignores it and
+// makes a 32-bit memory (WebKit, in every iOS browser).
+const MEMORY64_PROBE = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 5, 4, 1, 7, 1, 1]);
+
 function newMemory64(pages) {
+  if (!WebAssembly.validate(MEMORY64_PROBE)) throw new Error('this JavaScript engine has no 64-bit WebAssembly memory');
   try {
     return new WebAssembly.Memory({ address: 'i64', initial: BigInt(pages), maximum: BigInt(pages), shared: true });
   } catch (e) {
