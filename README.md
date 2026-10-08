@@ -84,12 +84,12 @@ node runtime/web/serve.mjs 8080
 # http://localhost:8080/runtime/web/
 ```
 
-CI runs for pull requests and for `main`. Its wine job also deploys the
-static site to Vercel (`tools/site/deploy.sh`, with the `VERCEL_TOKEN`
-secret): a preview for each pull request, linked in a comment on it, and
-production for `main`. The site goes up prebuilt, with its cross-origin
-isolation headers, so Vercel builds nothing (`vercel.json` turns its Git
-builds off).
+CI runs for pull requests and for `main`. Its deploy job puts the static
+site on Vercel (`tools/site/deploy.sh`, with the `VERCEL_TOKEN` secret)
+as a GitHub deployment: the `Preview` environment for pull requests (the
+pull request links it), `Production` for `main`. The site goes up
+prebuilt, with its cross-origin isolation headers, so Vercel builds
+nothing (`vercel.json` turns its Git builds off).
 
 The CLI also inspects and translates binaries:
 
@@ -162,6 +162,10 @@ cargo run -p wwt-testkit --bin coverage -- *.exe # forms in binaries vs suite
 CI (`.github/workflows/ci.yml`) runs all of this on x86 Linux runners,
 re-checks the fixtures against the runner's CPU, runs the same MinGW
 executables natively on a Windows runner, and runs the Emscripten spike.
+Wine is built once per run (from a cached build tree) and its tests and
+the GCC torture tests run in parallel shards (`check.mjs --shard K/N`).
+A change to nothing but documentation (Markdown, `docs/`) skips it all;
+the `CI passed` job sums up the run and is the one check to require.
 
 ## Repository layout
 

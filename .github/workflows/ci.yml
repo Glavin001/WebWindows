@@ -6,19 +6,63 @@ on:
   push:
     branches: [main]
 
-# A new push to a pull request cancels its run that is still going.
-concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+# A new push to a pull request cancels the tests of its run that is still
+# going (each test job's concurrency group), but not the build and the
+# deployment: the preview of the commit before still goes up.
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  # Pinned so Wine's Unix side (built with it) can be cached.
+  EMSDK_VERSION: 6.0.11
 
+# The jobs, and what waits for what:
+#
+#   changes ─┬─ linux ──────────────────────────┬─ windows ─┐
+#            ├─ torture (4 shards) ─────────────│───────────┤
+#            ├─ emscripten ─────────────────────│───────────┼─ CI passed
+#            ├─ wine-build ───┬─ wine (5 shards)┘           │
+#            │                ├─ wine64 (5 shards) ─────────┤
+#            └─ wine64-build ─┴─ deploy (Preview/Production)┘
+#
+# The 64-bit (x86-64) side has its own Wine build (x86_64 DLLs, Wine's Unix
+# side for wasm64 and a lowered one for a 32-bit memory) and its own shards.
+#
+# A change to nothing but documentation (Markdown, docs/) skips everything
+# except the last job, which passes; protect main with that one check.
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # A file is code when it matches all of these.
+          predicate-quantifier: every
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!docs/**'
+
   # Everything that runs on x86 Linux, which is also the source of truth for
   # instruction behavior: the oracle re-records every case on this CPU.
   linux:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    concurrency:
+      group: ${{ github.workflow }}-linux-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -29,6 +73,8 @@ jobs:
         with:
           node-version: 22
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install toolchains
         run: |
           sudo apt-get update
@@ -62,12 +108,6 @@ jobs:
           node tests/programs/check.mjs --mem64 --opt O2 --jobs 4
       - name: Csmith, x86-64 (layer 2)
         run: node tests/programs/check.mjs --arch x64 --csmith 40 --seed ${{ github.run_number }}000 --opt O0,O2 --jobs 4
-      - name: GCC torture (layer 2)
-        run: |
-          sh tools/torture/fetch.sh
-          node tests/programs/check.mjs --torture target/gcc-src/gcc/testsuite/gcc.c-torture/execute --opt O0,O2 --jobs 4
-      - name: GCC torture, x86-64 (layer 2)
-        run: node tests/programs/check.mjs --arch x64 --torture target/gcc-src/gcc/testsuite/gcc.c-torture/execute --opt O0,O2 --jobs 4
       - name: Instruction coverage of MinGW output
         run: cargo run -p wwt-testkit --bin coverage -- target/programs/*.exe
       - name: Memory spike
@@ -99,12 +139,22 @@ jobs:
             target/programs-x64/*.exe
             target/programs-x64/results*.json
 
-  # Milestone 2: programs on Wine's own DLLs, translated (not ported).
-  wine:
+  # GCC's execution torture tests (layer 2) on the JavaScript Win32 shims,
+  # split in two, for each architecture.
+  torture:
+    name: torture (${{ matrix.arch }} ${{ matrix.shard }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    concurrency:
+      group: ${{ github.workflow }}-torture-${{ matrix.arch }}-${{ matrix.shard }}-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
-    env:
-      WINE_SRC: ${{ github.workspace }}/../wine-src/wine-11.0
-      WINE_BUILD: ${{ github.workspace }}/../wine-build
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86, x64]
+        shard: [1/2, 2/2]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -113,242 +163,445 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # The linux job's cache: it builds the same translators.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux
+          save-if: false
       - name: Install toolchains
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 flex bison libfreetype-dev
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ${{ github.workspace }}/../wine-src
-            ${{ github.workspace }}/../wine-build
-          key: wine-${{ hashFiles('tools/wine/**', 'native/audio/**') }}
-      - name: Build Wine's i386 PE DLLs, programs and conformance tests
-        run: |
-          sh tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost \
-            user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 \
-            rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts \
-            hid version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d d3d9 dinput dinput8 setupapi \
-            apisetschema ws2_32 crypt32 dnsapi nsi iphlpapi secur32 bcrypt normaliz wldap32 \
-            kernel32/tests user32/tests gdi32/tests
-      - uses: mymindstorm/setup-emsdk@v14
+          sudo apt-get install -y gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 gcc-mingw-w64-x86-64
+      # The translator, and the one compiled to WebAssembly that translates
+      # what was not translated ahead of time (run.mjs).
       - name: Build
         run: |
-          cargo build --release -p wwt-cli
+          cargo build -p wwt-cli
           cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
-          sh native/wine-unix/build.sh
-          runtime/d3dgpu/build.sh
-      - name: Wine bundle (for the site)
-        run: node runtime/node/wine-bundle.mjs
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wine-bundle
-          path: target/wine-bundle
-      - name: Programs on translated Wine
-        run: node tests/programs/check.mjs --wine --jobs 4
-      - name: Windows test programs on translated Wine (exceptions, threads, sound, DirectDraw)
-        run: node tests/wine/win32.mjs --jobs 4
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: win32-programs
-          path: |
-            target/win32/*.exe
-            target/win32/results-win32.json
-      - name: Wine's kernel32 tests (layer 3), against the recorded baseline
-        run: |
-          node tests/wine/winetest.mjs --jobs 4 --timeout 60 --baseline tests/wine/baseline/kernel32_test.json \
-            "$WINE_BUILD/dlls/kernel32/tests/i386-windows/kernel32_test.exe"
-      - name: GUI programs on translated Wine (browser display driver, headless)
-        run: node tests/wine/gui.mjs
-      - name: Wine's user32 and gdi32 tests, against the recorded baselines
-        run: |
-          node tests/wine/winetest.mjs --jobs 4 --timeout 120 --baseline tests/wine/baseline/user32_test.json \
-            "$WINE_BUILD/dlls/user32/tests/i386-windows/user32_test.exe"
-          node tests/wine/winetest.mjs --jobs 4 --timeout 120 --baseline tests/wine/baseline/gdi32_test.json \
-            "$WINE_BUILD/dlls/gdi32/tests/i386-windows/gdi32_test.exe"
-      - name: GCC torture on translated Wine
+      - name: GCC torture (layer 2)
         run: |
           sh tools/torture/fetch.sh
-          node tests/programs/check.mjs --wine --torture target/gcc-src/gcc/testsuite/gcc.c-torture/execute --opt O2 --jobs 4
-      - name: Browser on translated Wine (headless Chromium)
-        run: |
-          npx --yes playwright@1 install --with-deps chromium
-          npm install --no-save playwright@1
-          node runtime/node/wine-bundle.mjs
-          node tests/web/browser.mjs tests/programs/hello.exe "Hello from translated x86!" --wine
-          node tests/web/picker.mjs
-          node tests/web/gui.mjs
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: gui-screens
-          path: target/gui/*.png
+          node tests/programs/check.mjs --arch ${{ matrix.arch }} --torture target/gcc-src/gcc/testsuite/gcc.c-torture/execute --opt O0,O2 --jobs 4 --shard ${{ matrix.shard }}
 
-  # 64-bit programs on Wine's x86_64 DLLs, translated, on a 64-bit
-  # (memory64) WebAssembly memory at their own addresses, with Wine's Unix
-  # side built for wasm64. Its module uses a 64-bit table, which needs
-  # Node 24.
-  wine64:
+  # Milestone 2 on: Wine's own DLLs, translated (not ported). Builds Wine,
+  # its Unix side, the translator and the site once; the shards below and
+  # the deployment take them from here.
+  wine-build:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    env:
-      WINE_SRC: ${{ github.workspace }}/../wine-src/wine-11.0
-      WINE_BUILD64: ${{ github.workspace }}/../wine-build64
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      current: ${{ steps.head.outputs.current != 'false' }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Keyed as the wine job that built these before was.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wine
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Started first, to build while Wine is restored and brought up to
+      # date; the bundle step waits for it.
+      - name: Build the translator and the d3dgpu module (in the background)
+        run: |
+          { cargo build --release -p wwt-cli \
+            && cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm \
+            && runtime/d3dgpu/build.sh; echo $? > "$RUNNER_TEMP/rust.tmp"; mv "$RUNNER_TEMP/rust.tmp" "$RUNNER_TEMP/rust.status"; } > "$RUNNER_TEMP/rust.log" 2>&1 &
+      - uses: ./.github/actions/wine
+        id: wine
+        with:
+          save: 'true'
+      # Wine's Unix side depends only on its sources, Wine's and Emscripten.
+      - uses: actions/cache/restore@v4
+        id: wine-unix
+        with:
+          path: |
+            target/wine-unix/wine_unix.mjs
+            target/wine-unix/wine_unix.wasm
+            target/wine-unix/wine_unix.json
+            target/wine-unix/win32u_syscalls.json
+            target/wine-unix/nt_calls.json
+          key: wine-unix-${{ env.EMSDK_VERSION }}-${{ hashFiles('native/wine-unix/**') }}-${{ steps.wine.outputs.key }}
+      - uses: mymindstorm/setup-emsdk@v14
+        if: steps.wine-unix.outputs.cache-hit != 'true'
+        with:
+          version: ${{ env.EMSDK_VERSION }}
+      - name: Wine's Unix side (Emscripten)
+        if: steps.wine-unix.outputs.cache-hit != 'true'
+        run: sh native/wine-unix/build.sh
+      - uses: actions/cache/save@v4
+        if: steps.wine-unix.outputs.cache-hit != 'true'
+        with:
+          path: |
+            target/wine-unix/wine_unix.mjs
+            target/wine-unix/wine_unix.wasm
+            target/wine-unix/wine_unix.json
+            target/wine-unix/win32u_syscalls.json
+            target/wine-unix/nt_calls.json
+          key: ${{ steps.wine-unix.outputs.cache-primary-key }}
+      - name: Wait for the translator and the d3dgpu module
+        run: |
+          while [ ! -f "$RUNNER_TEMP/rust.status" ]; do sleep 1; done
+          cat "$RUNNER_TEMP/rust.log"
+          exit "$(cat "$RUNNER_TEMP/rust.status")"
+      - name: The Wine bundle
+        run: node runtime/node/wine-bundle.mjs
+      # One archive: it keeps the translator executable, and it is quicker
+      # to move than the bundle's files one by one.
+      - name: Pack the build
+        run: |
+          tar -cf - target/release/wwt target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm \
+            target/wine-unix/wine_unix.mjs target/wine-unix/wine_unix.wasm target/wine-unix/wine_unix.json \
+            target/wine-unix/win32u_syscalls.json target/wine-unix/nt_calls.json target/wine-bundle runtime/d3dgpu/pkg \
+            | zstd -T0 -3 -o wine-build.tar.zst
+          ls -la wine-build.tar.zst
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wine-build
+          path: wine-build.tar.zst
+          compression-level: 0
+          retention-days: 7
+      - name: Is this commit still the pull request's head?
+        id: head
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.pulls.get({ ...context.repo, pull_number: context.issue.number });
+            core.setOutput('current', String(data.head.sha === context.payload.pull_request.head.sha));
+
+  # The same for 64-bit programs: Wine's x86_64 DLLs, its Unix side for
+  # wasm64 (memory64) and the lowered one for a 32-bit memory (browsers
+  # without memory64), and their bundles.
+  wine64-build:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - uses: Swatinem/rust-cache@v2
-      - name: Install toolchains
+        with:
+          shared-key: wine
+          save-if: false
+      - name: Build the translator (in the background)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 flex bison libfreetype-dev
-      - uses: actions/cache@v4
+          { cargo build --release -p wwt-cli; echo $? > "$RUNNER_TEMP/rust.tmp"; mv "$RUNNER_TEMP/rust.tmp" "$RUNNER_TEMP/rust.status"; } > "$RUNNER_TEMP/rust.log" 2>&1 &
+      - uses: ./.github/actions/wine
+        id: wine
+        with:
+          arch: x86_64
+          save: 'true'
+      - uses: actions/cache/restore@v4
+        id: wine-unix
         with:
           path: |
-            ${{ github.workspace }}/../wine-src
-            ${{ github.workspace }}/../wine-build64
-          key: wine64-${{ hashFiles('tools/wine/**', 'native/audio/**') }}
-      - name: Build Wine's x86_64 PE DLLs and programs
-        run: |
-          ARCH=x86_64 WINE_BUILD=$WINE_BUILD64 sh tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase \
-            advapi32 sechost user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 \
-            oleaut32 rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi hid programs/winemine programs/notepad fonts \
-            version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d d3d9 dinput dinput8 setupapi \
-            apisetschema ws2_32 crypt32 dnsapi nsi iphlpapi secur32 bcrypt normaliz wldap32 \
-            kernel32/tests user32/tests gdi32/tests
+            target/wine-unix64/wine_unix.*
+            target/wine-unix64/win32u_syscalls.json
+            target/wine-unix64/nt_calls.json
+            target/wine-unix64-m32/wine_unix.*
+            target/wine-unix64-m32/win32u_syscalls.json
+            target/wine-unix64-m32/nt_calls.json
+          key: wine-unix64-${{ env.EMSDK_VERSION }}-${{ hashFiles('native/wine-unix/**') }}-${{ steps.wine.outputs.key }}
       - uses: mymindstorm/setup-emsdk@v14
-      - name: Build
+        if: steps.wine-unix.outputs.cache-hit != 'true'
+        with:
+          version: ${{ env.EMSDK_VERSION }}
+      - name: Wine's Unix side for wasm64, and lowered for a 32-bit memory (Emscripten)
+        if: steps.wine-unix.outputs.cache-hit != 'true'
         run: |
-          cargo build --release -p wwt-cli
-          cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
           ARCH=x86_64 WINE_BUILD=$WINE_BUILD64 sh native/wine-unix/build.sh
           ARCH=x86_64 MEM32=1 WINE_BUILD=$WINE_BUILD64 sh native/wine-unix/build.sh
-      - name: x86_64 Wine bundles (for the site)
+      - uses: actions/cache/save@v4
+        if: steps.wine-unix.outputs.cache-hit != 'true'
+        with:
+          path: |
+            target/wine-unix64/wine_unix.*
+            target/wine-unix64/win32u_syscalls.json
+            target/wine-unix64/nt_calls.json
+            target/wine-unix64-m32/wine_unix.*
+            target/wine-unix64-m32/win32u_syscalls.json
+            target/wine-unix64-m32/nt_calls.json
+          key: ${{ steps.wine-unix.outputs.cache-primary-key }}
+      - name: Wait for the translator
+        run: |
+          while [ ! -f "$RUNNER_TEMP/rust.status" ]; do sleep 1; done
+          cat "$RUNNER_TEMP/rust.log"
+          exit "$(cat "$RUNNER_TEMP/rust.status")"
+      - name: The x86_64 Wine bundles
         run: |
           node runtime/node/wine-bundle.mjs --arch x64
           node runtime/node/wine-bundle.mjs --arch x64 --mem32
+      - name: Pack the build
+        run: |
+          tar -cf - target/wine-unix64/wine_unix.* target/wine-unix64/win32u_syscalls.json target/wine-unix64/nt_calls.json \
+            target/wine-unix64-m32/wine_unix.* target/wine-unix64-m32/win32u_syscalls.json target/wine-unix64-m32/nt_calls.json \
+            target/wine-bundle64 target/wine-bundle64-m32 \
+            | zstd -T0 -3 -o wine64-build.tar.zst
+          ls -la wine64-build.tar.zst
       - uses: actions/upload-artifact@v4
         with:
-          name: wine-bundle64
-          path: target/wine-bundle64
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wine-bundle64-m32
-          path: target/wine-bundle64-m32
-      - name: hello64 on translated x86_64 Wine
-        run: |
-          node runtime/node/wine.mjs tests/programs/hello64.exe | tee target/hello64.out
-          grep -q "Hello from translated x86!" target/hello64.out
-      - name: 64-bit programs on translated x86_64 Wine
-        run: node tests/programs/check.mjs --arch x64 --wine --jobs 4
-      - name: x86-64 GCC torture on translated x86_64 Wine
-        run: |
-          sh tools/torture/fetch.sh
-          node tests/programs/check.mjs --arch x64 --wine --torture target/gcc-src/gcc/testsuite/gcc.c-torture/execute --opt O2 --jobs 4
-      - name: 64-bit GUI programs on translated x86_64 Wine (headless)
-        run: node tests/wine/gui.mjs --arch x64
-      - name: Wine's x86_64 kernel32, user32 and gdi32 tests, against the recorded baselines
-        run: |
-          for t in kernel32 user32 gdi32; do
-            node tests/wine/winetest.mjs --jobs 4 --timeout 120 --baseline tests/wine/baseline/${t}_test64.json \
-              "$WINE_BUILD64/dlls/$t/tests/x86_64-windows/${t}_test.exe"
-          done
-      - name: 64-bit programs and GUI on a 32-bit memory (lowered Unix side), as without memory64
-        run: |
-          node tests/programs/check.mjs --arch x64 --mem32 --wine --jobs 4
-          node tests/wine/gui.mjs --arch x64 --mem32
-      - name: 64-bit GUI programs in headless Chromium
-        run: |
-          npx --yes playwright@1 install --with-deps chromium
-          npm install --no-save playwright@1
-          node tests/web/gui.mjs --arch x64
-          node tests/web/gui.mjs --arch x64 --no-memory64
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: gui-screens-64
-          path: target/gui/*.png
+          name: wine64-build
+          path: wine64-build.tar.zst
+          compression-level: 0
+          retention-days: 7
 
-  # The static site (page, runtime, translator, both Wine bundles),
-  # deployed to Vercel as a prebuilt output (Vercel builds nothing): a
-  # preview for pull requests, production for main. Not for forks, which
-  # get no secrets. The Wine jobs upload their bundles before testing, so
-  # the site deploys whatever the tests say (without the 64-bit bundle if
-  # its job broke before making it).
-  site:
-    needs: [wine, wine64]
-    if: ${{ !cancelled() && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
+  # The static site (page, runtime, translator, Wine bundles), deployed to
+  # Vercel as a prebuilt output (Vercel builds nothing): the Preview
+  # environment for pull requests, Production for main. Each shows on the
+  # pull request (or the commit) with a link to the deployment. Not for
+  # forks, which get no secrets.
+  # The 64-bit bundles go up when their build worked; the site does without
+  # them otherwise.
+  deploy:
+    needs: [wine-build, wine64-build]
+    if: >-
+      !cancelled() && needs.wine-build.result == 'success'
+      && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    # One at a time per pull request (and for production); a running one
+    # finishes, a waiting one gives way to a newer commit's.
+    concurrency:
+      group: ${{ github.workflow }}-deploy-${{ github.event.pull_request.number || 'production' }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
-    # Comments the Vercel preview's link on pull requests.
-    permissions:
-      contents: read
-      pull-requests: write
+    timeout-minutes: 15
+    environment:
+      name: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && 'Production' || 'Preview' }}
+      url: ${{ steps.vercel.outputs.url }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: Swatinem/rust-cache@v2
-      - name: Build the translator and the d3dgpu page for the browser
-        run: |
-          cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
-          runtime/d3dgpu/build.sh
       - uses: actions/download-artifact@v4
         with:
-          name: wine-bundle
-          path: target/wine-bundle
+          name: wine-build
+      - name: Unpack the build
+        run: zstd -dc wine-build.tar.zst | tar -xf -
       - uses: actions/download-artifact@v4
-        continue-on-error: true
+        if: needs.wine64-build.result == 'success'
         with:
-          name: wine-bundle64
-          path: target/wine-bundle64
-      - uses: actions/download-artifact@v4
-        continue-on-error: true
+          name: wine64-build
+      - name: Unpack the 64-bit build
+        if: needs.wine64-build.result == 'success'
+        run: zstd -dc wine64-build.tar.zst | tar -xf -
+      - uses: actions/cache@v4
         with:
-          name: wine-bundle64-m32
-          path: target/wine-bundle64-m32
+          path: ~/.npm/_npx
+          key: npx-vercel-62
       - name: Deploy the site to Vercel
         id: vercel
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: team_9BEP6m6pAw2dpH7RJPuYYHK8
           VERCEL_PROJECT_ID: prj_4EvacVdNNW0IJFbS2MH3tuqOglvq
+          TARGET: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && 'production' || 'preview' }}
         run: |
-          sh tools/site/deploy.sh "$([ "$GITHUB_EVENT_NAME" = push ] && echo production || echo preview)" | tee vercel.log
-          url=$(tail -n 1 vercel.log)
+          sh tools/site/deploy.sh "$TARGET" | tee vercel.log
+          url=$(tail -n 1 vercel.log)/runtime/web/
           echo "url=$url" >> "$GITHUB_OUTPUT"
-          echo "Site: $url" >> "$GITHUB_STEP_SUMMARY"
-      - name: Link the preview on the pull request
-        if: steps.vercel.outputs.url && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        env:
-          URL: ${{ steps.vercel.outputs.url }}
+          echo "Site ($TARGET) of ${GITHUB_SHA::7}: $url" >> "$GITHUB_STEP_SUMMARY"
+
+  # The Wine tests, in parallel shards on the build above.
+  wine:
+    name: wine (${{ matrix.suite }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
+    needs: wine-build
+    # A shard of an older commit starting after the newer commit's would
+    # cancel it: a run that a newer push overtook leaves the Wine tests to
+    # that push's run.
+    if: needs.wine-build.outputs.current == 'true'
+    concurrency:
+      group: ${{ github.workflow }}-wine-${{ matrix.suite }}-${{ matrix.shard }}-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: programs
+          - suite: kernel32, gdi32
+          - suite: user32
+          - suite: torture
+            shard: 1/2
+          - suite: torture
+            shard: 2/2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          script: |
-            const marker = '<!-- vercel-preview -->';
-            const body = `${marker}\nPreview of ${context.payload.pull_request.head.sha.slice(0, 7)}: ${process.env.URL}/runtime/web/`;
-            const { owner, repo } = context.repo;
-            const issue_number = context.issue.number;
-            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
-            const old = comments.find((c) => c.body.startsWith(marker));
-            if (old) await github.rest.issues.updateComment({ owner, repo, comment_id: old.id, body });
-            else await github.rest.issues.createComment({ owner, repo, issue_number, body });
+          node-version: 22
+      - uses: ./.github/actions/wine
+      - uses: actions/download-artifact@v4
+        with:
+          name: wine-build
+      - name: Unpack the build
+        run: zstd -dc wine-build.tar.zst | tar -xf -
+
+      - name: Programs on translated Wine
+        if: matrix.suite == 'programs'
+        run: node tests/programs/check.mjs --wine --jobs 4
+      - name: Windows test programs on translated Wine (exceptions, threads, sound, DirectDraw)
+        if: matrix.suite == 'programs'
+        run: node tests/wine/win32.mjs --jobs 4
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.suite == 'programs'
+        with:
+          name: win32-programs
+          path: |
+            target/win32/*.exe
+            target/win32/results-win32.json
+      - name: GUI programs on translated Wine (browser display driver, headless)
+        if: matrix.suite == 'programs'
+        run: node tests/wine/gui.mjs
+      - name: Browser on translated Wine (headless Chromium)
+        if: matrix.suite == 'programs'
+        run: |
+          npx --yes playwright@1 install --with-deps chromium
+          npm install --no-save playwright@1
+          node tests/web/browser.mjs tests/programs/hello.exe "Hello from translated x86!" --wine
+          node tests/web/picker.mjs
+          node tests/web/gui.mjs
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.suite == 'programs'
+        with:
+          name: gui-screens
+          path: target/gui/*.png
+
+      - name: Wine's kernel32 tests (layer 3), against the recorded baseline
+        if: matrix.suite == 'kernel32, gdi32'
+        run: |
+          node tests/wine/winetest.mjs --jobs 4 --timeout 60 --baseline tests/wine/baseline/kernel32_test.json \
+            "$WINE_BUILD/dlls/kernel32/tests/i386-windows/kernel32_test.exe"
+      - name: Wine's gdi32 tests, against the recorded baseline
+        if: matrix.suite == 'kernel32, gdi32'
+        run: |
+          node tests/wine/winetest.mjs --jobs 4 --timeout 120 --baseline tests/wine/baseline/gdi32_test.json \
+            "$WINE_BUILD/dlls/gdi32/tests/i386-windows/gdi32_test.exe"
+      - name: Wine's user32 tests, against the recorded baseline
+        if: matrix.suite == 'user32'
+        run: |
+          node tests/wine/winetest.mjs --jobs 4 --timeout 120 --baseline tests/wine/baseline/user32_test.json \
+            "$WINE_BUILD/dlls/user32/tests/i386-windows/user32_test.exe"
+
+      - name: GCC torture on translated Wine
+        if: matrix.suite == 'torture'
+        run: |
+          sh tools/torture/fetch.sh
+          node tests/programs/check.mjs --wine --torture target/gcc-src/gcc/testsuite/gcc.c-torture/execute --opt O2 --jobs 4 --shard ${{ matrix.shard }}
+
+  # The 64-bit Wine tests, in parallel shards on both builds above. Wine's
+  # wasm64 Unix side uses a 64-bit table, which needs Node 24.
+  wine64:
+    name: wine64 (${{ matrix.suite }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
+    needs: [wine-build, wine64-build]
+    if: needs.wine-build.outputs.current == 'true'
+    concurrency:
+      group: ${{ github.workflow }}-wine64-${{ matrix.suite }}-${{ matrix.shard }}-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: programs
+          - suite: kernel32, gdi32
+          - suite: user32
+          - suite: torture
+            shard: 1/2
+          - suite: torture
+            shard: 2/2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: ./.github/actions/wine
+        with:
+          arch: x86_64
+      - uses: actions/download-artifact@v4
+        with:
+          name: wine-build
+      - uses: actions/download-artifact@v4
+        with:
+          name: wine64-build
+      - name: Unpack the builds
+        run: |
+          zstd -dc wine-build.tar.zst | tar -xf -
+          zstd -dc wine64-build.tar.zst | tar -xf -
+
+      - name: hello64 on translated x86_64 Wine
+        if: matrix.suite == 'programs'
+        run: |
+          node runtime/node/wine.mjs tests/programs/hello64.exe | tee target/hello64.out
+          grep -q "Hello from translated x86!" target/hello64.out
+      - name: 64-bit programs on translated x86_64 Wine
+        if: matrix.suite == 'programs'
+        run: node tests/programs/check.mjs --arch x64 --wine --jobs 4
+      - name: 64-bit GUI programs on translated x86_64 Wine (headless)
+        if: matrix.suite == 'programs'
+        run: node tests/wine/gui.mjs --arch x64
+      - name: 64-bit programs and GUI on a 32-bit memory (lowered Unix side), as without memory64
+        if: matrix.suite == 'programs'
+        run: |
+          node tests/programs/check.mjs --arch x64 --mem32 --wine --jobs 4
+          node tests/wine/gui.mjs --arch x64 --mem32
+      - name: 64-bit GUI programs in headless Chromium
+        if: matrix.suite == 'programs'
+        run: |
+          npx --yes playwright@1 install --with-deps chromium
+          npm install --no-save playwright@1
+          node tests/web/gui.mjs --arch x64
+          node tests/web/gui.mjs --arch x64 --no-memory64
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.suite == 'programs'
+        with:
+          name: gui-screens-64
+          path: target/gui/*.png
+
+      - name: Wine's x86_64 kernel32 and gdi32 tests, against the recorded baselines
+        if: matrix.suite == 'kernel32, gdi32'
+        run: |
+          for t in kernel32 gdi32; do
+            node tests/wine/winetest.mjs --jobs 4 --timeout 120 --baseline tests/wine/baseline/${t}_test64.json \
+              "$WINE_BUILD64/dlls/$t/tests/x86_64-windows/${t}_test.exe"
+          done
+      - name: Wine's x86_64 user32 tests, against the recorded baseline
+        if: matrix.suite == 'user32'
+        run: |
+          node tests/wine/winetest.mjs --jobs 4 --timeout 120 --baseline tests/wine/baseline/user32_test64.json \
+            "$WINE_BUILD64/dlls/user32/tests/x86_64-windows/user32_test.exe"
+
+      - name: x86-64 GCC torture on translated x86_64 Wine
+        if: matrix.suite == 'torture'
+        run: |
+          sh tools/torture/fetch.sh
+          node tests/programs/check.mjs --arch x64 --wine --torture target/gcc-src/gcc/testsuite/gcc.c-torture/execute --opt O2 --jobs 4 --shard ${{ matrix.shard }}
 
   # Runs the same MinGW executables on real Windows and checks they print
   # what the translated runs printed (validating the Linux reference, and
   # the recorded output of the Windows-only test programs).
   windows:
     needs: [linux, wine]
+    concurrency:
+      group: ${{ github.workflow }}-windows-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -372,11 +625,34 @@ jobs:
 
   # Spike: Emscripten's data, heap and stacks above the guest limit.
   emscripten:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    concurrency:
+      group: ${{ github.workflow }}-emscripten-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EMSDK_VERSION }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: spikes/emscripten/build.sh
+
+  # The one check to require: it passes when every job above passed or was
+  # skipped (documentation-only changes, forks' deployments). A run that a
+  # newer push overtook fails it: its tests were cancelled or not run.
+  ci:
+    name: CI passed
+    if: always()
+    needs: [changes, linux, torture, wine-build, wine64-build, deploy, wine, wine64, windows, emscripten]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job passed or was skipped
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || needs.wine-build.outputs.current == 'false'
+        run: |
+          echo '${{ toJSON(needs) }}'
+          exit 1
