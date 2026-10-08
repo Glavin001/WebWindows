@@ -13,19 +13,31 @@
 //                     (click/rclick/move X,Y; key CODE as in KeyboardEvent.code,
 //                     keydown/keyup CODE to hold it;
 //                     text types letters, digits and spaces)
+//   --mem32           a 64-bit program on a 32-bit memory, below 4 GB, with the
+//                     lowered Unix side (target/wine-unix64-m32), as in browsers
+//                     without 64-bit WebAssembly memory; the default when this
+//                     engine has none
+//   --dir DIR         DIR is C:\app (as a folder chosen in the browser): the
+//                     program runs from there (from C:\app if it lives
+//                     elsewhere), and files it creates or changes there are
+//                     written back to DIR when it exits
 //   --file HOST[=DOS] put a host file in the guest's file system (default
 //                     C:\<name>), e.g. a script or document the program reads
 //
 // Wine's PE DLLs come from WINE_BUILD (default /opt/wine-build) and its NLS
 // files from WINE_SRC; translations are cached in target/wine-cache.
+// 64-bit programs run on Wine's x86_64 DLLs from WINE_BUILD64 (default
+// /opt/wine-build64, tools/wine/build.sh with ARCH=x86_64) on a 64-bit
+// (memory64) memory, at their own addresses.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { Machine, GuestFault, hex } from '../runtime.mjs';
+import { Machine, GuestFault, hex, hasMemory64 } from '../runtime.mjs';
+import { peArch } from '../pe.mjs';
 import { WineHost } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
@@ -40,7 +52,7 @@ import { NATIVE_STRINGS_DLLS, NATIVE_STRINGS_FLAG, compileNativeStrings } from '
 import { stdout, stderr } from './output.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const wineBuild = process.env.WINE_BUILD ?? '/opt/wine-build';
+let wineBuild = process.env.WINE_BUILD ?? '/opt/wine-build';
 const wineSrc = process.env.WINE_SRC ?? '/opt/wine-src/wine-11.0';
 const cacheDir = join(root, 'target/wine-cache');
 // Wine's address space; translations compile it into their memory checks.
@@ -66,6 +78,11 @@ function wwt() {
     .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
 }
 
+/** 64-bit programs: x86_64 Wine, on a 64-bit memory unless --mem32. */
+let x64 = false;
+let mem64 = false;
+let mem32 = !hasMemory64();
+
 /** Translates an image with the CLI, caching by content hash. */
 function translate(path, bytes) {
   mkdirSync(cacheDir, { recursive: true });
@@ -74,11 +91,16 @@ function translate(path, bytes) {
   const t = statSync(wwt());
   // Per-DLL translator flags, as in wine-bundle.mjs (TRANSLATE_FLAGS), and
   // WWT_TRANSLATE_FLAGS: extra `wwt translate` options, for A/B tests
-  // (tools/bench/ab.mjs --wine). All are part of the cache key.
+  // (tools/bench/ab.mjs --wine). All are part of the cache key. With a
+  // 32-bit memory the guest limit is a constant in the memory checks.
   const flags = { 'wined3d.dll': ['--no-smc-checks'], 'd3d9.dll': ['--no-smc-checks'] }[path.split('\\').pop().toLowerCase()] ?? [];
-  const extra = [...flags, ...(process.env.WWT_TRANSLATE_FLAGS ?? '').split(/\s+/).filter(Boolean)];
-  if (nativeHeap && path.toLowerCase().endsWith('\\ntdll.dll')) extra.push(NATIVE_HEAP_FLAG);
-  if (nativeStrings && NATIVE_STRINGS_DLLS.includes(path.split('\\').pop().toLowerCase())) extra.push(NATIVE_STRINGS_FLAG);
+  const extra = [
+    ...flags,
+    ...(mem64 ? ['--mem64'] : ['--guest-limit-mb', String(GUEST_LIMIT >>> 20)]),
+    ...(process.env.WWT_TRANSLATE_FLAGS ?? '').split(/\s+/).filter(Boolean),
+  ];
+  if (nativeHeap && !x64 && path.toLowerCase().endsWith('\\ntdll.dll')) extra.push(NATIVE_HEAP_FLAG);
+  if (nativeStrings && !x64 && NATIVE_STRINGS_DLLS.includes(path.split('\\').pop().toLowerCase())) extra.push(NATIVE_STRINGS_FLAG);
   const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}:${extra.join(' ')}`).digest('hex').slice(0, 16);
   const out = join(cacheDir, `${path.split('\\').pop()}-${hash}.wasm`);
   if (!existsSync(out)) {
@@ -86,7 +108,7 @@ function translate(path, bytes) {
     // rename, so a reader never sees a partial file.
     const tmp = join(cacheDir, `${hash}.${process.pid}`);
     writeFileSync(`${tmp}.bin`, bytes);
-    execFileSync(wwt(), ['translate', `${tmp}.bin`, '-o', `${tmp}.wasm`, '--guest-limit-mb', String(GUEST_LIMIT >>> 20), ...extra], {
+    execFileSync(wwt(), ['translate', `${tmp}.bin`, '-o', `${tmp}.wasm`, ...extra], {
       stdio: ['ignore', 'ignore', 'inherit'],
     });
     renameSync(`${tmp}.wasm`, out);
@@ -103,13 +125,14 @@ let audioOut = null;
 let folder = false;
 let runFor = Infinity;
 let script = [];
+let appDir = null;
 const extraFiles = [];
 // --d3d-record FILE: wined3d's WebGPU command stream, recorded (no GPU in Node).
 let d3dRecord = null;
 // Wine's Unix side compiled with Emscripten (native/wine-unix): on when built,
-// unless --no-unix.
-const unixDir = join(root, 'target/wine-unix');
-let useUnix = existsSync(join(unixDir, 'wine_unix.mjs'));
+// unless --no-unix. 64-bit programs use its wasm64 build (ARCH=x86_64).
+let unixDir = join(root, 'target/wine-unix');
+let useUnix = null;
 while (args[0]?.startsWith('--')) {
   const a = args.shift();
   if (a === '--trace') trace = true;
@@ -126,6 +149,8 @@ while (args[0]?.startsWith('--')) {
   // ... or once it has run this long (programs with timers never go idle).
   else if (a === '--run-for') runFor = Number(args.shift());
   else if (a === '--input') script = parseInput(args.shift());
+  else if (a === '--dir') appDir = resolve(args.shift());
+  else if (a === '--mem32') mem32 = true;
   else if (a === '--file') {
     const [host, dos] = args.shift().split('=');
     extraFiles.push([host, (dos ?? `C:\\${basename(host)}`).toLowerCase()]);
@@ -179,15 +204,24 @@ function parseInput(text) {
 }
 const exe = args.shift();
 if (!exe) {
-  console.error('usage: wine.mjs [--trace] [--trace-unix CHANNELS] [--no-unix] [--folder] [--audio-out F.wav] [--screenshot F [--run-for MS]] program.exe [args...]');
+  console.error('usage: wine.mjs [--trace] [--trace-unix CHANNELS] [--no-unix] [--mem32] [--folder] [--dir DIR] [--audio-out F.wav] [--screenshot F [--run-for MS]] program.exe [args...]');
   process.exit(2);
 }
+
+x64 = peArch(readFileSync(exe)) === 'x64';
+mem64 = x64 && !mem32;
+if (x64) {
+  wineBuild = process.env.WINE_BUILD64 ?? '/opt/wine-build64';
+  unixDir = join(root, mem64 ? 'target/wine-unix64' : 'target/wine-unix64-m32');
+}
+useUnix ??= existsSync(join(unixDir, 'wine_unix.mjs'));
+const peDir = x64 ? 'x86_64-windows' : 'i386-windows';
 
 // The virtual C: drive.
 const files = new Map();
 const sys32 = 'c:\\windows\\system32';
 for (const d of readdirSync(join(wineBuild, 'dlls'))) {
-  for (const f of [join(wineBuild, 'dlls', d, 'i386-windows', `${d}.dll`), join(wineBuild, 'dlls', d, 'i386-windows', d)]) {
+  for (const f of [join(wineBuild, 'dlls', d, peDir, `${d}.dll`), join(wineBuild, 'dlls', d, peDir, d)]) {
     if (existsSync(f) && statSync(f).isFile()) files.set(`${sys32}\\${basename(f).toLowerCase()}`, readFileSync(f));
   }
 }
@@ -195,32 +229,59 @@ for (const f of readdirSync(join(wineSrc, 'nls'))) {
   if (f.endsWith('.nls')) files.set(`${sys32}\\${f.toLowerCase()}`, readFileSync(join(wineSrc, 'nls', f)));
 }
 files.set('c:\\windows\\globalization\\sorting\\sortdefault.nls', files.get(`${sys32}\\sortdefault.nls`));
-const exeWin = folder ? `C:\\app\\${basename(exe)}` : `C:\\${basename(exe)}`;
-const exeDos = exeWin.toLowerCase();
-if (folder) {
+// The program: at C:\, or with --dir in C:\app, next to the folder's files
+// (--folder: the program's own directory, left as it is).
+const appFiles = new Map(); // DOS path -> [host path, original bytes]
+let exeWin = `C:\\${basename(exe)}`;
+const syncDir = appDir;
+if (folder && !appDir) appDir = dirname(resolve(exe));
+if (appDir) {
   const walk = (dir, rel) => {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
       const r = rel ? `${rel}\\${e.name}` : e.name;
       if (e.isDirectory()) walk(join(dir, e.name), r);
-      else if (e.isFile()) files.set(`c:\\app\\${r.toLowerCase()}`, readFileSync(join(dir, e.name)));
+      else if (e.isFile()) {
+        const bytes = readFileSync(join(dir, e.name));
+        // A copy: the program's writes change the file's bytes in place.
+        appFiles.set(`c:\\app\\${r.toLowerCase()}`, [join(dir, e.name), Buffer.from(bytes)]);
+        files.set(`c:\\app\\${r.toLowerCase()}`, bytes);
+      }
     }
   };
-  walk(dirname(resolve(exe)), '');
+  walk(appDir, '');
+  const rel = relative(appDir, resolve(exe));
+  exeWin = `C:\\app\\${rel.startsWith('..') ? basename(exe) : rel.replaceAll('/', '\\')}`;
 }
+const exeDos = exeWin.toLowerCase();
 files.set(exeDos, readFileSync(exe));
 for (const [host, dos] of extraFiles) files.set(dos, readFileSync(host));
+
+/** --dir: writes the files the program created or changed in C:\app back to the folder. */
+function syncBack() {
+  if (!syncDir) return;
+  for (const [dos, bytes] of files) {
+    if (!dos.startsWith('c:\\app\\') || dos === exeDos) continue;
+    const old = appFiles.get(dos);
+    if (old && Buffer.compare(old[1], Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length)) === 0) continue;
+    const host = old ? old[0] : join(syncDir, ...dos.slice('c:\\app\\'.length).split('\\'));
+    mkdirSync(dirname(host), { recursive: true });
+    writeFileSync(host, bytes);
+  }
+}
 
 mkdirSync(cacheDir, { recursive: true });
 const abi = JSON.parse(execFileSync(wwt(), ['abi']).toString());
 const kernelPath = join(cacheDir, `kernel.${process.pid}.wasm`);
-execFileSync(wwt(), ['kernel', '-o', kernelPath]);
+execFileSync(wwt(), ['kernel', '-o', kernelPath, ...(mem64 ? ['--code64'] : [])]);
 const kernel = readFileSync(kernelPath);
 rmSync(kernelPath);
 const layout = useUnix ? JSON.parse(readFileSync(join(unixDir, 'wine_unix.json'), 'utf8')) : null;
 const machine = new Machine({
   abi,
   kernel,
-  guestLimit: GUEST_LIMIT,
+  // x86_64 Wine's DLLs load at 0x1_7000_0000 and up; on a 32-bit memory the
+  // host moves them into the guest region (2 GB, as for i386).
+  ...(mem64 ? { arch: 'x64', mem64: true, guestLimit: 0x2_0000_0000 } : { arch: x64 ? 'x64' : 'x86', guestLimit: GUEST_LIMIT }),
   ...(layout && { nativeSize: layout.nativeSize, extraSize: layout.extraSize }),
   log: trace ? (s) => stderr(`[machine] ${s}\n`) : undefined,
 });
@@ -275,6 +336,7 @@ if (useUnix) {
     wait,
     stderr: (s) => stderr(s),
     win32uNames: JSON.parse(readFileSync(join(unixDir, 'win32u_syscalls.json'), 'utf8')),
+    ntCalls: JSON.parse(readFileSync(join(unixDir, 'nt_calls.json'), 'utf8')),
   });
   if (unixTrace) unix.setTrace(unixTrace);
 }
@@ -331,10 +393,11 @@ const host = new WineHost(machine, {
   debug: process.env.WINEDEBUG ?? '',
   // WWT_LOCALE: the user's default locale, an LCID (e.g. 0x40e for hu-HU).
   ...(process.env.WWT_LOCALE && { locale: Number(process.env.WWT_LOCALE) }),
-  nativeHeap,
+  // i386 code's (see translate above).
+  nativeHeap: x64 ? null : nativeHeap,
   aliasThunks: process.env.WWT_THUNK_ALIAS !== '0',
   audioSink: audioOut ? audioCapture : null,
-  nativeStrings,
+  nativeStrings: x64 ? null : nativeStrings,
 });
 host.boot(`${sys32}\\ntdll.dll`, exeDos);
 // A program that never waits (a game's busy frame loop) still stops on time.
@@ -343,6 +406,7 @@ if (screenshot) host.threads.onSlice = () => {
 };
 await host.startClock();
 const r = host.run();
+syncBack();
 if (audioOut) writeFileSync(audioOut, audioCapture.wav());
 if (host.unimplemented.size) {
   stderr(`unimplemented syscalls: ${[...host.unimplemented.keys()].join(', ')}\n`);

@@ -22,7 +22,7 @@ pub fn is_simd(i: &Instruction) -> bool {
 }
 
 fn is_xmm(r: Register) -> bool {
-    r >= Register::XMM0 && r <= Register::XMM7
+    r >= Register::XMM0 && r <= Register::XMM15
 }
 
 fn is_mm(r: Register) -> bool {
@@ -30,7 +30,7 @@ fn is_mm(r: Register) -> bool {
 }
 
 fn xmm_vreg(r: Register) -> V {
-    XMM0 + (r as u32 - Register::XMM0 as u32)
+    xmm(r as u32 - Register::XMM0 as u32)
 }
 
 fn mm_vreg(r: Register) -> V {
@@ -126,7 +126,8 @@ impl<'a> Lifter<'a> {
                     // General register: zero-extended into lane 0.
                     let g = self.read_reg(r);
                     let z = self.vzero();
-                    self.vop(VecOp::Replace(Lane::I32, 0), &[z, g])
+                    let lane = if r.size() == 8 { Lane::I64 } else { Lane::I32 };
+                    self.vop(VecOp::Replace(lane, 0), &[z, g])
                 }
             }
             OpKind::Memory => {
@@ -167,7 +168,8 @@ impl<'a> Lifter<'a> {
             self.emit_to(mm_vreg(r), Op::Vec(VecOp::Extract(Lane::I64, 0), vec![v]));
             self.mmx_touch();
         } else {
-            let x = self.vop(VecOp::Extract(Lane::I32, 0), &[v]);
+            let lane = if r.size() == 8 { Lane::I64 } else { Lane::I32 };
+            let x = self.vop(VecOp::Extract(lane, 0), &[v]);
             self.write_reg(r, x);
         }
     }
@@ -338,9 +340,10 @@ impl<'a> Lifter<'a> {
             }
             M::Movq | M::Movnti | M::Movntq | M::Movq2dq | M::Movdq2q => {
                 if m == M::Movnti {
-                    let v = self.read_reg(i.op1_register());
+                    let reg = i.op1_register();
+                    let v = self.read_reg(reg);
                     let (a, sp) = self.ea(i);
-                    self.store(a, v, 4, sp);
+                    self.store(a, v, reg.size() as u32, sp);
                     return true;
                 }
                 let v = src!(1);
@@ -623,14 +626,26 @@ impl<'a> Lifter<'a> {
                     OpKind::Register => self.read_reg(i.op1_register()),
                     _ => {
                         let (a, sp) = self.ea(i);
-                        self.load(a, 4, sp)
+                        let size = i.memory_size().size() as u32;
+                        self.load(a, size, sp)
                     }
                 };
+                let wide = self.f.ty(x) == Ty::I64;
                 let r = if m == M::Cvtsi2ss {
-                    let f = self.un(UnOp::F32ConvertI32S, x);
+                    let op = if wide {
+                        UnOp::F32ConvertI64S
+                    } else {
+                        UnOp::F32ConvertI32S
+                    };
+                    let f = self.un(op, x);
                     self.vop(VecOp::Replace(Lane::F32, 0), &[d, f])
                 } else {
-                    let f = self.un(UnOp::F64ConvertI32S, x);
+                    let op = if wide {
+                        UnOp::F64ConvertI64S
+                    } else {
+                        UnOp::F64ConvertI32S
+                    };
+                    let f = self.un(op, x);
                     self.vop(VecOp::Replace(Lane::F64, 0), &[d, f])
                 };
                 self.vdst(i, r);
@@ -662,7 +677,11 @@ impl<'a> Lifter<'a> {
                 } else {
                     self.mxcsr_round(x)
                 };
-                let v = self.f64_to_i32_indefinite(r);
+                let v = if i.op0_register().size() == 8 {
+                    self.f64_to_i64_indefinite(r)
+                } else {
+                    self.f64_to_i32_indefinite(r)
+                };
                 self.write_reg(i.op0_register(), v);
             }
             M::Cvtdq2ps => {
@@ -1004,7 +1023,11 @@ impl<'a> Lifter<'a> {
             M::Pinsrw => {
                 let d = src!(0);
                 let x = match i.op1_kind() {
-                    OpKind::Register => self.read_reg(i.op1_register()),
+                    OpKind::Register => {
+                        // The low word of r32 or r64.
+                        let v = self.read_reg(i.op1_register());
+                        self.r32(v)
+                    }
                     _ => {
                         let (a, sp) = self.ea(i);
                         self.load(a, 2, sp)
@@ -1028,8 +1051,8 @@ impl<'a> Lifter<'a> {
                 let v = self.copy(MXCSR);
                 self.store(a, v, 4, sp);
             }
-            M::Fxsave => self.lift_fxsave(i, true),
-            M::Fxrstor => self.lift_fxsave(i, false),
+            M::Fxsave | M::Fxsave64 => self.lift_fxsave(i, true),
+            M::Fxrstor | M::Fxrstor64 => self.lift_fxsave(i, false),
             M::Maskmovq | M::Maskmovdqu => bail!("masked stores"),
             _ => bail!("SIMD instruction not supported"),
         }
@@ -1104,10 +1127,23 @@ impl<'a> Lifter<'a> {
         self.select(ok, x, ind)
     }
 
-    /// fxsave/fxrstor with the 32-bit layout.
+    /// f64 (already rounded) to i64 with x86's out-of-range result.
+    fn f64_to_i64_indefinite(&mut self, r: V) -> V {
+        let lo = self.emit(Ty::F64, Op::Const((-9223372036854775808.0f64).to_bits()));
+        let hi = self.emit(Ty::F64, Op::Const(9223372036854775808.0f64.to_bits()));
+        let ge = self.bin(BinOp::F64Ge, r, lo);
+        let lt = self.bin(BinOp::F64Lt, r, hi);
+        let ok = self.bin(BinOp::I32And, ge, lt);
+        let x = self.un(UnOp::I64TruncSatF64S, r);
+        let ind = self.c64(1 << 63);
+        self.select(ok, x, ind)
+    }
+
+    /// fxsave/fxrstor with the 32-bit layout (in 64-bit code, xmm8-15 too).
     fn lift_fxsave(&mut self, i: &Instruction, save: bool) {
         let (a, sp) = self.ea(i);
-        let at = |l: &mut Self, off: u32| l.bini(BinOp::I32Add, a, off);
+        let nxmm = if self.f.mode == Mode::X64 { 16 } else { 8 };
+        let at = |l: &mut Self, off: u32| l.addr_add(a, off);
         if save {
             let cw = self.copy(FPU_CW);
             self.store(a, cw, 2, sp);
@@ -1155,12 +1191,12 @@ impl<'a> Lifter<'a> {
                 let p = at(self, 40 + r * 16);
                 self.store(p, hi, 2, sp);
             }
-            for r in 0..8u32 {
+            for r in 0..nxmm {
                 let p = at(self, 160 + r * 16);
                 let mem = self.mem(16, sp);
                 self.effect(Op::Store {
                     addr: p,
-                    val: XMM0 + r,
+                    val: xmm(r),
                     mem,
                 });
             }
@@ -1189,10 +1225,10 @@ impl<'a> Lifter<'a> {
                 let v = self.emit(Ty::F64, Op::CallHelper(Helper::F80ToF64, vec![lo, hi]));
                 self.set_st(r, v);
             }
-            for r in 0..8u32 {
+            for r in 0..nxmm {
                 let p = at(self, 160 + r * 16);
                 let mem = self.mem(16, sp);
-                self.emit_to(XMM0 + r, Op::Load { addr: p, mem });
+                self.emit_to(xmm(r), Op::Load { addr: p, mem });
             }
         }
     }

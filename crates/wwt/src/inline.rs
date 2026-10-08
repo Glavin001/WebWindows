@@ -47,7 +47,7 @@ fn is_leaf(f: &Function) -> bool {
 /// Inlines leaf callees into their callers across `funcs`. Returns the
 /// indexes of the functions that changed (they need optimizing again).
 pub fn inline_leaves(funcs: &mut [Function]) -> Vec<usize> {
-    let mut sites: HashMap<u32, usize> = HashMap::new();
+    let mut sites: HashMap<u64, usize> = HashMap::new();
     for f in funcs.iter() {
         for b in &f.blocks {
             if let Term::Call {
@@ -59,7 +59,7 @@ pub fn inline_leaves(funcs: &mut [Function]) -> Vec<usize> {
             }
         }
     }
-    let inlinable: HashMap<u32, Function> = funcs
+    let inlinable: HashMap<u64, Function> = funcs
         .iter()
         .filter(|g| {
             let n = size(g);
@@ -103,7 +103,7 @@ pub fn inline_leaves(funcs: &mut [Function]) -> Vec<usize> {
 /// Copies `g` into `f`, returning the block that starts it. Returns of `g`
 /// continue at `cont` when they pop `ret`, and leave the function for the
 /// popped address otherwise.
-fn splice(f: &mut Function, g: &Function, ret: u32, cont: BlockId) -> BlockId {
+fn splice(f: &mut Function, g: &Function, ret: u64, cont: BlockId) -> BlockId {
     let base = f.blocks.len() as BlockId;
     // State vregs are the machine's own; temporaries get fresh numbers.
     let mut vmap: Vec<V> = Vec::with_capacity(g.vtypes.len());
@@ -145,19 +145,29 @@ fn splice(f: &mut Function, g: &Function, ret: u32, cont: BlockId) -> BlockId {
         };
         let addr = f.blocks[k as usize].addr;
         let eip = f.blocks[k as usize].insts.last().map_or(addr, |i| i.eip);
-        let kc = f.new_vreg(Ty::I32);
+        // The popped address is i64 in 64-bit code.
+        let rty = f.ty(v);
+        let kc = f.new_vreg(rty);
         let c = f.new_vreg(Ty::I32);
         let leave = f.new_block(addr);
         f.blocks[leave as usize].term = Term::JmpInd(v);
         let blk = &mut f.blocks[k as usize];
         blk.insts.push(Inst {
             dst: Some(kc),
-            op: Op::Const(ret as u64),
+            op: Op::Const(ret),
             eip,
         });
         blk.insts.push(Inst {
             dst: Some(c),
-            op: Op::Bin(BinOp::I32Eq, v, kc),
+            op: Op::Bin(
+                if rty == Ty::I64 {
+                    BinOp::I64Eq
+                } else {
+                    BinOp::I32Eq
+                },
+                v,
+                kc,
+            ),
             eip,
         });
         blk.term = Term::Branch {

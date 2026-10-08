@@ -5,7 +5,7 @@
 // process with a time limit, and records each unit's summary line:
 //   "<unit>: N tests executed (T marked as todo, F as flaky, X failures), S skipped."
 // A unit that crashes or hangs is recorded as such. Results go to
-// target/winetest/<name>.json; with --baseline FILE the run fails when a unit
+// target/winetest/<name>.json (<name>64.json for a 64-bit one); with --baseline FILE the run fails when a unit
 // does worse than the baseline (more failures, or no longer finishing), and
 // --write-baseline FILE records the current results as the new baseline.
 //
@@ -33,11 +33,13 @@ while (args.length) {
   else rest.push(a);
 }
 const exe = resolve(rest.shift() ?? '');
-const name = basename(exe, '.exe');
+// 64-bit test programs record as <name>64.
+const pe = readFileSync(exe);
+const name = basename(exe, '.exe') + (pe.readUInt16LE(pe.readUInt32LE(0x3c) + 4) === 0x8664 ? '64' : '');
 
 function run(argv, ms) {
   return new Promise((done) => {
-    const child = spawn('node', [join(root, 'runtime/node/wine.mjs'), exe, ...argv], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [join(root, 'runtime/node/wine.mjs'), exe, ...argv], { stdio: ['ignore', 'pipe', 'pipe'] });
     const out = [];
     const err = [];
     let timedOut = false;
@@ -115,6 +117,15 @@ if (writeBaseline) {
 let regressed = false;
 if (baseline) {
   const base = JSON.parse(readFileSync(baseline, 'utf8'));
+  // A unit the baseline finished must run (a test program that no longer
+  // starts lists none).
+  const ran = new Set(results.map((r) => r.unit));
+  for (const [unit, b] of Object.entries(base)) {
+    if (b.status === 'done' && !ran.has(unit) && (!rest.length || rest.includes(unit))) {
+      console.log(`REGRESSION ${unit}: finished in the baseline, not run now`);
+      regressed = true;
+    }
+  }
   for (const r of results) {
     const b = base[r.unit];
     if (!b) continue;

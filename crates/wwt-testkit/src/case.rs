@@ -11,7 +11,12 @@ pub struct Case {
     pub form: String,
     /// Instruction bytes, hex.
     pub code: String,
-    pub regs: [u32; 8],
+    /// x86-64 code: sixteen 64-bit registers (rax..rdi, r8..r15) instead of
+    /// eight 32-bit ones.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub x64: bool,
+    /// General registers in encoding order.
+    pub regs: Vec<u64>,
     pub eflags: u32,
     /// Seed for the memory window contents.
     pub mem_seed: u64,
@@ -26,7 +31,7 @@ pub struct Case {
 /// What happened after running a case.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Outcome {
-    pub regs: [u32; 8],
+    pub regs: Vec<u64>,
     pub eflags: u32,
     /// Address execution continued at (0 when a fault was raised).
     pub eip: u32,
@@ -75,6 +80,15 @@ pub fn fill_window(seed: u64) -> Vec<u8> {
 }
 
 impl Case {
+    /// Decoder bitness for the case's code.
+    pub fn bitness(&self) -> u32 {
+        if self.x64 {
+            64
+        } else {
+            32
+        }
+    }
+
     pub fn code_bytes(&self) -> Vec<u8> {
         unhex(&self.code)
     }

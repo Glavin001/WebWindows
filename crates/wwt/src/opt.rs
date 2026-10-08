@@ -55,6 +55,13 @@ fn block_kind_out(b: &Block, mut k: Kind) -> Kind {
 
 /// Lowers `Cond` and `Eflags` to explicit operations.
 pub fn lower_flags(f: &mut Function) {
+    let x64 = f.mode == Mode::X64;
+    let (h_eflags, h_cond) = if x64 {
+        (Helper::Eflags64, Helper::EvalCond64)
+    } else {
+        (Helper::Eflags, Helper::EvalCond)
+    };
+    let fix = |e: E, kind: u32| if x64 { flags::for_x64(e, kind) } else { e };
     let n = f.blocks.len();
     let order = f.rpo();
     let mut kin = vec![Kind::Top; n];
@@ -81,7 +88,7 @@ pub fn lower_flags(f: &mut Function) {
             match (&inst.op, inst.dst) {
                 (Op::Cond(cc), Some(dst)) => {
                     let e = match k {
-                        Kind::Known(kind) => Some(flags::cond(*cc, kind)),
+                        Kind::Known(kind) => Some(fix(flags::cond(*cc, kind), kind)),
                         _ => None,
                     };
                     match e {
@@ -102,7 +109,7 @@ pub fn lower_flags(f: &mut Function) {
                             });
                             out.push(Inst {
                                 dst: Some(dst),
-                                op: Op::CallHelper(Helper::EvalCond, vec![c, FK, FR, FA, FB, FC]),
+                                op: Op::CallHelper(h_cond, vec![c, FK, FR, FA, FB, FC]),
                                 eip: inst.eip,
                             });
                         }
@@ -110,7 +117,8 @@ pub fn lower_flags(f: &mut Function) {
                 }
                 (Op::Eflags, Some(dst)) => match k {
                     Kind::Known(kind) => {
-                        let v = emit_expr(f, &mut out, &flags::eflags(kind), inst.eip);
+                        let e = fix(flags::eflags(kind), kind);
+                        let v = emit_expr(f, &mut out, &e, inst.eip);
                         out.push(Inst {
                             dst: Some(dst),
                             op: Op::Copy(v),
@@ -119,7 +127,7 @@ pub fn lower_flags(f: &mut Function) {
                     }
                     _ => out.push(Inst {
                         dst: Some(dst),
-                        op: Op::CallHelper(Helper::Eflags, vec![FK, FR, FA, FB, FC]),
+                        op: Op::CallHelper(h_eflags, vec![FK, FR, FA, FB, FC]),
                         eip: inst.eip,
                     }),
                 },
@@ -138,9 +146,14 @@ pub fn lower_flags(f: &mut Function) {
     }
 }
 
-fn emit_expr(f: &mut Function, out: &mut Vec<Inst>, e: &E, eip: u32) -> V {
+fn emit_expr(f: &mut Function, out: &mut Vec<Inst>, e: &E, eip: u64) -> V {
     let push = |f: &mut Function, op: Op, out: &mut Vec<Inst>| {
-        let v = f.new_vreg(Ty::I32);
+        let ty = match &op {
+            Op::Bin(b, _, _) => b.result_ty(),
+            Op::Un(u, _) => u.result_ty(),
+            _ => Ty::I32,
+        };
+        let v = f.new_vreg(ty);
         out.push(Inst {
             dst: Some(v),
             op,
@@ -154,6 +167,15 @@ fn emit_expr(f: &mut Function, out: &mut Vec<Inst>, e: &E, eip: u32) -> V {
         E::Fb => FB,
         E::Fc => FC,
         E::K(c) => push(f, Op::Const(*c as u64), out),
+        E::K64(c) => {
+            let v = f.new_vreg(Ty::I64);
+            out.push(Inst {
+                dst: Some(v),
+                op: Op::Const(*c),
+                eip,
+            });
+            v
+        }
         E::Bin(op, a, b) => {
             let a = emit_expr(f, out, a, eip);
             let b = emit_expr(f, out, b, eip);
@@ -207,6 +229,18 @@ pub(crate) fn fold_bin(op: BinOp, a: u64, b: u64) -> Option<u64> {
         I64ShrS => Some((a as i64).wrapping_shr(b as u32) as u64),
         I64Eq => Some((a == b) as u64),
         I64Ne => Some((a != b) as u64),
+        I64LtS => Some(((a as i64) < (b as i64)) as u64),
+        I64LtU => Some((a < b) as u64),
+        I64GtS => Some(((a as i64) > (b as i64)) as u64),
+        I64GtU => Some((a > b) as u64),
+        I64LeS => Some(((a as i64) <= (b as i64)) as u64),
+        I64LeU => Some((a <= b) as u64),
+        I64GeS => Some(((a as i64) >= (b as i64)) as u64),
+        I64GeU => Some((a >= b) as u64),
+        I64Rotl => Some(a.rotate_left(b as u32 & 63)),
+        I64Rotr => Some(a.rotate_right(b as u32 & 63)),
+        I64DivU if b != 0 => Some(a / b),
+        I64RemU if b != 0 => Some(a % b),
         _ => None,
     }
 }
@@ -225,6 +259,12 @@ pub(crate) fn fold_un(op: UnOp, a: u64) -> Option<u64> {
         I64ExtendI32S => x as i32 as i64 as u64,
         I64ExtendI32U => x as u64,
         I32WrapI64 => (a as u32) as u64,
+        I64Clz => a.leading_zeros() as u64,
+        I64Ctz => a.trailing_zeros() as u64,
+        I64Popcnt => a.count_ones() as u64,
+        I64Extend8S => a as u8 as i8 as i64 as u64,
+        I64Extend16S => a as u16 as i16 as i64 as u64,
+        I64Extend32S => a as u32 as i32 as i64 as u64,
         _ => return None,
     })
 }
@@ -237,6 +277,10 @@ pub fn simplify(f: &mut Function) {
     // Function-wide facts about temporaries.
     let mut gconst: HashMap<V, u64> = HashMap::new();
     let mut gcopy: HashMap<V, V> = HashMap::new();
+    // Temporaries that zero- or sign-extend another temporary to i64
+    // (x86-64 code writes 32-bit results this way and reads them back
+    // wrapped).
+    let mut gext: HashMap<V, V> = HashMap::new();
     for b in &f.blocks {
         for inst in &b.insts {
             if let Some(d) = inst.dst {
@@ -249,6 +293,9 @@ pub fn simplify(f: &mut Function) {
                     }
                     Op::Copy(s) if s >= NUM_STATE => {
                         gcopy.insert(d, s);
+                    }
+                    Op::Un(UnOp::I64ExtendI32U | UnOp::I64ExtendI32S, s) if s >= NUM_STATE => {
+                        gext.insert(d, s);
                     }
                     _ => {}
                 }
@@ -270,6 +317,8 @@ pub fn simplify(f: &mut Function) {
         // Block-local facts.
         let mut lconst: HashMap<V, u64> = HashMap::new();
         let mut lcopy: HashMap<V, V> = HashMap::new();
+        // State vregs currently holding an extension of a temporary.
+        let mut lext: HashMap<V, V> = HashMap::new();
         let mut insts = std::mem::take(&mut f.blocks[bi].insts);
         let mut no_ops = vec![];
         for (k, inst) in insts.iter_mut().enumerate() {
@@ -300,7 +349,14 @@ pub fn simplify(f: &mut Function) {
                 }
                 Op::Un(op, a) => cst(*a, &lconst)
                     .and_then(|x| fold_un(*op, x))
-                    .map(Op::Const),
+                    .map(Op::Const)
+                    .or_else(|| match op {
+                        // wrap(extend(x)) is x.
+                        UnOp::I32WrapI64 => {
+                            gext.get(a).or_else(|| lext.get(a)).map(|&x| Op::Copy(x))
+                        }
+                        _ => None,
+                    }),
                 Op::Select { cond, t, f: fv } => match cst(*cond, &lconst) {
                     Some(c) => Some(Op::Copy(if c as u32 != 0 { *t } else { *fv })),
                     None if t == fv => Some(Op::Copy(*t)),
@@ -323,6 +379,14 @@ pub fn simplify(f: &mut Function) {
                 // Invalidate facts that depend on the redefined vreg.
                 lconst.remove(&d);
                 lcopy.remove(&d);
+                lext.remove(&d);
+                if d < NUM_STATE {
+                    if let Op::Un(UnOp::I64ExtendI32U | UnOp::I64ExtendI32S, x) = inst.op {
+                        if x >= NUM_STATE {
+                            lext.insert(d, x);
+                        }
+                    }
+                }
                 if d < NUM_STATE {
                     lcopy.retain(|_, s| *s != d);
                 }
@@ -399,9 +463,15 @@ fn simplify_bin(op: BinOp, a: V, b: V, ca: Option<u64>, cb: Option<u64>) -> Opti
         (I32Ne | I32LtU | I32GtU | I32LtS | I32GtS, _, _) if a == b => Some(Op::Const(0)),
         (I32LtU, _, Some(0)) => Some(Op::Const(0)),
         (I32GeU, _, Some(0)) => Some(Op::Const(1)),
-        (I64Or | I64Xor | I64Shl | I64ShrU | I64Add, _, Some(0)) if cb == Some(0) => {
+        (I64Or | I64Xor | I64Shl | I64ShrU | I64ShrS | I64Add | I64Sub, _, Some(0))
+            if cb == Some(0) =>
+        {
             Some(Op::Copy(a))
         }
+        (I64Add | I64Or | I64Xor, _, _) if ca == Some(0) => Some(Op::Copy(b)),
+        (I64And, _, _) if cb == Some(u64::MAX) => Some(Op::Copy(a)),
+        (I64And, _, _) if cb == Some(0) || ca == Some(0) => Some(Op::Const(0)),
+        (I64Sub | I64Xor, _, _) if a == b => Some(Op::Const(0)),
         _ => None,
     }
 }
@@ -427,7 +497,7 @@ pub const ALL_STATE: StateMask = !(1u64 << CPU);
 
 /// The import slot `v` was loaded from, when block `b` loads it from a
 /// constant address (`call [slot]`, `jmp [slot]`).
-pub fn slot_of(f: &Function, b: BlockId, v: V) -> Option<u32> {
+pub fn slot_of(f: &Function, b: BlockId, v: V) -> Option<u64> {
     let insts = &f.blocks[b as usize].insts;
     let load = insts.iter().rev().find(|i| i.dst == Some(v))?;
     let Op::Load { addr, mem } = &load.op else {
@@ -435,7 +505,9 @@ pub fn slot_of(f: &Function, b: BlockId, v: V) -> Option<u32> {
     };
     let base = insts.iter().rev().find(|i| i.dst == Some(*addr))?;
     match base.op {
-        Op::Const(c) if mem.size == 4 => Some((c as u32).wrapping_add(mem.offset)),
+        Op::Const(c) if mem.size == 4 => Some((c as u32).wrapping_add(mem.offset) as u64),
+        // x86-64 import slots hold 8 bytes.
+        Op::Const(c) if mem.size == 8 => Some(c.wrapping_add(mem.offset as u64)),
         _ => None,
     }
 }
@@ -820,12 +892,18 @@ pub fn fold_address_offsets(f: &mut Function) {
     }
     for b in &f.blocks {
         for inst in &b.insts {
-            if let (Some(d), Op::Bin(BinOp::I32Add, x, y)) = (inst.dst, &inst.op) {
+            if let (Some(d), Op::Bin(op @ (BinOp::I32Add | BinOp::I64Add), x, y)) =
+                (inst.dst, &inst.op)
+            {
                 if d < NUM_STATE {
                     continue;
                 }
                 if let Some(&c) = consts.get(y) {
-                    if (c as u32) < 0x1000 && *x >= NUM_STATE {
+                    let small = match op {
+                        BinOp::I32Add => (c as u32) < 0x1000,
+                        _ => c < 0x1000,
+                    };
+                    if small && *x >= NUM_STATE {
                         defs.insert(d, (*x, c as u32));
                     }
                 }

@@ -456,7 +456,7 @@ export class BrowserAudio {
   }
 
   setEvent(handle) {
-    this.h.unix?.syscalls.get('NtSetEvent')?.(handle, 0);
+    this.h.unix?.syscalls.get('NtSetEvent')?.([handle, 0]);
   }
 
   // -- no MIDI, aux or capture ----------------------------------------------------------

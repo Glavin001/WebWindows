@@ -52,8 +52,9 @@ pub fn native_heap(name: &str) -> Option<&'static str> {
 }
 
 /// A function whose whole body is the native implementation `name`.
-pub fn native_body(entry: u32, name: &'static str) -> Function {
-    let mut f = Function::new(entry);
+/// (32-bit code; `mem64` for a 64-bit memory.)
+pub fn native_body(entry: u64, name: &'static str, mem64: bool) -> Function {
+    let mut f = Function::new_in(entry, Mode::X86, mem64);
     let b = f.new_block(entry);
     f.blocks[b as usize].term = Term::Native(name);
     f
@@ -230,11 +231,11 @@ fn stack(offset: u32) -> Mem {
 }
 
 /// The IR of `b` as a function at `entry`.
-pub fn body(entry: u32, b: Builtin) -> Function {
+pub fn body(entry: u64, b: Builtin, mem64: bool) -> Function {
     if let Builtin::Divide { signed, rem } = b {
-        return divide_body(entry, signed, rem);
+        return divide_body(entry, signed, rem, mem64);
     }
-    let mut f = Function::new(entry);
+    let mut f = Function::new_in(entry, Mode::X86, mem64);
     let b0 = f.new_block(entry);
     let copy = f.new_block(entry);
     let done = f.new_block(entry);
@@ -352,8 +353,8 @@ pub fn body(entry: u32, b: Builtin) -> Function {
 /// divide error the helpers' `div` would; the signed quotient of the most
 /// negative number by -1 wraps, as the helpers compute it (WebAssembly
 /// would trap).
-fn divide_body(entry: u32, signed: bool, rem: bool) -> Function {
-    let mut f = Function::new(entry);
+fn divide_body(entry: u64, signed: bool, rem: bool, mem64: bool) -> Function {
+    let mut f = Function::new_in(entry, Mode::X86, mem64);
     let b0 = f.new_block(entry);
     let fault = f.new_block(entry);
     let calc = f.new_block(entry);
@@ -486,14 +487,14 @@ mod tests {
     fn native_heap_names() {
         assert_eq!(native_heap("RtlAllocateHeap"), Some("RtlAllocateHeap"));
         assert_eq!(native_heap("RtlAllocateHeap@12"), None);
-        let f = native_body(0x1000, "RtlFreeHeap");
+        let f = native_body(0x1000, "RtlFreeHeap", false);
         assert_eq!(f.blocks.len(), 1);
         assert_eq!(f.blocks[0].term, Term::Native("RtlFreeHeap"));
     }
 
     #[test]
     fn memmove_returns_dst_and_pops_nothing() {
-        let f = body(0x1000, Builtin::MemMove);
+        let f = body(0x1000, Builtin::MemMove, false);
         assert_eq!(f.blocks.len(), 3);
         assert!(f.blocks[1]
             .insts
