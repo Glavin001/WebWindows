@@ -151,7 +151,13 @@ canvas.addEventListener('pointermove', (e) => mouse(e));
 canvas.addEventListener('pointerdown', (e) => {
   canvas.focus();
   if (clip && !locked()) Promise.resolve(canvas.requestPointerLock?.()).catch(() => {});
-  if (!locked()) canvas.setPointerCapture(e.pointerId);
+  // Throws while a pointer lock request is pending; the click must still
+  // reach the program.
+  if (!locked()) {
+    try {
+      canvas.setPointerCapture(e.pointerId);
+    } catch {}
+  }
   if (BUTTONS[e.button]) mouse(e, BUTTONS[e.button][0]);
   e.preventDefault();
 });
