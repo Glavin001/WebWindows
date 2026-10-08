@@ -204,6 +204,8 @@ export class Machine {
     const { instance } = await WebAssembly.instantiate(this.kernelBytes, { env });
     this.kernel = instance.exports;
     this.table.set(0, this.kernel.miss_entry);
+    this.table.grow(1);
+    this.table.set(1, this.kernel.resume);
   }
 
   /**
@@ -263,13 +265,22 @@ export class Machine {
 
   newCpu() {
     const size = this.cpuSize;
-    if (this.cpuSlots >= 128) throw new Error('too many threads');
-    const cpu = this.cpuArea + size * this.cpuSlots++;
+    this.freeCpus ??= [];
+    let cpu = this.freeCpus.pop();
+    if (cpu === undefined) {
+      if (this.cpuSlots >= 128) throw new Error('too many threads');
+      cpu = this.cpuArea + size * this.cpuSlots++;
+    }
     this.u8.fill(0, cpu, cpu + size);
     // x87 control word: 64-bit precision, round to nearest, all masked.
     this.dv.setUint16(cpu + this.abi.cpu.FPU_CW, 0x037f, true);
     this.dv.setUint32(cpu + this.abi.cpu.MXCSR, 0x1f80, true);
     return cpu;
+  }
+
+  /** Returns a thread's CPU state slot for reuse. */
+  freeCpu(cpu) {
+    this.freeCpus.push(this.addr(cpu));
   }
 
   /** General register `i` (the low 32 bits on x86-64). */
@@ -350,7 +361,8 @@ export class Machine {
       lookup_l1: this.wide(this.l1),
       guest_limit: this.wide(this.guestLimit - 0x10000 - 16),
       code_bitmap: this.wide(this.codeBitmap),
-      fault: (cpu, code, eip, info) => this.fault(this.addr(cpu), code, this.addr(eip), this.addr(info)),
+      // Returns where to continue (with exception dispatch).
+      fault: (cpu, code, eip, info) => this.code(this.fault(this.addr(cpu), code, this.addr(eip), this.addr(info))),
       code_write: (cpu, addr) => this.codeWrite(this.addr(cpu), this.addr(addr)),
       math: hostMath,
     };
@@ -403,6 +415,13 @@ export class Machine {
     return this.r32(l2 + (addr % PAGE) * 4);
   }
 
+  /** Table slot that continues at `eip` (for a miss turned into an exception). */
+  resumeAt(cpu, eip) {
+    if (this.x64) this.dv.setBigUint64(cpu + this.abi.cpu64.RIP, BigInt(eip), true);
+    else this.u32[((cpu >>> 0) + this.abi.cpu.EIP) >>> 2] = eip >>> 0;
+    return 1;
+  }
+
   /** A store hit a page with translated code: drop the page's translations. */
   codeWrite(cpu, addr) {
     const page = Math.floor(addr / PAGE);
@@ -412,10 +431,15 @@ export class Machine {
   }
 
   miss(cpu, addr) {
+    const F = this.abi.fault;
+    // With exception dispatch, jumping to memory with nothing there raises
+    // an access violation in the guest.
+    if (this.onFault && this.canExecute && !this.canExecute(addr)) return this.resumeAt(cpu, this.fault(cpu, F.ACCESS_VIOLATION_EXECUTE, addr, addr));
     this.profile.add(addr);
     if (this.onMiss) {
       const idx = this.onMiss(cpu, addr);
       if (idx) return idx;
+      if (this.onFault) return this.resumeAt(cpu, this.fault(cpu, F.ILLEGAL_INSTRUCTION, addr, 0));
     }
     throw new GuestFault(
       this.abi.fault.ACCESS_VIOLATION,
@@ -426,9 +450,15 @@ export class Machine {
     );
   }
 
+  /**
+   * A fault in translated code. `onFault` (set by a host with exception
+   * dispatch) returns the address to continue at; otherwise the fault stops
+   * the program.
+   */
   fault(cpu, code, eip, info) {
     if (this.onFault) {
-      this.onFault(cpu, code >>> 0, eip, info);
+      const next = this.onFault(cpu, code >>> 0, eip, info);
+      if (next !== undefined) return next;
     }
     const names = Object.entries(this.abi.fault).find(([, v]) => v === code >>> 0);
     throw new GuestFault(
@@ -437,6 +467,15 @@ export class Machine {
       info,
       `${names ? names[0] : hex(code)} at ${hex(eip)} (address/info ${hex(info)})`,
     );
+  }
+
+  /** Full eflags of a thread, with its lazy arithmetic flags evaluated. */
+  eflags(cpu) {
+    const A = this.abi.cpu;
+    const f = (o) => this.i32[(cpu + o) >>> 2];
+    const evaluate = this.modules[0].instance.exports.eflags;
+    const arith = evaluate(f(A.FK), f(A.FR), f(A.FA), f(A.FB), f(A.FC));
+    return ((arith & 0x8d5) | (f(A.DF) << 10) | f(A.EFLAGS_SYS) | 2) >>> 0;
   }
 
   // ---- Host calls -----------------------------------------------------------
@@ -460,6 +499,11 @@ export class Machine {
   /** The address that stops the dispatcher when guest code returns to it. */
   get stopAddress() {
     return this.code64 ? this.abi.stop_address64 : this.abi.stop_address >>> 0;
+  }
+
+  /** The address a host returns to make the dispatcher stop and switch threads. */
+  get yieldAddress() {
+    return this.code64 ? this.abi.yield_address64 : this.abi.yield_address >>> 0;
   }
 
   /** Runs guest code at `eip` until it returns to the stop address. */

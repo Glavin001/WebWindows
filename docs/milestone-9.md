@@ -458,14 +458,16 @@ depends on the stack's leftovers.
 
 ## Not done yet
 
-* **Exceptions:** x86-64 exceptions are table-based (`.pdata` unwind
-  information). Translated code keeps the guest stack real, so Wine's
-  `RtlVirtualUnwind` works on it as long as prologue saves and stack
-  adjustments are never optimized away (they are stores, which the
-  optimizer keeps). Dispatch itself arrives with Milestone 5, for both
-  architectures; fast mode must then honor `RtlAddFunctionTable`.
-* **Threads:** `cmpxchg16b` is two 8-byte accesses, not atomic; it needs a
-  lock-based emulation before Milestone 5's threads.
+* **Milestone 5 on x86-64:** exceptions, threads, sound and DirectDraw
+  (`docs/milestone-5.md`) run on i386. x86-64 programs run under the same
+  scheduler, but its exception dispatch, thread creation and audio driver
+  still build i386 structures, so there an exception stops the program and
+  a program gets one thread. x86-64 exceptions are table-based (`.pdata`
+  unwind information); translated code keeps the guest stack real, so
+  Wine's `RtlVirtualUnwind` can walk it.
+* **`cmpxchg16b`** is two 8-byte accesses, not atomic. Threads switch only
+  at system calls (one JavaScript thread runs them all), so nothing can
+  see it half done.
 * **AVX:** not lifted; `cpuid` does not report it. 256-bit operations
   would split into pairs of 128-bit ones.
 * **Fixed-base images above 4 GB** are refused on a 32-bit memory (see

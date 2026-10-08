@@ -11,10 +11,11 @@ import { Machine, ProcessExit, GuestFault, hasMemory64 } from '../runtime.mjs';
 import { Process } from '../win32.mjs';
 import { peArch } from '../pe.mjs';
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
-import { WineHost, parsePe, rebaseImage } from '../wine/host.mjs';
+import { WineHost, parsePe, peImports, rebaseImage } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
 import { InputRing } from '../wine/input-ring.mjs';
+import { ringWriter } from '../wine/audio-sink.mjs';
 
 const log = (text) => postMessage({ type: 'log', text });
 
@@ -92,8 +93,33 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
   const files = new Map();
   const compiled = new Map();
   const sys32 = 'c:\\windows\\system32';
+  // The optional groups (sound and DirectDraw; networking) only for a
+  // program that imports one of their DLLs, itself or through a DLL of its
+  // folder.
+  const groupOf = new Map(Object.entries(manifest.dlls).filter(([, f]) => f.group).map(([n, f]) => [n.toLowerCase(), f.group]));
+  const wanted = new Set();
+  {
+    const local = new Map(Object.entries(folder).map(([rel, b]) => [rel.split('/').pop().toLowerCase(), b]));
+    const seen = new Set();
+    const visit = (bytes) => {
+      let names;
+      try {
+        names = peImports(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
+      } catch {
+        return;
+      }
+      for (const n of names) {
+        if (groupOf.has(n)) wanted.add(groupOf.get(n));
+        if (local.has(n) && !seen.has(n)) {
+          seen.add(n);
+          visit(local.get(n));
+        }
+      }
+    };
+    visit(exe);
+  }
   await Promise.all([
-    ...Object.entries(manifest.dlls).map(async ([name, f]) => {
+    ...Object.entries(manifest.dlls).filter(([, f]) => !f.group || wanted.has(f.group)).map(async ([name, f]) => {
       const [pe, mod] = await Promise.all([
         fetch(new URL(f.pe, base)).then((r) => r.arrayBuffer()),
         // Streaming compilation: browsers cache the compiled code by URL.
@@ -190,8 +216,10 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
     stdout: (b) => postMessage({ type: 'stdout', bytes: b }),
     stderr: (b) => postMessage({ type: 'stderr', bytes: b }),
     unix,
+    audioSink: shared?.audio ? ringWriter(shared.audio.buffer, shared.audio.rate) : null,
   });
   host.boot(`${sys32}\\ntdll.dll`, exeDos);
+  await host.startClock();
   log(`Wine process ready in ${(performance.now() - t0).toFixed(0)} ms; running`);
   const tr = performance.now();
   const r = host.run();
@@ -199,7 +227,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
 }
 
 onmessage = async (e) => {
-  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, bundle64Url, bundle64m32Url, display } = e.data;
+  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, bundle64Url, bundle64m32Url, display, audio } = e.data;
   // The page tests for 64-bit WebAssembly memory once (hasMemory64).
   const memory64 = e.data.memory64 ?? hasMemory64();
   const enc = new TextEncoder();
@@ -211,7 +239,7 @@ onmessage = async (e) => {
     const key = `${await sha256(exe)}-abi${abi.version}`;
     const dir = noCache ? null : await cacheDir();
     if (wine) {
-      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, bundle64Url, bundle64m32Url, memory64, display });
+      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, bundle64Url, bundle64m32Url, memory64, display: display && { ...display, audio } });
       if (r.error) postMessage({ type: 'stderr', bytes: enc.encode(`\n*** ${r.error.message}\n`) });
       postMessage({ type: 'exit', code: r.error ? null : r.exitCode, translated: false, runMs: r.runMs, wine: true });
       return;

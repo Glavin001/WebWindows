@@ -235,7 +235,7 @@ static BOOL BROWSER_ProcessEvents( DWORD mask )
 }
 
 /* From the wait loop (inproc/client.c), when the host reports input. */
-void wasm_process_input(void)
+EMSCRIPTEN_KEEPALIVE void wasm_process_input(void)
 {
     update_foreground();
     send_queued_input();

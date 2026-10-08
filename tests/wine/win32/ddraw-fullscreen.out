@@ -1,0 +1,21 @@
+DirectDrawCreateEx: 00000000
+640x480 modes: 1
+SetCooperativeLevel exclusive: 00000000
+SetDisplayMode 640x480x16: 00000000
+display mode: 640x480, 16 bits
+screen: 640x480, window: 640x480
+flipping primary surface: 00000000
+back buffer: 00000000
+flips: 10
+SetDisplayMode 640x480x32: 00000000
+display mode: 640x480, 32 bits
+screen: 640x480, window: 640x480
+flipping primary surface: 00000000
+back buffer: 00000000
+flips: 10
+Lock: 32 bits, pitch at least the width: 1
+Flip: 00000000
+on the screen: 1
+RestoreDisplayMode: 00000000
+desktop back: 1
+done

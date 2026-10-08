@@ -15,8 +15,8 @@ use std::collections::HashMap;
 
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, CustomSection, ElementSection, Elements, EntityType,
-    FunctionSection, GlobalType, ImportSection, Instruction as W, MemArg, MemoryType, Module,
-    RefType, TableType, TypeSection, ValType,
+    ExportKind, ExportSection, FunctionSection, GlobalType, ImportSection, Instruction as W,
+    MemArg, MemoryType, Module, RefType, TableType, TypeSection, ValType,
 };
 
 use crate::abi::{self, addr::NULL_LIMIT, cpu, cpu64, fault, imports};
@@ -198,7 +198,8 @@ impl<'a> ModuleGen<'a> {
         // Types.
         let mut types = TypeSection::new();
         types.ty().function([at], [ct]);
-        types.ty().function([at, ValType::I32, ct, ct], []);
+        // fault(cpu, code, eip, info) -> where to continue
+        types.ty().function([at, ValType::I32, ct, ct], [ct]);
         types.ty().function([at, at], []);
         types
             .ty()
@@ -304,6 +305,15 @@ impl<'a> ModuleGen<'a> {
                 Elements::Functions(Cow::Borrowed(&idxs)),
             );
         }
+        // The lazy-flags evaluator, for the host to build CONTEXT records.
+        let mut exports = ExportSection::new();
+        exports.export(
+            abi::EFLAGS_EXPORT,
+            ExportKind::Func,
+            self.helper_func_index(Helper::Eflags),
+        );
+        module.section(&exports);
+
         module.section(&elems);
 
         // Code.
@@ -662,9 +672,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
         }
     }
 
-    /// Raises a fault: writes back `mask`, records eip and calls the host.
-    /// The address/info value must already be in `tmp_i32b` (`tmp_i64b`
-    /// for 64-bit code).
+    /// Raises a fault: writes back `mask`, records eip and calls the host,
+    /// which returns where to continue (a Windows exception dispatcher, with
+    /// the guest stack set up for it). The address/info value must already
+    /// be in `tmp_i32b` (`tmp_i64b` for 64-bit code).
     fn raise(&mut self, mask: StateMask, code: u32, eip: u64) {
         self.sync(mask);
         self.store_eip_const(eip);
@@ -677,7 +688,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             self.emit(W::LocalGet(self.tmp_i32b));
         }
         self.emit(W::Call(F_FAULT));
-        self.emit(W::Unreachable);
+        self.emit(W::Return);
     }
 
     // ---- Lookup --------------------------------------------------------------
@@ -1210,8 +1221,17 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(W::I32And);
     }
 
+    /// The access violation code for a read or a write.
+    fn av_code(write: bool) -> u32 {
+        if write {
+            fault::ACCESS_VIOLATION_WRITE
+        } else {
+            fault::ACCESS_VIOLATION
+        }
+    }
+
     /// Emits an address check for the access at vreg `v` + `off`.
-    fn check_addr(&mut self, v: V, off: u32, dirty: StateMask, eip: u64) {
+    fn check_addr(&mut self, v: V, off: u32, write: bool, dirty: StateMask, eip: u64) {
         let addr = self.local_of[v as usize];
         if self.f.ty(v) == Ty::I64 || self.mem64() {
             self.emit(W::LocalGet(addr));
@@ -1236,7 +1256,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             self.emit(W::LocalGet(self.tmp_i64b));
             self.emit(W::I32WrapI64);
             self.emit(W::LocalSet(self.tmp_i32b));
-            self.raise(dirty & FAULT_SYNC, fault::ACCESS_VIOLATION, eip);
+            self.raise(dirty & FAULT_SYNC, Self::av_code(write), eip);
             self.emit(W::End);
             return;
         }
@@ -1251,7 +1271,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(W::GlobalGet(G_GUEST_CHECK));
         self.emit(W::I32GtU);
         self.emit(W::If(BlockType::Empty));
-        self.raise(dirty & FAULT_SYNC, fault::ACCESS_VIOLATION, eip);
+        self.raise(dirty & FAULT_SYNC, Self::av_code(write), eip);
         self.emit(W::End);
     }
 
@@ -1349,7 +1369,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             Op::Load { addr, mem } => {
                 if self.needs_check(mem) {
-                    self.check_addr(*addr, mem.offset, dirty, inst.eip);
+                    self.check_addr(*addr, mem.offset, false, dirty, inst.eip);
                 }
                 let la = self.addr_local(*addr);
                 let ty = ty.unwrap();
@@ -1370,7 +1390,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             Op::Store { addr, val, mem } => {
                 if self.needs_check(mem) {
-                    self.check_addr(*addr, mem.offset, dirty, inst.eip);
+                    self.check_addr(*addr, mem.offset, true, dirty, inst.eip);
                 }
                 let la = self.addr_local(*addr);
                 let vty = self.f.ty(*val);
@@ -1396,7 +1416,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             Op::AtomicRmw { op, addr, val, mem } => {
                 if mem.space == Space::Guest && self.m.cfg.mem_checks {
-                    self.check_addr(*addr, mem.offset, dirty, inst.eip);
+                    self.check_addr(*addr, mem.offset, true, dirty, inst.eip);
                 }
                 let mut la = self.addr_local(*addr);
                 // The result may take over the address's local (the address
@@ -1467,7 +1487,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 mem,
             } => {
                 if mem.space == Space::Guest && self.m.cfg.mem_checks {
-                    self.check_addr(*addr, mem.offset, dirty, inst.eip);
+                    self.check_addr(*addr, mem.offset, true, dirty, inst.eip);
                 }
                 let la = self.addr_local(*addr);
                 let ty = ty.unwrap_or(Ty::I32);
@@ -1502,9 +1522,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             Op::MemCopy { dst, src, len } => {
                 if self.m.cfg.mem_checks {
-                    for v in [*dst, *src] {
-                        self.check_range(v, *len, dirty, inst.eip);
-                    }
+                    // The source is read before the destination is written.
+                    self.check_range(*src, *len, false, dirty, inst.eip);
+                    self.check_range(*dst, *len, true, dirty, inst.eip);
                 }
                 self.get_ma(*dst);
                 self.get_ma(*src);
@@ -1519,7 +1539,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             Op::MemFill { dst, val, len } => {
                 if self.m.cfg.mem_checks {
-                    self.check_range(*dst, *len, dirty, inst.eip);
+                    self.check_range(*dst, *len, true, dirty, inst.eip);
                 }
                 self.get_ma(*dst);
                 self.get(*val);
@@ -1574,7 +1594,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
     }
 
     /// Checks that [addr, addr+len) lies in the guest region.
-    fn check_range(&mut self, addr: V, len: V, dirty: StateMask, eip: u64) {
+    fn check_range(&mut self, addr: V, len: V, write: bool, dirty: StateMask, eip: u64) {
         if self.f.ty(addr) == Ty::I64 || self.mem64() {
             // In i64: fault if addr < NULL_LIMIT || addr + len - NULL_LIMIT > check
             let wide = self.f.ty(addr) == Ty::I64;
@@ -1600,7 +1620,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             self.emit(W::I64GtU);
             self.emit(W::I32Or);
             self.emit(W::If(BlockType::Empty));
-            self.raise(dirty & FAULT_SYNC, fault::ACCESS_VIOLATION, eip);
+            self.raise(dirty & FAULT_SYNC, Self::av_code(write), eip);
             self.emit(W::End);
             return;
         }
@@ -1619,7 +1639,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(W::I32GtU);
         self.emit(W::I32Or);
         self.emit(W::If(BlockType::Empty));
-        self.raise(dirty & FAULT_SYNC, fault::ACCESS_VIOLATION, eip);
+        self.raise(dirty & FAULT_SYNC, Self::av_code(write), eip);
         self.emit(W::End);
     }
 

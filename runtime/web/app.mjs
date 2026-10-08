@@ -4,6 +4,7 @@
 // InputRing.
 
 import { InputRing } from '../wine/input-ring.mjs';
+import { createAudioRing, playAudioRing } from '../wine/audio-sink.mjs';
 import { windowsKey, KEYEVENTF_KEYUP } from './keys.mjs';
 import { hasMemory64 } from '../runtime.mjs';
 
@@ -73,6 +74,7 @@ const canvas = $('screen');
 const ctx = canvas.getContext('2d');
 let screen = null; // { width, height, screen, frame, input, ring }
 let worker = null;
+let audioCtx = null; // the page's sound output (../wine/audio-sink.mjs)
 
 /** A new screen for a program: shared pixels, a frame counter and the input ring. */
 function newScreen() {
@@ -142,7 +144,7 @@ for (const type of ['keydown', 'keyup']) {
 
 // ---- Running ---------------------------------------------------------------
 
-function run(exeName, exeBytes, files, exePath) {
+async function run(exeName, exeBytes, files, exePath) {
   out.textContent = '';
   logEl.textContent = '';
   $('status').textContent = `running ${exeName}…`;
@@ -152,6 +154,20 @@ function run(exeName, exeBytes, files, exePath) {
   const dec = new TextDecoder('latin1');
   const wine = $('wine').checked;
   screen = wine ? newScreen() : null;
+  // Sound: started here, inside the click that runs the program (browsers
+  // start audio only from a user gesture).
+  let audio = null;
+  if (wine && typeof AudioContext !== 'undefined') {
+    const buffer = createAudioRing();
+    try {
+      audioCtx?.close();
+      audioCtx = await playAudioRing(buffer);
+      audio = { buffer, rate: audioCtx.sampleRate };
+      window.audioRing = buffer; // for tests: [write, read] frame counts first
+    } catch (e) {
+      logEl.textContent += `no sound: ${e.message}\n`;
+    }
+  }
   shown = -1;
   canvas.hidden = true;
   return new Promise((resolve) => {
@@ -188,6 +204,7 @@ function run(exeName, exeBytes, files, exePath) {
         bundle64m32Url,
         memory64,
         display: screen && { width: screen.width, height: screen.height, screen: screen.screen, frame: screen.frame, input: screen.input },
+        audio,
       },
       [exeBytes],
     );

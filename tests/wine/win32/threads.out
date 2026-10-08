@@ -1,0 +1,17 @@
+wait all: 0
+counter 4000, total 10000
+thread 0 exit code 101
+thread 1 exit code 102
+thread 2 exit code 103
+thread 3 exit code 104
+tls: main 00001234, thread 1 1, thread 2 1
+consumed 1275
+suspended thread started: 0
+exit code while running: STILL_ACTIVE
+wait done (timeout 10): 258
+wait done: 0
+waiter exit code 7
+mutex overlap: 0
+first to finish: 1
+all finished after at least 300 ms: 1
+done

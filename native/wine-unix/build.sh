@@ -148,11 +148,11 @@ done
 # (marked EMSCRIPTEN_KEEPALIVE).
 exports=_wasm_nt_call,_malloc,_free,_wasm_win32u_syscall,_wasm_win32u_unix_call
 # shellcheck disable=SC2086
-emcc $(find "$out/obj" -name '*.o') -o "$out/wine_unix.mjs" -O2 $wasm64 --no-entry --pre-js "$here/inproc/pre.js" \
+emcc $(find "$out/obj" -name '*.o') -o "$out/wine_unix.mjs" -O2 --profiling-funcs $wasm64 --no-entry --pre-js "$here/inproc/pre.js" \
   -sUSE_FREETYPE=1 -sMODULARIZE -sEXPORT_ES6 -sEXPORT_NAME=createWineUnix -sENVIRONMENT=web,worker,node \
   -sIMPORTED_MEMORY -sSHARED_MEMORY -sALLOW_MEMORY_GROWTH=0 \
   -sGLOBAL_BASE=$GLOBAL_BASE -sINITIAL_MEMORY=$MEMORY_SIZE -sMAXIMUM_MEMORY=$MEMORY_SIZE -sSTACK_SIZE=4MB \
-  -sEXPORTED_FUNCTIONS="$exports" -sEXPORTED_RUNTIME_METHODS=FS,HEAPU8,UTF8ToString \
+  -sEXPORTED_FUNCTIONS="$exports" -sEXPORTED_RUNTIME_METHODS=FS,HEAPU8,UTF8ToString,stackSave,stackRestore \
   -sERROR_ON_UNDEFINED_SYMBOLS=1 -Wl,--error-limit=0 2> "$out/link.log" || { cat "$out/link.log"; exit 1; }
 # The lowered module's glue indexes the heap with signed shifts
 # (HEAPU64[p >> 3]): Emscripten makes them unsigned only for wasm32 builds

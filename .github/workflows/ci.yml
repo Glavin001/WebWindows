@@ -112,13 +112,14 @@ jobs:
           path: |
             ${{ github.workspace }}/../wine-src
             ${{ github.workspace }}/../wine-build
-          key: wine-${{ hashFiles('tools/wine/build.sh') }}
+          key: wine-${{ hashFiles('tools/wine/**', 'native/audio/**') }}
       - name: Build Wine's i386 PE DLLs, programs and conformance tests
         run: |
           sh tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost \
             user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 \
             rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts \
-            hid setupapi apisetschema ws2_32 crypt32 dnsapi nsi iphlpapi secur32 bcrypt normaliz wldap32 \
+            hid version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d opengl32 dinput dinput8 setupapi \
+            apisetschema ws2_32 crypt32 dnsapi nsi iphlpapi secur32 bcrypt normaliz wldap32 \
             kernel32/tests user32/tests gdi32/tests
       - uses: mymindstorm/setup-emsdk@v14
       - name: Build
@@ -134,6 +135,15 @@ jobs:
           path: target/wine-bundle
       - name: Programs on translated Wine
         run: node tests/programs/check.mjs --wine --jobs 4
+      - name: Windows test programs on translated Wine (exceptions, threads, sound, DirectDraw)
+        run: node tests/wine/win32.mjs --jobs 4
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: win32-programs
+          path: |
+            target/win32/*.exe
+            target/win32/results-win32.json
       - name: Wine's kernel32 tests (layer 3), against the recorded baseline
         run: |
           node tests/wine/winetest.mjs --jobs 4 --timeout 60 --baseline tests/wine/baseline/kernel32_test.json \
@@ -191,13 +201,14 @@ jobs:
           path: |
             ${{ github.workspace }}/../wine-src
             ${{ github.workspace }}/../wine-build64
-          key: wine64-${{ hashFiles('tools/wine/build.sh') }}
+          key: wine64-${{ hashFiles('tools/wine/**', 'native/audio/**') }}
       - name: Build Wine's x86_64 PE DLLs and programs
         run: |
           ARCH=x86_64 WINE_BUILD=$WINE_BUILD64 sh tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase \
             advapi32 sechost user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 \
             oleaut32 rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi hid programs/winemine programs/notepad fonts \
-            setupapi apisetschema ws2_32 crypt32 dnsapi nsi iphlpapi secur32 bcrypt normaliz wldap32 \
+            version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d opengl32 dinput dinput8 setupapi \
+            apisetschema ws2_32 crypt32 dnsapi nsi iphlpapi secur32 bcrypt normaliz wldap32 \
             kernel32/tests user32/tests gdi32/tests
       - uses: mymindstorm/setup-emsdk@v14
       - name: Build
@@ -319,9 +330,10 @@ jobs:
             else await github.rest.issues.createComment({ owner, repo, issue_number, body });
 
   # Runs the same MinGW executables on real Windows and checks they print
-  # what the translated runs printed (validating the Linux reference).
+  # what the translated runs printed (validating the Linux reference, and
+  # the recorded output of the Windows-only test programs).
   windows:
-    needs: linux
+    needs: [linux, wine]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -333,11 +345,16 @@ jobs:
         with:
           name: programs-x64
           path: programs-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: win32-programs
+          path: win32-programs
       - name: Compare native Windows runs with translated runs
         shell: pwsh
         run: |
           node tests/programs/windows-check.mjs programs
           node tests/programs/windows-check.mjs programs-x64
+          node tests/programs/windows-check.mjs win32-programs
 
   # Spike: Emscripten's data, heap and stacks above the guest limit.
   emscripten:

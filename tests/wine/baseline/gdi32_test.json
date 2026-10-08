@@ -29,8 +29,9 @@
     "failures": 131
   },
   "gdiobj": {
-    "status": "timeout",
-    "failures": 1
+    "status": "done",
+    "tests": 49,
+    "failures": 0
   },
   "generated": {
     "status": "done",

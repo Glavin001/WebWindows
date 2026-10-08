@@ -5,10 +5,13 @@
 //
 // GUI programs draw on a virtual 800x600 screen (runtime/wine/display.mjs):
 //   --screenshot F    save it as a PNG when the program goes idle or exits
+//   --folder          the program's directory as C:\app (games with data files)
+//   --audio-out F     save what the program played as a WAV file (48 kHz stereo)
 //   --run-for MS      ... or after this long
 //   --input SCRIPT    scripted input, timed from the first frame:
 //                     "500:click 20,80; 900:text Hi; 1200:key Enter"
-//                     (click/rclick/move X,Y; key CODE as in KeyboardEvent.code;
+//                     (click/rclick/move X,Y; key CODE as in KeyboardEvent.code,
+//                     keydown/keyup CODE to hold it;
 //                     text types letters, digits and spaces)
 //   --mem32           a 64-bit program on a 32-bit memory, below 4 GB, with the
 //                     lowered Unix side (target/wine-unix64-m32), as in browsers
@@ -84,6 +87,8 @@ const args = process.argv.slice(2);
 let trace = false;
 let unixTrace = false;
 let screenshot = null;
+let audioOut = null;
+let folder = false;
 let runFor = Infinity;
 let script = [];
 let appDir = null;
@@ -100,6 +105,10 @@ while (args[0]?.startsWith('--')) {
   // GUI programs: when the program waits with nothing left to wake it (no
   // timer, no input), save the screen as a PNG and stop.
   else if (a === '--screenshot') screenshot = args.shift();
+  else if (a === '--audio-out') audioOut = args.shift();
+  // The program's whole directory as C:\app, as the page's folder picker
+  // gives it (games with their data files).
+  else if (a === '--folder') folder = true;
   // ... or once it has run this long (programs with timers never go idle).
   else if (a === '--run-for') runFor = Number(args.shift());
   else if (a === '--input') script = parseInput(args.shift());
@@ -129,10 +138,12 @@ function parseInput(text) {
         d.mouse(...xy(), down);
         d.mouse(...xy(), up);
       };
-    } else if (action === 'key') {
+    } else if (action === 'key' || action === 'keydown' || action === 'keyup') {
+      // keydown/keyup: held keys, for games that read the key state each frame.
       const k = windowsKey(arg);
       if (!k) throw new Error(`--input: unknown key ${arg}`);
-      push = (d) => tap(d, k);
+      if (action === 'key') push = (d) => tap(d, k);
+      else push = (d) => d.key(k.vk, k.scan, k.flags | (action === 'keyup' ? KEYEVENTF_KEYUP : 0));
     } else if (action === 'text') {
       push = (d) => {
         for (const c of arg) {
@@ -152,7 +163,7 @@ function parseInput(text) {
 }
 const exe = args.shift();
 if (!exe) {
-  console.error('usage: wine.mjs [--trace] [--trace-unix CHANNELS] [--no-unix] [--mem32] [--screenshot F [--run-for MS]] program.exe [args...]');
+  console.error('usage: wine.mjs [--trace] [--trace-unix CHANNELS] [--no-unix] [--mem32] [--folder] [--dir DIR] [--audio-out F.wav] [--screenshot F [--run-for MS]] program.exe [args...]');
   process.exit(2);
 }
 
@@ -177,9 +188,12 @@ for (const f of readdirSync(join(wineSrc, 'nls'))) {
   if (f.endsWith('.nls')) files.set(`${sys32}\\${f.toLowerCase()}`, readFileSync(join(wineSrc, 'nls', f)));
 }
 files.set('c:\\windows\\globalization\\sorting\\sortdefault.nls', files.get(`${sys32}\\sortdefault.nls`));
-// The program: at C:\, or with --dir in C:\app, next to the folder's files.
+// The program: at C:\, or with --dir in C:\app, next to the folder's files
+// (--folder: the program's own directory, left as it is).
 const appFiles = new Map(); // DOS path -> [host path, original bytes]
 let exeWin = `C:\\${basename(exe)}`;
+const syncDir = appDir;
+if (folder && !appDir) appDir = dirname(resolve(exe));
 if (appDir) {
   const walk = (dir, rel) => {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -202,12 +216,12 @@ files.set(exeDos, readFileSync(exe));
 
 /** --dir: writes the files the program created or changed in C:\app back to the folder. */
 function syncBack() {
-  if (!appDir) return;
+  if (!syncDir) return;
   for (const [dos, bytes] of files) {
     if (!dos.startsWith('c:\\app\\') || dos === exeDos) continue;
     const old = appFiles.get(dos);
     if (old && Buffer.compare(old[1], Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length)) === 0) continue;
-    const host = old ? old[0] : join(appDir, ...dos.slice('c:\\app\\'.length).split('\\'));
+    const host = old ? old[0] : join(syncDir, ...dos.slice('c:\\app\\'.length).split('\\'));
     mkdirSync(dirname(host), { recursive: true });
     writeFileSync(host, bytes);
   }
@@ -291,6 +305,33 @@ if (existsSync(tw)) {
     log: trace ? (s) => stderr(`[fast] ${s}\n`) : undefined,
   });
 }
+/** What the program plays, kept for --audio-out (float stereo at 48 kHz). */
+const audioCapture = {
+  rate: 48000,
+  chunks: [],
+  write(src) {
+    this.chunks.push(src);
+  },
+  wav() {
+    const n = this.chunks.reduce((a, c) => a + c.length, 0);
+    const out = Buffer.alloc(44 + n * 2);
+    out.write('RIFF', 0);
+    out.writeUInt32LE(36 + n * 2, 4);
+    out.write('WAVEfmt ', 8);
+    out.writeUInt32LE(16, 16);
+    out.writeUInt16LE(1, 20);
+    out.writeUInt16LE(2, 22);
+    out.writeUInt32LE(this.rate, 24);
+    out.writeUInt32LE(this.rate * 4, 28);
+    out.writeUInt16LE(4, 32);
+    out.writeUInt16LE(16, 34);
+    out.write('data', 36);
+    out.writeUInt32LE(n * 2, 40);
+    let at = 44;
+    for (const c of this.chunks) for (const v of c) out.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(v * 32767))), (at += 2) - 2);
+    return out;
+  },
+};
 const host = new WineHost(machine, {
   translate,
   files,
@@ -301,10 +342,17 @@ const host = new WineHost(machine, {
   trace,
   unix,
   debug: process.env.WINEDEBUG ?? '',
+  audioSink: audioOut ? audioCapture : null,
 });
 host.boot(`${sys32}\\ntdll.dll`, exeDos);
+// A program that never waits (a game's busy frame loop) still stops on time.
+if (screenshot) host.threads.onSlice = () => {
+  if (performance.now() - started > runFor) throw new ProgramIdle();
+};
+await host.startClock();
 const r = host.run();
 syncBack();
+if (audioOut) writeFileSync(audioOut, audioCapture.wav());
 if (host.unimplemented.size) {
   stderr(`unimplemented syscalls: ${[...host.unimplemented.keys()].join(', ')}\n`);
 }

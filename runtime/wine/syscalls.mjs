@@ -8,8 +8,10 @@
 // SIZE_T) are read and written with `this.ptr` and `this.wptr`.
 
 import { ProcessExit, GuestFault, hex } from '../runtime.mjs';
-import { parsePe } from './host.mjs';
+import { parsePe, GL_UNIXLIB } from './host.mjs';
 import { WIN32U_UNIXLIB } from './unix.mjs';
+import { AUDIO_UNIXLIB } from './audio.mjs';
+import { ntRaiseException, restoreContext } from './exceptions.mjs';
 
 import {
   MEM_COMMIT, MEM_RESERVE, MEM_RELEASE, MEM_DECOMMIT, MEM_TOP_DOWN, MEM_MAPPED, MEM_IMAGE,
@@ -119,17 +121,8 @@ function memInfo(h, addr, buf) {
 /** Restores registers from a CONTEXT and resumes there. */
 function continueContext(h, cpu, ctx) {
   if (h.x64) return continueContext64(h, cpu, ctx);
-  const C = h.L.CONTEXT;
-  const m = h.m;
-  const regs = [C.Eax, C.Ecx, C.Edx, C.Ebx, C.Esp, C.Ebp, C.Esi, C.Edi];
-  regs.forEach((off, i) => m.setReg(cpu, i, h.u32(ctx + off)));
-  // EFlags: arithmetic flags explicitly, direction flag, system bits.
-  const ef = h.u32(ctx + C.EFlags);
-  const abi = m.abi;
-  m.w32(cpu + abi.cpu.FK, 0);
-  m.w32(cpu + abi.cpu.FR, ef & 0x8d5);
-  m.w32(cpu + abi.cpu.DF, (ef >>> 10) & 1);
-  return { jump: h.u32(ctx + C.Eip) };
+  const eip = restoreContext(h, cpu, ctx);
+  return eip === null ? STATUS.SUCCESS : { jump: eip };
 }
 
 /** The x86-64 CONTEXT: sixteen registers, flags and rip. */
@@ -238,6 +231,17 @@ export const SYSCALLS = {
         this.w32(buf + 4, 0);
         return STATUS.SUCCESS;
       }
+      // The audio driver mmdevapi loads (./audio.mjs).
+      if (this.audio && img && /\\winepulse\.drv$/i.test(img.path)) {
+        this.w32(buf, AUDIO_UNIXLIB);
+        this.w32(buf + 4, 0);
+        return STATUS.SUCCESS;
+      }
+      if (img && /\\opengl32\.dll$/i.test(img.path)) {
+        this.w32(buf, GL_UNIXLIB);
+        this.w32(buf + 4, 0);
+        return STATUS.SUCCESS;
+      }
       return STATUS.DLL_NOT_FOUND;
     }
     return STATUS.INVALID_INFO_CLASS;
@@ -307,25 +311,6 @@ export const SYSCALLS = {
   NtReleaseSemaphore() {
     return STATUS.SUCCESS;
   },
-  NtWaitForSingleObject() {
-    // One thread: waits on unsignaled objects would deadlock; report success.
-    return STATUS.SUCCESS;
-  },
-  NtWaitForMultipleObjects() {
-    return STATUS.SUCCESS;
-  },
-  NtWaitForKeyedEvent() {
-    return STATUS.SUCCESS;
-  },
-  NtReleaseKeyedEvent() {
-    return STATUS.SUCCESS;
-  },
-  NtDelayExecution() {
-    return STATUS.SUCCESS;
-  },
-  NtYieldExecution() {
-    return STATUS.SUCCESS;
-  },
 
   // -- process, thread, system
   NtQueryInformationProcess(a) {
@@ -378,35 +363,20 @@ export const SYSCALLS = {
         this.m.u8[buf + 1] = 2;
         return ret(2);
       default:
+        if (cls === 3) {
+          // ProcessVmCounters: VM_COUNTERS(_EX), all zero but the private bytes.
+          if (len < 44) return STATUS.INFO_LENGTH_MISMATCH;
+          const n = Math.min(len, 48);
+          this.m.u8.fill(0, buf, buf + n);
+          if (n >= 48) this.w32(buf + 44, 0x2000000);
+          return ret(n);
+        }
         this.log(`NtQueryInformationProcess class ${cls} not implemented`);
         return STATUS.INVALID_INFO_CLASS;
     }
   },
   NtSetInformationProcess() {
     return STATUS.SUCCESS;
-  },
-  NtQueryInformationThread(a) {
-    const [, cls, buf, len, pret] = [a(0), a(1), a(2), a(3), a(4)];
-    if (cls === 0) {
-      // ThreadBasicInformation
-      const B = this.L.THREAD_BASIC_INFORMATION;
-      if (len < B.__size) return STATUS.INFO_LENGTH_MISMATCH;
-      this.m.u8.fill(0, buf, buf + B.__size);
-      this.wptr(buf + B.TebBaseAddress, this.teb);
-      this.wptr(buf + B.ClientId, 0x20);
-      this.wptr(buf + B.ClientId + this.ps, 0x24);
-      this.wptr(buf + B.AffinityMask, 1);
-      if (pret) this.w32(pret, B.__size);
-      return STATUS.SUCCESS;
-    }
-    if (cls === 9) {
-      // ThreadQuerySetWin32StartAddress
-      this.wptr(buf, 0);
-      if (pret) this.w32(pret, this.ps);
-      return STATUS.SUCCESS;
-    }
-    this.log(`NtQueryInformationThread class ${cls} not implemented`);
-    return STATUS.INVALID_INFO_CLASS;
   },
   NtSetInformationThread() {
     return STATUS.SUCCESS;
@@ -446,6 +416,15 @@ export const SYSCALLS = {
         this.w64(buf, BigInt(Date.now()) * 10000n + 116444736000000000n);
         this.w64(buf + 8, BigInt(Date.now()) * 10000n + 116444736000000000n);
         return ret(Math.min(len, 48));
+      case 2: { // SystemPerformanceInformation: free memory (GlobalMemoryStatusEx)
+        if (len < 0x138) return STATUS.INFO_LENGTH_MISMATCH;
+        this.m.u8.fill(0, buf, buf + 0x138);
+        this.w32(buf + 0x2c, 0x30000); // AvailablePages
+        this.w32(buf + 0x30, 0x8000); // TotalCommittedPages
+        this.w32(buf + 0x34, 0x40000); // TotalCommitLimit
+        this.w32(buf + 0x38, 0x8000); // PeakCommitment
+        return ret(0x138);
+      }
       case 0x4c: // SystemFirmwareTableInformation etc.
       default:
         this.log(`NtQuerySystemInformation class ${hex(cls)} not implemented`);
@@ -477,11 +456,16 @@ export const SYSCALLS = {
     return Math.floor(performance.now()) >>> 0;
   },
   NtTerminateProcess(a) {
-    const h = a(0);
-    if (h === 0) return STATUS.SUCCESS; // terminate other threads: none
-    throw new ProcessExit(a(1));
-  },
-  NtTerminateThread(a) {
+    if (a(0) === 0) {
+      // Every thread but this one (ExitProcess does this first).
+      for (const t of this.threads.live()) {
+        if (t === this.threads.current) continue;
+        this.unix?.call('wasm_forget_thread', 'p', t.teb);
+        if (t.state === 'waiting') t.killed = true;
+        else this.endThread(t, a(1));
+      }
+      return STATUS.SUCCESS;
+    }
     throw new ProcessExit(a(1));
   },
   NtContinue(a, cpu) {
@@ -490,20 +474,9 @@ export const SYSCALLS = {
   NtContinueEx(a, cpu) {
     return continueContext(this, cpu, a(0));
   },
-  NtRaiseException(a) {
-    const rec = a(0);
-    const ps = this.ps;
-    // EXCEPTION_RECORD: code, flags, record, address, count, information[]
-    const code = this.u32(rec);
-    const addr = this.ptr(rec + 8 + ps);
-    const nparams = this.u32(rec + 8 + ps * 2);
-    const params = [];
-    for (let i = 0; i < Math.min(nparams, 4); i++) params.push(hex(this.ptr(rec + 8 + ps * 3 + i * ps)));
-    throw new GuestFault(code, addr, 0, `exception ${hex(code)} raised at ${hex(addr)} params [${params.join(', ')}] (no SEH dispatch yet)`);
-  },
-  NtSetContextThread(a, cpu) {
-    if (a(0) === 0xfffffffe) return continueContext(this, cpu, a(1));
-    return STATUS.NOT_IMPLEMENTED;
+  NtRaiseException(a, cpu) {
+    if (this.x64) return SYSCALLS64.NtRaiseException.call(this, a, cpu);
+    return ntRaiseException(this, cpu, a(0), a(1), a(2));
   },
   NtGetCurrentProcessorNumber() {
     return 0;
@@ -940,3 +913,49 @@ function openFile(h, ph, oa, piosb, disposition) {
   iosb(h, piosb, 0, 1); // FILE_OPENED
   return STATUS.SUCCESS;
 }
+
+/**
+ * x86-64 versions of the calls ./thread-syscalls.mjs and ./exceptions.mjs
+ * implement for i386 (one thread; exceptions stop the program), until those
+ * serve both architectures.
+ */
+export const SYSCALLS64 = {
+  NtQueryInformationThread(a) {
+    const [, cls, buf, len, pret] = [a(0), a(1), a(2), a(3), a(4)];
+    if (cls === 0) {
+      // ThreadBasicInformation
+      const B = this.L.THREAD_BASIC_INFORMATION;
+      if (len < B.__size) return STATUS.INFO_LENGTH_MISMATCH;
+      this.m.u8.fill(0, buf, buf + B.__size);
+      this.wptr(buf + B.TebBaseAddress, this.teb);
+      this.wptr(buf + B.ClientId, 0x20);
+      this.wptr(buf + B.ClientId + this.ps, 0x24);
+      this.wptr(buf + B.AffinityMask, 1);
+      if (pret) this.w32(pret, B.__size);
+      return STATUS.SUCCESS;
+    }
+    if (cls === 9) {
+      // ThreadQuerySetWin32StartAddress
+      this.wptr(buf, 0);
+      if (pret) this.w32(pret, this.ps);
+      return STATUS.SUCCESS;
+    }
+    this.log(`NtQueryInformationThread class ${cls} not implemented`);
+    return STATUS.INVALID_INFO_CLASS;
+  },
+  NtRaiseException(a) {
+    const rec = a(0);
+    const ps = this.ps;
+    // EXCEPTION_RECORD: code, flags, record, address, count, information[]
+    const code = this.u32(rec);
+    const addr = this.ptr(rec + 8 + ps);
+    const nparams = this.u32(rec + 8 + ps * 2);
+    const params = [];
+    for (let i = 0; i < Math.min(nparams, 4); i++) params.push(hex(this.ptr(rec + 8 + ps * 3 + i * ps)));
+    throw new GuestFault(code, addr, 0, `exception ${hex(code)} raised at ${hex(addr)} params [${params.join(', ')}] (no SEH dispatch yet)`);
+  },
+  NtSetContextThread(a, cpu) {
+    if (a(0) === 0xfffffffe) return continueContext(this, cpu, a(1));
+    return STATUS.NOT_IMPLEMENTED;
+  },
+};

@@ -51,9 +51,13 @@ pub fn kernel_code64_wat() -> String {
     (return_call_indirect (type $fn) (local.get $cpu)
       (call $miss (local.get $cpu) (local.get $t))))
 
+  (func $resume (export "resume") (type $fn) (param $cpu i64) (result i64)
+    (i64.load offset={rip} (local.get $cpu)))
+
   (func (export "run") (param $cpu i64) (param $eip i64) (result i64)
     (loop $next
-      (if (i64.eq (local.get $eip) (i64.const {stop}))
+      (if (i32.or (i64.eq (local.get $eip) (i64.const {stop}))
+                  (i64.eq (local.get $eip) (i64.const {yield_})))
         (then (return (local.get $eip))))
       (i64.store offset={rip} (local.get $cpu) (local.get $eip))
       (local.set $eip
@@ -63,6 +67,7 @@ pub fn kernel_code64_wat() -> String {
 )"#,
         rip = cpu64::RIP,
         stop = addr::STOP64,
+        yield_ = addr::YIELD64,
         max_pages = crate::codegen::MAX_PAGES_64,
     )
 }
@@ -100,9 +105,13 @@ pub fn kernel_wat_for(mem64: bool) -> String {
     (return_call_indirect (type $fn) (local.get $cpu)
       (call $miss (local.get $cpu) (local.get $t))))
 
+  (func $resume (export "resume") (type $fn) (param $cpu i64) (result i32)
+    (i32.load offset={eip} (local.get $cpu)))
+
   (func (export "run") (param $cpu i64) (param $eip i32) (result i32)
     (loop $next
-      (if (i32.eq (local.get $eip) (i32.const {stop}))
+      (if (i32.or (i32.eq (local.get $eip) (i32.const {stop}))
+                  (i32.eq (local.get $eip) (i32.const {yield_})))
         (then (return (local.get $eip))))
       (i32.store offset={eip} (local.get $cpu) (local.get $eip))
       (local.set $eip
@@ -112,6 +121,7 @@ pub fn kernel_wat_for(mem64: bool) -> String {
 )"#,
             eip = cpu::EIP,
             stop = addr::STOP as i32,
+            yield_ = addr::YIELD as i32,
             max_pages = crate::codegen::MAX_PAGES_64,
         );
     }
@@ -146,10 +156,18 @@ pub fn kernel_wat_for(mem64: bool) -> String {
     (return_call_indirect (type $fn) (local.get $cpu)
       (call $miss (local.get $cpu) (local.get $t))))
 
-  ;; Runs guest code from `eip` until it returns to the stop address.
+  ;; Table slot 1: continues at cpu.eip. The host returns this slot from a
+  ;; miss it turns into an exception, after pointing cpu.eip at the
+  ;; exception dispatcher.
+  (func $resume (export "resume") (type $fn) (param $cpu i32) (result i32)
+    (i32.load offset={eip} (local.get $cpu)))
+
+  ;; Runs guest code from `eip` until it returns to the stop address, or
+  ;; the host hands back the yield address to switch threads.
   (func (export "run") (param $cpu i32) (param $eip i32) (result i32)
     (loop $next
-      (if (i32.eq (local.get $eip) (i32.const {stop}))
+      (if (i32.or (i32.eq (local.get $eip) (i32.const {stop}))
+                  (i32.eq (local.get $eip) (i32.const {yield_})))
         (then (return (local.get $eip))))
       (i32.store offset={eip} (local.get $cpu) (local.get $eip))
       (local.set $eip
@@ -159,6 +177,7 @@ pub fn kernel_wat_for(mem64: bool) -> String {
 )"#,
         eip = cpu::EIP,
         stop = addr::STOP as i32,
+        yield_ = addr::YIELD as i32,
     )
 }
 

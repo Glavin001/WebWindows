@@ -111,6 +111,31 @@ export class WineUnix {
     return this.wide ? BigInt(addr) : addr;
   }
 
+  /**
+   * Calls one of the glue's entry points. `sig` has a letter per argument:
+   * `p` a pointer, `h` a handle (pointer-sized; pseudo-handles such as
+   * 0xfffffffe sign-extend, as Windows' are -2), `i` a 32-bit integer.
+   * Returns a Number.
+   */
+  call(name, sig, ...args) {
+    const conv = args.map((v, i) => {
+      if (sig[i] === 'p') return this.p(v);
+      if (sig[i] === 'h') return this.wide ? BigInt.asUintN(64, BigInt(v >= 0xffff0000 ? v | 0 : v)) : v;
+      return v;
+    });
+    const r = this.M[`_${name}`](...conv);
+    return typeof r === 'bigint' ? Number(r) : r;
+  }
+
+  /** Allocates in the module's heap; returns the address as a Number. */
+  malloc(size) {
+    return Number(this.M._malloc(size)) >>> 0;
+  }
+
+  free(addr) {
+    this.M._free(this.p(addr));
+  }
+
   /** Writes argument slots (numbers or BigInts) to the module's argument area. */
   putSlots(slots) {
     const dv = this.m.dv;

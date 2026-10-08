@@ -174,9 +174,11 @@ impl Executor {
             }
         };
         table.set(&mut store, 0, Ref::Func(Some(miss)))?;
+        // The fault import returns where to continue; the tests stop at the
+        // first fault instead.
         let on_fault = |mut caller: Caller<'_, State>, code: i32, eip: i32, info: i32| {
             caller.data_mut().fault = Some((code as u32, eip as u32, info as u32));
-            Err(anyhow!("guest fault"))
+            anyhow!("guest fault")
         };
         let fault_fn = if code64 {
             Func::wrap(
@@ -186,8 +188,8 @@ impl Executor {
                       code: i32,
                       eip: i64,
                       info: i64|
-                      -> Result<()> {
-                    on_fault(caller, code, eip as i32, info as i32)
+                      -> Result<i64> {
+                    Err(on_fault(caller, code, eip as i32, info as i32))
                 },
             )
         } else if mem64 {
@@ -198,7 +200,7 @@ impl Executor {
                       code: i32,
                       eip: i32,
                       info: i32|
-                      -> Result<()> { on_fault(caller, code, eip, info) },
+                      -> Result<i32> { Err(on_fault(caller, code, eip, info)) },
             )
         } else {
             Func::wrap(
@@ -208,7 +210,7 @@ impl Executor {
                       code: i32,
                       eip: i32,
                       info: i32|
-                      -> Result<()> { on_fault(caller, code, eip, info) },
+                      -> Result<i32> { Err(on_fault(caller, code, eip, info)) },
             )
         };
         let code_write = if mem64 {
@@ -330,7 +332,11 @@ impl Executor {
                             fault::INTEGER_DIVIDE_BY_ZERO | fault::INTEGER_OVERFLOW => "DE",
                             fault::ILLEGAL_INSTRUCTION => "UD",
                             fault::BREAKPOINT => "BP",
-                            fault::ACCESS_VIOLATION | fault::PRIVILEGED_INSTRUCTION => "AV",
+                            fault::ACCESS_VIOLATION
+                            | fault::ACCESS_VIOLATION_WRITE
+                            | fault::ACCESS_VIOLATION_EXECUTE
+                            | fault::GENERAL_PROTECTION
+                            | fault::PRIVILEGED_INSTRUCTION => "AV",
                             fault::UNSUPPORTED => "UNSUPPORTED",
                             _ => "??",
                         }

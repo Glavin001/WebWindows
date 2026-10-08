@@ -23,18 +23,49 @@
 import { ProcessExit, hex } from '../runtime.mjs';
 import { mapImage } from '../pe.mjs';
 import { VirtualMemory, MEM_IMAGE, MEM_MAPPED, MEM_PRIVATE, PAGE_READWRITE, PAGE_EXECUTE_READ, PAGE_READONLY } from './vm.mjs';
-import { SYSCALLS, STATUS, STUB_UNIXLIB } from './syscalls.mjs';
+import { SYSCALLS, SYSCALLS64, STATUS, STUB_UNIXLIB } from './syscalls.mjs';
 import { HANDLE_ROUTED, WIN32U_UNIXLIB } from './unix.mjs';
+
+/** opengl32's Unix side: a stub without OpenGL (see unixCall). */
+export const GL_UNIXLIB = 0x4000;
 
 import layout from './layout.json' with { type: 'json' };
 import layout64 from './layout64.json' with { type: 'json' };
 import { installAssemblies } from './sxs.mjs';
+import { installExceptions } from './exceptions.mjs';
+import { Scheduler, Thread } from './threads.mjs';
+import { startTicker, writeClock } from './ticker.mjs';
+import { THREAD_SYSCALLS, WIN32U_WAITS } from './thread-syscalls.mjs';
+import { AUDIO_UNIXLIB, BrowserAudio } from './audio.mjs';
+import { installRegistrations } from './registry-setup.mjs';
 
 export const L = layout;
 export const L64 = layout64;
 
 const EAX = 0, ECX = 1, EDX = 2, EBX = 3, ESP = 4, EBP = 5, ESI = 6, EDI = 7;
 export const USER_SHARED_DATA = 0x7ffe0000;
+
+/** Names (lowercase) of the DLLs a PE image imports. */
+export function peImports(bytes) {
+  const info = parsePe(bytes);
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const off = (rva) => {
+    const sec = info.sections.find((x) => rva >= x.virtual_address && rva < x.virtual_address + Math.max(x.virtual_size, x.raw_size));
+    return sec ? rva - sec.virtual_address + sec.raw_offset : -1;
+  };
+  const opt = dv.getUint32(0x3c, true) + 24;
+  // The data directories: after 96 bytes in PE32, 112 in PE32+.
+  const dirs = opt + (info.wide ? 112 : 96);
+  const names = [];
+  // Data directory 1: import descriptors of 20 bytes, ended by a zero one.
+  for (let d = off(dv.getUint32(dirs + 8, true)); d >= 0 && dv.getUint32(d + 12, true); d += 20) {
+    let p = off(dv.getUint32(d + 12, true));
+    let name = '';
+    while (bytes[p]) name += String.fromCharCode(bytes[p++]);
+    names.push(name.toLowerCase());
+  }
+  return names;
+}
 
 /** Reads the parts of a PE header the host needs (image info, exports). */
 export function parsePe(bytes) {
@@ -180,6 +211,8 @@ export class WineHost {
     this.nextHandle = 0x40000;
     /** Wine's Unix side compiled with Emscripten (./unix.mjs), or null */
     this.unix = opts.unix ?? null;
+    /** The audio driver (./audio.mjs); opts.audioSink receives what plays. */
+    this.audio = new BrowserAudio(this, opts.audioSink ?? null);
     this.unix?.attach(this);
     /** Results of NtCallbackReturn, one per user callback in progress. */
     this.callbackResults = [];
@@ -393,6 +426,9 @@ export class WineHost {
       this.w64(USER_SHARED_DATA + 0x1000, this.syscallThunk);
     }
     this.kiUserCallbackDispatcher = ex('KiUserCallbackDispatcher');
+    // Exception dispatch (./exceptions.mjs) builds i386 records and
+    // contexts; on x86-64 an exception still stops the program.
+    if (!this.x64) installExceptions(this, ex);
 
     // The main executable, mapped by the "Unix side" as Wine does.
     const exe = this.mapImageFile(exeDosPath, this.fileAt(exeDosPath));
@@ -407,24 +443,52 @@ export class WineHost {
     this.peb = this.alloc(debugAt + 0x1000, PAGE_READWRITE, 'PEB');
     this.buildPeb(exe);
     this.writeDebugOptions(this.peb + debugAt, this.debug);
-    this.teb = this.alloc(0x2000, PAGE_READWRITE, 'TEB');
-    this.cpu = m.newCpu();
-    this.buildTeb(this.teb, exe.info);
-    if (this.unix) this.unix.initProcess(this.teb, this.peb);
-    m.dv.setUint16(this.cpu + m.abi.cpu.FPU_CW, 0x27f, true);
-    // Windows starts threads with IF set.
-    m.w32(this.cpu + m.abi.cpu.EFLAGS_SYS, 0x200);
-    if (this.x64) {
-      this.bootContext64(exe, ex);
-      return;
+    this.ex = ex;
+    this.stackReserve = exe.info.stackReserve;
+    this.threads = new Scheduler(this);
+    // The main thread: its TEB, CPU state and initial context. Wine's Unix
+    // side registers the process with its first thread.
+    const main = this.newThread(exe.base + exe.info.entryRva, this.peb, exe.info.stackReserve);
+    this.teb = main.teb;
+    this.cpu = main.cpu;
+    if (this.unix) {
+      this.unix.initProcess(main.teb, this.peb);
+      // COM classes and the like, as wineboot's DLL registration leaves them.
+      const keys = installRegistrations(this, this.files);
+      this.log(`registry: ${keys} keys from Wine's DLL registrations`);
+      // Waits in Wine's Unix side run the other threads (./threads.mjs).
+      this.threads.realWait = this.unix.M.hostWait;
+      this.unix.M.hostWait = (ms) => this.threads.waitNested(ms);
+    } else {
+      this.threads.realWait = (ms) => (ms < 0 ? -1 : (Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms), 0));
     }
-    const sel = this.cpu + m.abi.cpu.SEG_SEL;
-    [0x2b, 0x23, 0x2b, 0x2b, 0x53, 0x2b].forEach((v, i) => m.dv.setUint16(sel + i * 2, v, true));
-    m.w32(this.cpu + m.abi.cpu.FS_BASE, this.teb);
+    // ClientId.UniqueThread
+    main.tid = this.u32(main.teb + this.L.TEB.ClientId + this.ps);
+    this.threads.add(main);
+    this.threads.switchTo(main);
+    this.entry = main.resume;
+  }
 
-    // Initial context for LdrInitializeThunk, as signal_i386.c builds it.
+  /**
+   * A thread's TEB, stack, CPU state and initial context, as Wine's Unix
+   * side builds them (signal_i386.c, signal_x86_64.c): LdrInitializeThunk
+   * runs first, then continues at RtlUserThreadStart(start, param).
+   */
+  newThread(start, param, stackReserve) {
+    const m = this.m;
+    const teb = this.alloc(0x2000, PAGE_READWRITE, 'TEB');
+    this.buildTeb(teb, stackReserve);
+    const cpu = m.newCpu();
+    m.dv.setUint16(cpu + m.abi.cpu.FPU_CW, 0x27f, true);
+    // Windows starts threads with IF set.
+    m.w32(cpu + m.abi.cpu.EFLAGS_SYS, 0x200);
+    if (this.x64) return this.newThread64(start, param, teb, cpu);
+    const sel = cpu + m.abi.cpu.SEG_SEL;
+    [0x2b, 0x23, 0x2b, 0x2b, 0x53, 0x2b].forEach((v, i) => m.dv.setUint16(sel + i * 2, v, true));
+    m.w32(cpu + m.abi.cpu.FS_BASE, teb);
+
     const C = L.CONTEXT;
-    const stackTop = this.u32(this.teb + L.TEB['Tib.StackBase']);
+    const stackTop = this.u32(teb + L.TEB['Tib.StackBase']);
     const ctx = ((stackTop - 16) & ~3) - C.__size;
     m.u8.fill(0, ctx, ctx + C.__size);
     this.w32(ctx + C.ContextFlags, 0x1003f); // CONTEXT_ALL for i386
@@ -434,10 +498,10 @@ export class WineHost {
     this.w32(ctx + C.SegFs, 0x53);
     this.w32(ctx + C.SegSs, 0x2b);
     this.w32(ctx + C.EFlags, 0x202);
-    this.w32(ctx + C.Eax, exe.base + exe.info.entryRva);
-    this.w32(ctx + C.Ebx, this.peb);
+    this.w32(ctx + C.Eax, start);
+    this.w32(ctx + C.Ebx, param);
     this.w32(ctx + C.Esp, stackTop - 16);
-    this.w32(ctx + C.Eip, ex('RtlUserThreadStart'));
+    this.w32(ctx + C.Eip, this.ex('RtlUserThreadStart'));
     this.w16(ctx + C.FloatSave, 0x27f);
     this.w16(ctx + C.ExtendedRegisters, 0x27f);
     this.w32(ctx + C.ExtendedRegisters + 24, 0x1f80);
@@ -446,28 +510,44 @@ export class WineHost {
       sp -= 4;
       this.w32(sp, v);
     }
-    m.setReg(this.cpu, ESP, sp);
-    this.entry = ex('LdrInitializeThunk');
+    m.setReg(cpu, ESP, sp);
+    return new Thread({ tid: 0, teb, cpu, start, resume: this.ex('LdrInitializeThunk') });
+  }
+
+  /** A thread ended: its CPU state slot, TEB and stack are freed. */
+  endThread(t, status) {
+    this.threads.ended(t, status);
+    const stack = this.ptr(t.teb + this.L.TEB.DeallocationStack);
+    if (stack) this.vm.release(stack);
+    this.vm.release(t.teb);
+    this.m.freeCpu(t.cpu);
+  }
+
+  /** Starts the clock in KUSER_SHARED_DATA (call before run). */
+  async startClock() {
+    this.ticker = await startTicker(this.m.memory, this.clockBoot);
   }
 
   /**
    * x86-64: the TEB at gs:0, and the initial context for
-   * LdrInitializeThunk(context) as signal_x86_64.c's call_init_thunk builds it.
+   * LdrInitializeThunk as signal_x86_64.c builds it: rcx = start, rdx =
+   * param, rip = RtlUserThreadStart, the CONTEXT just below the stack top
+   * and rcx pointing at it.
    */
-  bootContext64(exe, ex) {
+  newThread64(start, param, teb, cpu) {
     const m = this.m;
-    const sel = this.cpu + m.abi.cpu.SEG_SEL;
+    const sel = cpu + m.abi.cpu.SEG_SEL;
     [0x2b, 0x33, 0x2b, 0x2b, 0x53, 0x2b].forEach((v, i) => m.dv.setUint16(sel + i * 2, v, true));
-    this.w64(this.cpu + m.abi.cpu64.GS_BASE, this.teb);
+    this.w64(cpu + m.abi.cpu64.GS_BASE, teb);
     const C = this.L.CONTEXT;
-    const rsp = this.ptr(this.teb + this.L.TEB['Tib.StackBase']) - 0x28;
+    const rsp = this.ptr(teb + this.L.TEB['Tib.StackBase']) - 0x28;
     const ctx = rsp - (rsp % 16) - C.__size;
     m.u8.fill(0, ctx, ctx + C.__size);
     this.w32(ctx + C.ContextFlags, 0x10000b); // CONTEXT_FULL
-    this.w64(ctx + C.Rcx, exe.base + exe.info.entryRva);
-    this.w64(ctx + C.Rdx, this.peb);
+    this.w64(ctx + C.Rcx, start);
+    this.w64(ctx + C.Rdx, param);
     this.w64(ctx + C.Rsp, rsp);
-    this.w64(ctx + C.Rip, ex('RtlUserThreadStart'));
+    this.w64(ctx + C.Rip, this.ex('RtlUserThreadStart'));
     this.w16(ctx + C.SegCs, 0x33);
     for (const r of ['SegDs', 'SegEs', 'SegGs', 'SegSs']) this.w16(ctx + C[r], 0x2b);
     this.w16(ctx + C.SegFs, 0x53);
@@ -476,25 +556,30 @@ export class WineHost {
     this.w32(ctx + C['FltSave.MxCsr'], 0x1f80);
     this.w32(ctx + C.MxCsr, 0x1f80);
     this.w64(ctx - 8, 0);
-    m.setSp(this.cpu, ctx - 8);
-    m.setReg64(this.cpu, ECX, ctx);
-    this.entry = ex('LdrInitializeThunk');
+    m.setSp(cpu, ctx - 8);
+    m.setReg64(cpu, ECX, ctx);
+    return new Thread({ tid: 0, teb, cpu, start, resume: this.ex('LdrInitializeThunk') });
   }
 
   run() {
     try {
-      this.m.run(this.cpu, this.entry);
-      return { exitCode: null, error: new Error('initial thread returned') };
+      this.threads.run();
+      return { exitCode: null, error: new Error('every thread ended') };
     } catch (e) {
       if (e instanceof ProcessExit) return { exitCode: e.exitCode };
       return { exitCode: null, error: e };
+    } finally {
+      this.ticker?.stop();
     }
   }
 
   initSharedData() {
     const K = this.L.KUSER_SHARED_DATA;
     const b = USER_SHARED_DATA;
-    this.w32(b + K.TickCountMultiplier, 0x0fa00000);
+    // The clock (tick count, interrupt and system time): ./ticker.mjs keeps
+    // it current once the process starts.
+    this.clockBoot = performance.timeOrigin + performance.now();
+    writeClock(this.m.dv, this.clockBoot);
     this.w32(b + K.NtProductType, 1);
     this.m.u8[b + K.ProductTypeIsValid] = 1;
     this.w32(b + K.NtMajorVersion, 10);
@@ -595,6 +680,10 @@ export class WineHost {
       TMP: 'C:\\windows\\temp',
       USERPROFILE: 'C:\\users\\wine',
       WINEDLLPATH: 'C:\\windows\\system32',
+      // DirectDraw without OpenGL underneath: wined3d presents through GDI,
+      // on the program's thread (its command stream thread would spin
+      // between the cooperative scheduler's switches).
+      WINE_D3D_CONFIG: 'renderer=no3d,csmt=0',
       ...this.env,
     })
       .map(([k, v]) => `${k}=${v}`)
@@ -629,10 +718,10 @@ export class WineHost {
     return p;
   }
 
-  buildTeb(teb, exeInfo) {
+  buildTeb(teb, stackReserve) {
     const T = this.L.TEB;
     const ps = this.ps;
-    const stackSize = Math.max(exeInfo.stackReserve || 0x100000, 0x100000);
+    const stackSize = Math.max(Math.ceil((stackReserve || 0x100000) / 0x10000) * 0x10000, 0x100000);
     const stack = this.vm.reserve(0, stackSize, { prot: PAGE_READWRITE, name: 'stack' });
     this.vm.commit(stack, stackSize, PAGE_READWRITE);
     // No SEH frames (x86; x86-64 exceptions are table-based).
@@ -687,14 +776,37 @@ export class WineHost {
     const a = (i) => this.u32(argBase + i * 4);
     this.counts.set(name, (this.counts.get(name) ?? 0) + 1);
     const unixImpl = this.unix?.syscalls.get(name);
+    const threadImpl = this.unix ? THREAD_SYSCALLS[name] : undefined;
     const impl = SYSCALLS[name];
+    const t = this.threads.current;
+    this.sys = { name, ret, esp };
+    const outer = t.inCall;
+    t.inCall = name;
     let status;
-    if (id >= 0x1000 && this.unix) {
+    const win32uWait = id >= 0x1000 && this.unix ? WIN32U_WAITS[this.unix.win32uNames.get(id)] : undefined;
+    if (win32uWait) {
+      status = win32uWait.call(this, a, cpu, argBase);
+    } else if (id >= 0x1000 && this.unix) {
       // win32u (user32 and gdi32 underneath): its Unix side reads the
       // arguments from the guest stack.
-      status = this.unix.win32uSyscall(id, argBase);
+      t.nest++;
+      try {
+        status = this.unix.win32uSyscall(id, argBase);
+      } finally {
+        t.nest--;
+      }
+    } else if (threadImpl) {
+      status = threadImpl.call(this, a, cpu, argBase);
     } else if (unixImpl && this.routeToUnix(name, a)) {
-      status = unixImpl(Array.from({ length: 12 }, (_, i) => a(i)));
+      t.nest++;
+      try {
+        status = unixImpl(Array.from({ length: 12 }, (_, i) => a(i)));
+      } catch (e) {
+        if (e instanceof WebAssembly.RuntimeError) e.message += ` (in ${name} on Wine's Unix side)`;
+        throw e;
+      } finally {
+        t.nest--;
+      }
     } else if (!impl) {
       if (!this.unimplemented.has(name)) this.log(`UNIMPLEMENTED ${name}`);
       this.unimplemented.set(name, (this.unimplemented.get(name) ?? 0) + 1);
@@ -702,13 +814,26 @@ export class WineHost {
     } else {
       status = impl.call(this, a, cpu, argBase);
     }
-    if (status && typeof status === 'object' && status.jump !== undefined) {
-      if (this.trace) this.log(`${name} -> jump ${hex(status.jump)}`);
-      return status.jump;
+    if (status && typeof status === 'object') {
+      if (status.jump !== undefined) {
+        if (this.trace) this.log(`${name} -> jump ${hex(status.jump)}`);
+        return status.jump;
+      }
+      if (status.yield) {
+        if (this.trace) this.log(`${name}: thread ${hex(t.tid)} blocks`);
+        return this.threads.yieldAddr;
+      }
+      status = status.status;
     }
+    t.inCall = outer;
     if (this.trace) this.log(`${name}(${[0, 1, 2, 3].map((i) => hex(a(i))).join(', ')}) = ${hex(status >>> 0)}`);
     m.setReg(cpu, EAX, status >>> 0);
     m.setReg(cpu, ESP, esp + 4);
+    // Time slices end at system calls.
+    if (this.threads.canYield() && this.threads.shouldPreempt()) {
+      this.threads.yieldAt(ret);
+      return this.threads.yieldAddr;
+    }
     return ret;
   }
 
@@ -727,7 +852,7 @@ export class WineHost {
     const raw = (i) => (i < 4 ? m.reg64(cpu, R[i]) : this.u64(rsp + 0x30 + (i - 4) * 8));
     const a = (i) => this.arg64(raw(i));
     this.counts.set(name, (this.counts.get(name) ?? 0) + 1);
-    const impl = SYSCALLS[name];
+    const impl = SYSCALLS64[name] ?? SYSCALLS[name];
     const unixImpl = this.unix?.syscalls.get(name);
     // The module's thunks take the raw slots: C's casts drop a 32-bit
     // argument's garbage upper half. The most any call takes is 17
@@ -761,7 +886,7 @@ export class WineHost {
 
   /** An NT call from Wine's Unix side (native/wine-unix/inproc/host.c), run by the host's own implementation. */
   hostNtCall(name, args) {
-    const impl = SYSCALLS[name];
+    const impl = (this.x64 ? SYSCALLS64[name] : THREAD_SYSCALLS[name]) ?? SYSCALLS[name];
     if (!impl) {
       this.unimplemented.set(`${name} (from Unix side)`, (this.unimplemented.get(name) ?? 0) + 1);
       return STATUS.NOT_IMPLEMENTED;
@@ -769,7 +894,10 @@ export class WineHost {
     // wasm64 passes 64-bit slots (BigInts); pseudo-handles read as their
     // 32-bit forms, as on i386.
     const a = this.x64 ? (i) => exactArg64(BigInt(args[i] ?? 0)) : (i) => args[i] >>> 0;
-    const status = impl.call(this, a, this.cpu, 0);
+    this.sys = { name, ret: 0, esp: 0 };
+    let status = impl.call(this, a, this.cpu, 0);
+    // Under the Unix side the thread cannot yield: waits come back done.
+    if (status && typeof status === 'object') status = status.status ?? 0;
     if (this.trace) this.log(`unix -> ${name}(${args.slice(0, 4).map(hex).join(', ')}) = ${hex(status >>> 0)}`);
     return status >>> 0;
   }
@@ -794,9 +922,12 @@ export class WineHost {
     m.setReg(this.cpu, ESP, sp);
     const depth = this.callbackResults.length;
     this.callbackResults.push(null);
+    const t = this.threads.current;
+    t.nest++;
     try {
       m.run(this.cpu, this.kiUserCallbackDispatcher);
     } finally {
+      t.nest--;
       m.u8.set(saved, this.cpu);
     }
     const r = this.callbackResults.pop();
@@ -866,7 +997,29 @@ export class WineHost {
     if (handle === 0x1000) {
       status = this.ntdllUnixCall(code, args);
     } else if (handle === WIN32U_UNIXLIB && this.unix) {
-      status = this.unix.win32uUnixCall(code, args);
+      const t = this.threads.current;
+      t.nest++;
+      try {
+        status = this.unix.win32uUnixCall(code, args);
+      } finally {
+        t.nest--;
+      }
+    } else if (handle === AUDIO_UNIXLIB && this.audio) {
+      // The audio driver's timer and main loops block in the scheduler.
+      this.sys = { name: 'audio', ret, esp, espAfter: esp + 20 };
+      status = this.audio.call(code, args);
+      if (status && typeof status === 'object') {
+        if (status.yield) return this.threads.yieldAddr;
+        status = status.status;
+      }
+    } else if (handle === GL_UNIXLIB) {
+      // opengl32 without OpenGL: it attaches (wined3d imports it), and
+      // every GL call fails.
+      if (code <= 2) status = STATUS.SUCCESS;
+      else if (!this.glWarned) {
+        this.glWarned = true;
+        this.log(`opengl32: no OpenGL (unix call ${code})`);
+      }
     } else {
       if (handle !== STUB_UNIXLIB) this.log(`unix call to unknown library ${hex(handle)} code ${code}`);
     }
