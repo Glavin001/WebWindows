@@ -584,6 +584,16 @@ uses f64, Emscripten uses 128-bit software floating point.
 
 ## 2. Profile both builds by function
 
+For a picture of one benchmark, `wasm-map.mjs` puts Emscripten's module
+and the translated `.exe`'s side by side: treemaps with each function's
+code size as area and its CPU time as color, and a table of the functions
+matched by name (sizes, times and ratios):
+
+```sh
+node tools/bench/wasm-map.mjs lua      # or sqlite, coremark; --no-profile for sizes only
+# target/wasm-map/lua.html (and lua.json)
+```
+
 ```sh
 node tools/bench/profile.mjs                  # Emscripten, then wwt
 node tools/bench/profile.mjs --tier wwt --top 40
