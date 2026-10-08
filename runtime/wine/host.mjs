@@ -203,7 +203,9 @@ export class WineHost {
     this.aliasThunks = opts.aliasThunks ?? true;
     this.modulesByPath = new Map();
     this.unimplemented = new Map();
-    this.counts = new Map();
+    /** The system call being run: its name, return address and stack. */
+    this.sys = { name: '', ret: 0, esp: 0, espAfter: undefined };
+    this.syscallEntries = [];
     this.argv = opts.argv;
     this.exePath = opts.exePath; // DOS path, e.g. c:\hello.exe
     this.env = opts.env ?? {};
@@ -490,6 +492,7 @@ export class WineHost {
   /** Starts the clock in KUSER_SHARED_DATA (call before run). */
   async startClock() {
     this.ticker = await startTicker(this.m.memory, this.clockBoot);
+    this.threads.useTicker(this.clockBoot);
   }
 
   run() {
@@ -662,7 +665,28 @@ export class WineHost {
         if (!this.syscallNames.has(id) || name.startsWith('Nt')) this.syscallNames.set(id, name.replace(/^Zw/, 'Nt'));
       }
     }
+    this.syscallEntries = [];
     this.log(`${this.syscallNames.size} system calls`);
+  }
+
+  /** What system call `id` runs, looked up once per number. */
+  syscallEntry(id) {
+    const name = this.syscallNames.get(id) ?? this.unix?.win32uNames.get(id) ?? `syscall_${id.toString(16)}`;
+    const e = {
+      name,
+      impl: SYSCALLS[name],
+      unixImpl: this.unix?.syscalls.get(name),
+      threadImpl: this.unix ? THREAD_SYSCALLS[name] : undefined,
+      win32uWait: id >= 0x1000 && this.unix ? WIN32U_WAITS[this.unix.win32uNames.get(id)] : undefined,
+      calls: 0,
+    };
+    this.syscallEntries[id] = e;
+    return e;
+  }
+
+  /** Calls per system call name, for diagnostics. */
+  get counts() {
+    return new Map(this.syscallEntries.filter(Boolean).map((e) => [e.name, e.calls]));
   }
 
   syscall(cpu) {
@@ -670,19 +694,20 @@ export class WineHost {
     const id = m.reg(cpu, EAX);
     const esp = m.reg(cpu, ESP);
     const ret = this.u32(esp);
-    const name = this.syscallNames.get(id) ?? this.unix?.win32uNames.get(id) ?? `syscall_${id.toString(16)}`;
+    const e = this.syscallEntries[id] ?? this.syscallEntry(id);
+    const { name, impl, unixImpl, threadImpl, win32uWait } = e;
+    e.calls++;
     const argBase = esp + 8; // [esp] -> stub, [esp+4] -> caller
     const a = (i) => this.u32(argBase + i * 4);
-    this.counts.set(name, (this.counts.get(name) ?? 0) + 1);
-    const unixImpl = this.unix?.syscalls.get(name);
-    const threadImpl = this.unix ? THREAD_SYSCALLS[name] : undefined;
-    const impl = SYSCALLS[name];
     const t = this.threads.current;
-    this.sys = { name, ret, esp };
+    const sys = this.sys;
+    sys.name = name;
+    sys.ret = ret;
+    sys.esp = esp;
+    sys.espAfter = undefined;
     const outer = t.inCall;
     t.inCall = name;
     let status;
-    const win32uWait = id >= 0x1000 && this.unix ? WIN32U_WAITS[this.unix.win32uNames.get(id)] : undefined;
     if (win32uWait) {
       status = win32uWait.call(this, a, cpu, argBase);
     } else if (id >= 0x1000 && this.unix) {
@@ -743,7 +768,7 @@ export class WineHost {
       this.unimplemented.set(`${name} (from Unix side)`, (this.unimplemented.get(name) ?? 0) + 1);
       return STATUS.NOT_IMPLEMENTED;
     }
-    this.sys = { name, ret: 0, esp: 0 };
+    this.sys = { name, ret: 0, esp: 0, espAfter: undefined };
     let status = impl.call(this, (i) => args[i] >>> 0, this.cpu, 0);
     // Under the Unix side the thread cannot yield: waits come back done.
     if (status && typeof status === 'object') status = status.status ?? 0;

@@ -23,6 +23,7 @@
 // thread is not preempted.
 
 import { ProcessExit, hex } from '../runtime.mjs';
+import { USER_SHARED_DATA } from './ticker.mjs';
 
 /** Thrown to end the current thread (NtTerminateThread on itself). */
 export class ThreadExit extends Error {
@@ -73,6 +74,24 @@ export class Scheduler {
     this.keyed = new Map(); // keyed events: key -> releases not yet waited for
     this.realWait = null; // blocks for real (input or time); set by the host
     this.next = 0;
+    this.tickAt = 0; // see now()
+    this.tickBase = 0;
+  }
+
+  /**
+   * The time (performance.now()'s scale) for the check at every system
+   * call: with the ticker running (./ticker.mjs), the tick count it keeps
+   * in shared memory, up to about a millisecond behind; a load where
+   * performance.now() is a call into the engine.
+   */
+  now() {
+    return this.tickAt ? this.m.u32[this.tickAt] + this.tickBase : performance.now();
+  }
+
+  /** The ticker now counts milliseconds since `boot` (epoch milliseconds). */
+  useTicker(boot) {
+    this.tickAt = USER_SHARED_DATA >>> 2; // TickCountLowDeprecated
+    this.tickBase = boot - performance.timeOrigin;
   }
 
   add(t) {
@@ -349,7 +368,7 @@ export class Scheduler {
   shouldPreempt() {
     const t = this.current;
     if (!t) return false;
-    const now = performance.now();
+    const now = this.now();
     let due = now - t.sliceStart >= SLICE_MS;
     if (!due) {
       for (const o of this.threads) {
