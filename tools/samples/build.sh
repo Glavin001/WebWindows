@@ -5,7 +5,7 @@
 # their `libs:` line names) and the DirectDraw and DirectSound demo
 # (tests/web/ddsound.c); next to their sources the Direct3D 9 programs
 # (tests/programs/gui/d3d9*.c, which load d3d9.dll themselves) and the
-# OpenGL one (gltri.c). The
+# OpenGL ones (gltri.c, glbench.c), which use opengl32. The
 # executables are committed, so the page and the site need no compiler.
 #
 #   tools/samples/build.sh
@@ -25,5 +25,7 @@ for name in d3d9tri d3d9bench; do
   i686-w64-mingw32-gcc -O2 -s -Wno-missing-braces -o "$root/tests/programs/gui/$name.exe" "$root/tests/programs/gui/$name.c"
 done
 # OpenGL through opengl32 (native/opengl32, over Direct3D 9).
-i686-w64-mingw32-gcc -O2 -s -o "$root/tests/programs/gui/gltri.exe" "$root/tests/programs/gui/gltri.c" -lopengl32 -lgdi32
-ls -la "$out" "$root"/tests/programs/gui/d3d9*.exe "$root"/tests/programs/gui/gltri.exe
+for name in gltri glbench; do
+  i686-w64-mingw32-gcc -O2 -s -o "$root/tests/programs/gui/$name.exe" "$root/tests/programs/gui/$name.c" -lopengl32 -lgdi32
+done
+ls -la "$out" "$root"/tests/programs/gui/d3d9*.exe "$root"/tests/programs/gui/gl*.exe

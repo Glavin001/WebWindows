@@ -200,6 +200,31 @@ try {
     const summary = (await out()).match(/summary: .*/)?.[0];
     check('d3d9bench: ran and exited', !!summary && (await page.evaluate(() => window.lastExit?.code)) === 0, summary);
 
+    // OpenGL through opengl32 (native/opengl32, over Direct3D 9): gltri's
+    // frame. Window at (40,30) as d3d9tri's, client area from (44,53): a
+    // yellow square at (10,10)-(60,60), a green square in front of a red
+    // one at (230,20)-(310,100) (depth test), a 2x2 red and white texture
+    // at (230,140)-(310,220) with half-transparent white over its right
+    // half, over a dark blue clear.
+    await open(page, 'gltri.exe', '/tests/programs/gui/gltri.exe', '&d3dpresent=gdi');
+    const glDrawn = await until(async () => (await count(page, quad, near([255, 255, 0]))) > 1500, 180000);
+    check('opengl: 2D overlay (yellow)', glDrawn, `${await count(page, quad, near([255, 255, 0]))} yellow pixels`);
+    check('opengl: clear colour', (await count(page, [114, 58, 264, 78], near([0, 0, 128]))) > 1500);
+    check('opengl: depth test', (await count(page, [284, 83, 344, 143], near([0, 255, 0]))) > 2000);
+    check('opengl: texture and blending', (await count(page, [279, 198, 309, 228], near([255, 0, 0]))) > 500 &&
+      (await count(page, [319, 238, 349, 268], near([255, 128, 128]))) > 500);
+    check('opengl: every call succeeded', /SwapBuffers: 1/.test(await out()) && /glGetError: (0x)?0\b/.test(await out()), (await out()).split('\n').slice(-3).join(' | '));
+    await save(page, 'browser-gltri.png');
+
+    // glbench: cubes, one draw each, and a batch of particles, for 3 seconds.
+    await open(page, 'glbench.exe', '/tests/programs/gui/glbench.exe', '&args=60+500+3&d3dpresent=gdi');
+    await until(async () => / fps: /.test(await out()), 180000);
+    const glLit = await count(page, [14, 33, 654, 513], ([r, g, b]) => r + g + b > 300);
+    check('glbench: frames drawn', glLit > 5000, `${glLit} lit pixels`);
+    await until(() => page.evaluate(() => !!window.lastExit), 60000);
+    const glSummary = (await out()).match(/summary: .*/)?.[0];
+    check('glbench: ran and exited', !!glSummary && (await page.evaluate(() => window.lastExit?.code)) === 0, glSummary);
+
     // Presenting on the GPU (no readback), to an offscreen buffer the page
     // can read (headless Chromium cannot show the canvas it uses
     // otherwise); and the window moves when its caption is dragged, though
