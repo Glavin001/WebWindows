@@ -83,6 +83,10 @@ export class Machine {
     this.kernelBytes = opts.kernel;
     this.guestLimit = opts.guestLimit ?? 0x4000_0000;
     this.nativeSize = opts.nativeSize ?? 64 << 20;
+    /** See setCodeWritable(). */
+    this.codeWritable = 1;
+    /** Called with a page number when the page first gets translated code. */
+    this.onCodePage = null;
     this.extraSize = opts.extraSize ?? 0;
     this.thunkSize = 0x10000;
     this.thunkBase = this.guestLimit - this.thunkSize;
@@ -107,8 +111,9 @@ export class Machine {
     this.table = new WebAssembly.Table({ element: 'anyfunc', initial: 1 });
     this.refreshViews();
 
-    // Native region layout.
-    let p = this.guestLimit;
+    // Native region layout, after an empty guard (see
+    // wwt::abi::native_layout::GUARD).
+    let p = this.guestLimit + (this.abi.native_layout?.LOOKUP_L1 ?? 0);
     const take = (n, align = 16) => {
       p = Math.ceil(p / align) * align;
       const at = p;
@@ -177,7 +182,21 @@ export class Machine {
     // x87 control word: 64-bit precision, round to nearest, all masked.
     this.dv.setUint16(cpu + this.abi.cpu.FPU_CW, 0x037f, true);
     this.dv.setUint32(cpu + this.abi.cpu.MXCSR, 0x1f80, true);
+    this.u32[(cpu + this.abi.cpu.CODE_WRITABLE) >>> 2] = this.codeWritable;
     return cpu;
+  }
+
+  /**
+   * Whether translated code may be written (wwt::abi::cpu::CODE_WRITABLE):
+   * while it is, stores in translated code look up the store map, which
+   * notices writes to code. A host that knows no page with translated code
+   * is writable clears it; the default is on.
+   */
+  setCodeWritable(on) {
+    const v = on ? 1 : 0;
+    if (v === this.codeWritable) return;
+    this.codeWritable = v;
+    for (let i = 0; i < this.cpuSlots; i++) this.u32[(this.cpuArea + i * this.abi.cpu.SIZE + this.abi.cpu.CODE_WRITABLE) >>> 2] = v;
   }
 
   /** Returns a thread's CPU state slot for reuse. */
@@ -285,6 +304,7 @@ export class Machine {
       this.u8.fill(0, l2, l2 + L2_BYTES);
       this.u32[(this.l1 >>> 2) + page] = l2;
       this.u8[this.storeMap + page] |= STORE_CODE;
+      this.onCodePage?.(page);
     }
     this.u32[(l2 >>> 2) + (addr & 0xfff)] = index;
   }

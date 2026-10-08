@@ -1361,8 +1361,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
     // interpreter's `base + (insn >> 3 & 0xff0)`), so a check of one such
     // address covers the others within the window. The cost is precision:
     // a load there reads memory instead of faulting, which only a pointer
-    // within 32 KB of those boundaries can notice. Stores are never skipped
-    // (the store map has to see every page they touch).
+    // within 32 KB of those boundaries can notice. Stores share checks the
+    // same way: the 64 KB above the guest limit hold nothing
+    // (`native_layout::GUARD`). While code may be written they go through
+    // the store map regardless (it has to see every page they touch).
 
     /// `v + off` as `root + off' + x` for some x in [0, r], following this
     /// block's aliases.
@@ -1493,14 +1495,39 @@ impl<'g, 'a> FnGen<'g, 'a> {
     /// get the precise address check and the code-write notification.
     /// The host hears about a code write before the store happens, which is
     /// equivalent: it only drops translations, which are redone on demand.
-    fn check_store(&mut self, addr: u32, off: u32, dirty: StateMask, eip: u32) {
+    ///
+    /// The store map is consulted only while the runtime says code may be
+    /// written (`cpu::CODE_WRITABLE`); otherwise a store needs just the
+    /// guest-limit check, skipped when a nearby check `covered` it.
+    fn check_store(&mut self, addr: u32, off: u32, covered: bool, dirty: StateMask, eip: u32) {
         let (mem, smc) = (self.m.cfg.mem_checks, self.m.cfg.smc_checks);
+        let plain = mem && !covered;
         if !smc {
-            if mem {
+            if plain {
                 self.check_addr(addr, off, true, dirty, eip);
             }
             return;
         }
+        self.code_writable();
+        self.emit(W::If(BlockType::Empty));
+        self.check_store_map(addr, off, dirty, eip);
+        if plain {
+            self.emit(W::Else);
+            self.check_addr(addr, off, true, dirty, eip);
+        }
+        self.emit(W::End);
+    }
+
+    /// Pushes `cpu.CODE_WRITABLE`.
+    fn code_writable(&mut self) {
+        self.emit(W::LocalGet(0));
+        self.emit(W::I32Load(memarg(cpu::CODE_WRITABLE, 2)));
+    }
+
+    /// The store-map path of a store: one lookup; pages that need more get
+    /// the precise address check and the code-write notification.
+    fn check_store_map(&mut self, addr: u32, off: u32, dirty: StateMask, eip: u32) {
+        let mem = self.m.cfg.mem_checks;
         let a = self.tmp_i32b;
         self.emit(W::LocalGet(addr));
         if off != 0 {
@@ -1587,7 +1614,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
             Op::Store { addr, val, mem } => {
                 let la = self.local_of[*addr as usize];
                 if mem.space == Space::Guest {
-                    self.check_store(la, mem.offset, dirty, inst.eip);
+                    let covered = self.check_covered(*addr, mem.offset);
+                    self.check_store(la, mem.offset, covered, dirty, inst.eip);
                     if self.m.cfg.mem_checks {
                         self.checked(*addr, mem.offset);
                     }
@@ -1665,7 +1693,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     } else {
                         self.emit(W::Drop);
                     }
+                    self.code_writable();
+                    self.emit(W::If(BlockType::Empty));
                     self.check_code_write(la, mem.offset);
+                    self.emit(W::End);
                     return;
                 }
             }
@@ -1910,7 +1941,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     /// Notifies the host for each code page in [addr, addr+len).
     fn check_code_write_range(&mut self, addr: V, len: V) {
-        // for (p = addr & ~0xfff; p < addr + len; p += 0x1000) check(p)
+        // if (code_writable) for (p = addr & ~0xfff; p < addr + len; p += 0x1000) check(p)
+        self.code_writable();
+        self.emit(W::If(BlockType::Empty));
         let p = self.tmp_i32;
         let end = self.label_local;
         let _ = end;
@@ -1932,6 +1965,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(W::I32Add);
         self.emit(W::LocalSet(p));
         self.emit(W::Br(0));
+        self.emit(W::End);
         self.emit(W::End);
         self.emit(W::End);
     }

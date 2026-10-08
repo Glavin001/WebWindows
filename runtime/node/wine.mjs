@@ -333,6 +333,9 @@ const host = new WineHost(machine, {
   ...(process.env.WWT_LOCALE && { locale: Number(process.env.WWT_LOCALE) }),
   nativeHeap,
   aliasThunks: process.env.WWT_THUNK_ALIAS !== '0',
+  // WWT_STORE_MAP=always: stores look up the store map even when no code
+  // is writable (runtime/wine/codewrite.mjs).
+  storeMapAlways: process.env.WWT_STORE_MAP === 'always',
   audioSink: audioOut ? audioCapture : null,
   nativeStrings,
 });

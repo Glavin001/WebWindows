@@ -1,5 +1,6 @@
-//! Which guest-memory checks code generation emits: loads near an address
-//! that already passed a check skip theirs, and nothing else does.
+//! Which guest-memory checks code generation emits: accesses near an
+//! address that already passed a check skip theirs (stores only outside
+//! their store-map path), and nothing else does.
 
 use wwt::translate::{build_module, translate_snippet};
 
@@ -70,11 +71,13 @@ fn negative_displacements_share_a_check() {
 }
 
 #[test]
-fn store_check_covers_later_loads_but_stores_keep_theirs() {
+fn store_check_covers_later_loads_and_stores() {
     // mov [ecx], eax; mov eax, [ecx+4]; mov [ecx+8], eax; ret
-    // Each store has the precise check on its slow path; the load has none.
+    // Each store keeps the precise check on its store-map path (taken only
+    // while code is writable); otherwise the first store's check covers the
+    // load and the second store: 2 + 1.
     assert_eq!(
         guest_checks(&[0x89, 0x01, 0x8b, 0x41, 0x04, 0x89, 0x41, 0x08, 0xc3]),
-        2
+        3
     );
 }

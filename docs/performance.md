@@ -197,6 +197,20 @@ What running real programs found that CoreMark could not:
   into registers across blocks, and a 32 KB window (a load near a checked
   address can only land in the 64 KB null region or the 4 MB lookup table
   above the guest limit): Lua's module has 14% fewer checks, Lua +4%.
+- **Stores looked up the store map every time.** Every store read a byte
+  per page to notice writes to translated code, and could not share a
+  check with nearby accesses (a store just above the guest limit would hit
+  the runtime's lookup tables). But a Windows program can only write its
+  code once the page is writable: a write to a read-only page faults. The
+  runtime now tracks which pages with translated code are writable
+  (`runtime/wine/codewrite.mjs`: image sections get their real
+  protections, `VirtualProtect` and executable allocations are seen) and
+  tells translated code through a flag in each thread's state
+  (`cpu::CODE_WRITABLE`). While no such page exists, which is the usual
+  case, stores skip the store map and share guest-limit checks like loads
+  do, with 64 KB of nothing above the guest limit
+  (`native_layout::GUARD`). Lua +8% (strings +16%), apibench +4%.
+  `WWT_STORE_MAP=always` keeps the lookup on.
 - **Wine's heap** (`RtlAllocateHeap` and friends) was 15–17% of Lua's time:
   handle checks, the LFH front end, critical sections and free lists, all
   as translated x86 with a register write-back at every internal call. It
