@@ -79,6 +79,7 @@ function functionSizes(bytes) {
   const sizes = [];
   const names = new Map();
   const sections = {};
+  const custom = {};
   while (p.i < b.length) {
     const id = b[p.i++];
     const len = leb(b, p);
@@ -117,6 +118,7 @@ function functionSizes(bytes) {
     } else if (id === 0) {
       const name = str(b, q);
       sections[`custom:${name}`] = len;
+      custom[name] = b.subarray(q.i, end);
       if (name === 'name') {
         while (q.i < end) {
           const sub = b[q.i++];
@@ -135,10 +137,23 @@ function functionSizes(bytes) {
     if (id !== 0) sections[['custom', 'type', 'import', 'function', 'table', 'memory', 'global', 'export', 'start', 'element', 'code', 'data', 'datacount', 'tag'][id] ?? `section ${id}`] = len;
     p.i = end;
   }
+  // Translated modules: what code generation left in each function
+  // (wwt.residue, in the order of wwt.funcs), keyed by x86 address.
+  const residue = new Map();
+  if (custom['wwt.funcs'] && custom['wwt.residue']) {
+    const fv = new DataView(custom['wwt.funcs'].buffer, custom['wwt.funcs'].byteOffset);
+    const rs = JSON.parse(new TextDecoder().decode(custom['wwt.residue']));
+    for (let i = 0; i < rs.length; i++) residue.set(fv.getUint32(4 + i * 4, true), rs[i]);
+  }
   return {
     total: b.length,
     sections,
-    funcs: sizes.map((size, i) => ({ name: names.get(imported + i) ?? `func${imported + i}`, size })),
+    funcs: sizes.map((size, i) => {
+      const name = names.get(imported + i) ?? `func${imported + i}`;
+      const addr = name.match(/(?:@|^x86_)([0-9a-f]+)$/)?.[1];
+      const r = addr ? residue.get(parseInt(addr, 16)) : undefined;
+      return r ? { name, size, residue: r } : { name, size };
+    }),
   };
 }
 
@@ -209,7 +224,7 @@ rmSync(scratch, { recursive: true, force: true });
 
 function side(mod, prof) {
   const own = new Set(mod.funcs.map((f) => f.name));
-  const funcs = mod.funcs.map((f) => ({ name: f.name, key: key(f.name), size: f.size, time: prof?.self.get(f.name) ?? 0 }));
+  const funcs = mod.funcs.map((f) => ({ name: f.name, key: key(f.name), size: f.size, time: prof?.self.get(f.name) ?? 0, ...(f.residue && { residue: f.residue }) }));
   // Time in functions of other modules (Wine's DLLs, the runtime).
   const other = [];
   if (prof) {
@@ -229,10 +244,14 @@ const data = {
 const byKey = (fs) => {
   const m = new Map();
   for (const f of fs) {
-    const e = m.get(f.key) ?? { size: 0, time: 0, names: [] };
+    const e = m.get(f.key) ?? { size: 0, time: 0, names: [], residue: null };
     e.size += f.size ?? 0;
     e.time += f.time;
     e.names.push(f.name);
+    if (f.residue) {
+      e.residue ??= {};
+      for (const [k, v] of Object.entries(f.residue)) e.residue[k] = (e.residue[k] ?? 0) + v;
+    }
     m.set(f.key, e);
   }
   return m;
@@ -241,7 +260,7 @@ const a = byKey(data.emcc.funcs);
 const b = byKey([...data.wwt.funcs, ...data.wwt.other.filter((f) => !f.name.startsWith('('))]);
 data.matched = [...a.keys()]
   .filter((k) => b.has(k))
-  .map((k) => ({ key: k, emccSize: a.get(k).size, wwtSize: b.get(k).size, emccTime: a.get(k).time, wwtTime: b.get(k).time }));
+  .map((k) => ({ key: k, emccSize: a.get(k).size, wwtSize: b.get(k).size, emccTime: a.get(k).time, wwtTime: b.get(k).time, residue: b.get(k).residue }));
 
 mkdirSync(out, { recursive: true });
 const jsonPath = join(out, `${workload}.json`);

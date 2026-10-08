@@ -218,6 +218,9 @@ pub mod imports {
 pub const FUNCS_SECTION: &str = "wwt.funcs";
 /// Custom section with JSON metadata about the translation.
 pub const META_SECTION: &str = "wwt.meta";
+/// Custom section with, per translated function in table order, the
+/// emulation code generation left in it (`codegen::Residue`), as JSON.
+pub const RESIDUE_SECTION: &str = "wwt.residue";
 /// Bumped whenever generated code changes incompatibly, to invalidate caches.
 pub const ABI_VERSION: u32 = 6;
 /// Every translated module exports its lazy-flags evaluator under this

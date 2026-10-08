@@ -94,7 +94,7 @@ footer { color: var(--muted); font-size: 13px; max-width: 80ch; }
   </section>
   <section>
     <h2>Function by function</h2>
-    <p>Functions matched by name (MinGW's leading underscore, the translator's <span style="font-family:var(--mono)">@address</span> and GCC's <span style="font-family:var(--mono)">.isra</span>/<span style="font-family:var(--mono)">.part</span> suffixes dropped). Each compiler inlines differently, so a function missing on one side was usually inlined there. Click a heading to sort.</p>
+    <p>Functions matched by name (MinGW's leading underscore, the translator's <span style="font-family:var(--mono)">@address</span> and GCC's <span style="font-family:var(--mono)">.isra</span>/<span style="font-family:var(--mono)">.part</span> suffixes dropped). Each compiler inlines differently, so a function missing on one side was usually inlined there. The last three columns are the emulation the translator left in each function, counted statically: x86 registers loaded from and written back to the CPU state (around calls and exits), memory checks, and calls through the address lookup. Click a heading to sort.</p>
     <div class="panel scroll"><table id="table"></table></div>
   </section>
   <section>
@@ -204,8 +204,18 @@ function render() {
     ['emccTime', 'Emscripten time'],
     ['wwtTime', 'Translated time'],
     ['timeRatio', 'Time ×'],
+    ['stateOps', 'State ld+st'],
+    ['checks', 'Checks'],
+    ['lookups', 'Lookups'],
   ];
-  const rows = d.matched.map((m) => ({ ...m, sizeRatio: m.wwtSize / (m.emccSize || 1), timeRatio: m.emccTime > 0 ? m.wwtTime / m.emccTime : m.wwtTime > 0 ? Infinity : 0 }));
+  const rows = d.matched.map((m) => ({
+    ...m,
+    sizeRatio: m.wwtSize / (m.emccSize || 1),
+    timeRatio: m.emccTime > 0 ? m.wwtTime / m.emccTime : m.wwtTime > 0 ? Infinity : 0,
+    stateOps: m.residue ? m.residue.state_loads + m.residue.state_stores : -1,
+    checks: m.residue ? m.residue.checks + m.residue.store_maps : -1,
+    lookups: m.residue ? m.residue.lookups : -1,
+  }));
   rows.sort((a, b) => (a[sortKey] < b[sortKey] ? -1 : a[sortKey] > b[sortKey] ? 1 : 0) * sortDir || (typeof a[sortKey] === 'string' ? 0 : 0));
   const shown = showAll ? rows : rows.slice(0, 40);
   const badge = (r) => {
@@ -215,14 +225,14 @@ function render() {
   };
   let h = '<thead><tr>' + cols.map(([k, n]) => `<th data-k="${k}"${k === sortKey ? ` aria-sort="${sortDir > 0 ? 'ascending' : 'descending'}"` : ''}>${n}${k === sortKey ? (sortDir > 0 ? ' ▲' : ' ▼') : ''}</th>`).join('') + '</tr></thead><tbody>';
   for (const r of shown) {
-    h += `<tr><td>${r.key}</td><td>${kb(r.emccSize)}</td><td>${kb(r.wwtSize)}</td><td>${badge(r.sizeRatio)}</td><td>${r.emccTime ? ms(r.emccTime) : '–'}</td><td>${r.wwtTime ? ms(r.wwtTime) : '–'}</td><td>${r.emccTime || r.wwtTime ? badge(r.timeRatio) : '–'}</td></tr>`;
+    h += `<tr><td>${r.key}</td><td>${kb(r.emccSize)}</td><td>${kb(r.wwtSize)}</td><td>${badge(r.sizeRatio)}</td><td>${r.emccTime ? ms(r.emccTime) : '–'}</td><td>${r.wwtTime ? ms(r.wwtTime) : '–'}</td><td>${r.emccTime || r.wwtTime ? badge(r.timeRatio) : '–'}</td>${['stateOps', 'checks', 'lookups'].map((k) => `<td title="${k === 'stateOps' && r.residue ? `${r.residue.state_loads} loads, ${r.residue.state_stores} stores (${r.residue.flag_stores} flags)` : k === 'checks' && r.residue ? `${r.residue.checks} guest-limit checks, ${r.residue.store_maps} store-map lookups` : ''}">${r[k] < 0 ? '–' : r[k]}</td>`).join('')}</tr>`;
   }
   h += '</tbody>';
   const table = document.getElementById('table');
   table.innerHTML = h;
   if (rows.length > 40) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td colspan="7"><button class="more">${showAll ? 'Show the top 40' : `Show all ${rows.length}`}</button></td>`;
+    tr.innerHTML = `<td colspan="10"><button class="more">${showAll ? 'Show the top 40' : `Show all ${rows.length}`}</button></td>`;
     tr.querySelector('button').addEventListener('click', () => { showAll = !showAll; render(); });
     table.tBodies[0].appendChild(tr);
   }

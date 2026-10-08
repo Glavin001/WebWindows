@@ -351,8 +351,11 @@ impl<'a> ModuleGen<'a> {
         for h in self.helpers.clone() {
             code.function(&gen_helper(h, eflags));
         }
+        let mut residue = Vec::with_capacity(funcs.len());
         for f in funcs {
-            code.function(&self.gen_function(f));
+            let (body, r) = self.gen_function_counted(f);
+            code.function(&body);
+            residue.push(r);
         }
         module.section(&code);
 
@@ -387,10 +390,20 @@ impl<'a> ModuleGen<'a> {
             name: Cow::Borrowed(abi::META_SECTION),
             data: Cow::Borrowed(meta_json.as_bytes()),
         });
+        // Per function, in table order (see `Residue`).
+        module.section(&CustomSection {
+            name: Cow::Borrowed(abi::RESIDUE_SECTION),
+            data: Cow::Owned(serde_json::to_vec(&residue).unwrap()),
+        });
         module.finish()
     }
 
     pub fn gen_function(&self, f: &Function) -> wasm_encoder::Function {
+        self.gen_function_counted(f).0
+    }
+
+    /// The function and the emulation left in it.
+    pub fn gen_function_counted(&self, f: &Function) -> (wasm_encoder::Function, Residue) {
         let fixed;
         let f = if reducible::is_reducible(f) && !self.cfg.osr {
             f
@@ -409,7 +422,8 @@ impl<'a> ModuleGen<'a> {
         let a = opt::analyze(f);
         let mut g = FnGen::new(self, f, &a);
         g.run();
-        g.finish()
+        let r = g.residue;
+        (g.finish(), r)
     }
 }
 
@@ -424,8 +438,33 @@ enum Ctx {
     Dispatch,
 }
 
+/// Emulation left in a translated function, counted as emitted (outside
+/// the shared fault blocks, which run only on a fault): what an optimizer
+/// would remove, listed per function in the `wwt.residue` section.
+#[derive(Default, Clone, Copy, Debug, serde::Serialize)]
+pub struct Residue {
+    /// x86 registers written back to the CPU state (at calls, exits, ...).
+    pub state_stores: u32,
+    /// ... of which lazy-flag state.
+    pub flag_stores: u32,
+    /// x86 registers loaded from the CPU state (at entry, after calls).
+    pub state_loads: u32,
+    /// Guest-limit checks on memory accesses.
+    pub checks: u32,
+    /// Store-map lookups (taken while code is writable).
+    pub store_maps: u32,
+    /// Calls and jumps through the address lookup (indirect, or to code
+    /// outside the module).
+    pub lookups: u32,
+    /// Direct calls between translated functions.
+    pub calls: u32,
+}
+
 struct FnGen<'g, 'a> {
     m: &'g ModuleGen<'a>,
+    residue: Residue,
+    /// Emitting a fault block: not counted in `residue`.
+    in_fault: bool,
     f: &'g Function,
     a: &'g Analysis,
     out: Vec<W<'static>>,
@@ -490,6 +529,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let n = f.blocks.len();
         let mut g = FnGen {
             m,
+            residue: Residue::default(),
+            in_fault: false,
             f,
             a,
             out: vec![],
@@ -664,6 +705,12 @@ impl<'g, 'a> FnGen<'g, 'a> {
             if self.local_of[v as usize] == UNASSIGNED {
                 continue;
             }
+            if !self.in_fault {
+                self.residue.state_stores += 1;
+                if FLAG_STATE.contains(&v) {
+                    self.residue.flag_stores += 1;
+                }
+            }
             let (off, ty) = state_home(v).unwrap();
             self.emit(W::LocalGet(0));
             self.get(v);
@@ -683,6 +730,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             if self.local_of[v as usize] == UNASSIGNED {
                 continue;
+            }
+            if !self.in_fault {
+                self.residue.state_loads += 1;
             }
             let (off, ty) = state_home(v).unwrap();
             self.emit(W::LocalGet(0));
@@ -724,6 +774,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
     /// and calls the host, which returns where to continue (a Windows
     /// exception dispatcher, with the guest stack set up for it).
     fn fault_block(&mut self, mask: StateMask, code: u32) {
+        self.in_fault = true;
         self.sync(mask);
         self.emit(W::LocalGet(0));
         self.emit(W::LocalGet(self.fault_eip));
@@ -780,6 +831,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     /// Calls (or tail-calls) the x86 address in local `t` through the table.
     fn call_lookup(&mut self, t: u32, tail: bool) {
+        self.residue.lookups += 1;
         self.emit(W::LocalGet(0));
         self.emit(W::LocalGet(t));
         self.emit(W::I32Store(memarg(cpu::EIP, 2)));
@@ -1127,6 +1179,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 match target {
                     CallTarget::Direct(addr) => match self.m.direct_target(addr) {
                         Some(fi) => {
+                            self.residue.calls += 1;
                             self.emit(W::LocalGet(0));
                             self.emit(W::Call(fi));
                         }
@@ -1425,6 +1478,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     /// Emits an address check for `size` bytes at local `addr` + `off`.
     fn check_addr(&mut self, addr: u32, off: u32, write: bool, dirty: StateMask, eip: u32) {
+        self.residue.checks += 1;
         self.emit(W::LocalGet(addr));
         if off != 0 {
             self.emit(W::I32Const(off as i32));
@@ -1527,6 +1581,12 @@ impl<'g, 'a> FnGen<'g, 'a> {
     /// The store-map path of a store: one lookup; pages that need more get
     /// the precise address check and the code-write notification.
     fn check_store_map(&mut self, addr: u32, off: u32, dirty: StateMask, eip: u32) {
+        self.residue.store_maps += 1;
+        // Its precise check runs only on the slow path: not a check.
+        self.residue.checks = self
+            .residue
+            .checks
+            .wrapping_sub(self.m.cfg.mem_checks as u32);
         let mem = self.m.cfg.mem_checks;
         let a = self.tmp_i32b;
         self.emit(W::LocalGet(addr));
