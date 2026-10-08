@@ -1,0 +1,5 @@
+CreateDirectory: 1
+CreateFile: 1
+opened in another case: 1
+listed: SomeFile.TXT
+directory listed: MixedCase

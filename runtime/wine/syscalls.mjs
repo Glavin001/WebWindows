@@ -857,7 +857,9 @@ export const SYSCALLS = {
         const i = rest.indexOf('\\');
         names.set(i < 0 ? rest : rest.slice(0, i), i >= 0);
       }
-      dir.listing = [...names].filter(([n]) => re.test(n)).map(([name, isDir]) => ({ name, isDir }));
+      dir.listing = [...names]
+        .filter(([n]) => re.test(n))
+        .map(([name, isDir]) => ({ name: this.caseNames.get(prefix + name) ?? name, isDir }));
       dir.listPos = 0;
       if (!dir.listing.length) {
         iosb(this, piosb, STATUS.NO_SUCH_FILE, 0);
@@ -1048,6 +1050,9 @@ function openFile(h, ph, oa, piosb, disposition, options = 0) {
     } else {
       h.files.set(path, new Uint8Array(0));
     }
+    // The name as the program wrote it, for directory listings.
+    const given = raw.replace(/^\\\?\?\\/, '');
+    if (given.toLowerCase() === path) h.rememberCase(given);
     fi = fileInfo(h, path);
   } else if (disposition === 2) {
     return STATUS.OBJECT_NAME_COLLISION;

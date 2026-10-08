@@ -11,7 +11,7 @@ import { Machine, ProcessExit, GuestFault, hasMemory64 } from '../runtime.mjs';
 import { Process } from '../win32.mjs';
 import { peArch } from '../pe.mjs';
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
-import { WineHost, parsePe, peImports, rebaseImage } from '../wine/host.mjs';
+import { WineHost, parsePe, peImports, rebaseImage, recordCase } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
 import { InputRing } from '../wine/input-ring.mjs';
@@ -167,8 +167,10 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
   files.set('c:\\windows\\globalization\\sorting\\sortdefault.nls', files.get(`${sys32}\\sortdefault.nls`));
   log(`loaded Wine ${manifest.wine} (${compiled.size} DLLs) in ${(performance.now() - t0).toFixed(0)} ms`);
   // The chosen folder is C:\app; a program given by URL runs from C:\.
+  const caseNames = new Map();
   for (const [rel, bytes] of Object.entries(folder)) {
     files.set(`c:\\app\\${rel.replaceAll('/', '\\').toLowerCase()}`, new Uint8Array(bytes));
+    recordCase(caseNames, `c:\\app\\${rel.replaceAll('/', '\\')}`);
   }
   const exeWin = exePath ? `C:\\app\\${exePath.replaceAll('/', '\\')}` : `C:\\${exeName}`;
   const exeDos = exeWin.toLowerCase();
@@ -248,6 +250,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
     d3d,
     debug,
     files,
+    caseNames,
     argv: [exeWin, ...argv],
     exePath: exeWin,
     stdout: (b) => postMessage({ type: 'stdout', bytes: b }),

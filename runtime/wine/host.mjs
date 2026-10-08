@@ -209,6 +209,8 @@ export class WineHost {
     this.L = this.x64 ? layout64 : layout;
     this.translate = opts.translate;
     this.files = opts.files;
+    /** lower-case DOS path -> its last name as created (see rememberCase) */
+    this.caseNames = opts.caseNames ?? new Map();
     this.dirs = indexDirectories(this.files);
     // The side-by-side store wineboot would have filled.
     installAssemblies(this.files);
@@ -297,6 +299,16 @@ export class WineHost {
   w64(a, v) {
     this.m.dv.setBigUint64(a, BigInt.asUintN(64, BigInt(v)), true);
   }
+  /**
+   * Remembers the case of each name in a DOS path (paths are kept lower
+   * case, for Windows' case-insensitive lookups): directory listings give
+   * names as they were created, as Windows does (Far Cry finds its shaders
+   * by the names it lists).
+   */
+  rememberCase(path) {
+    recordCase(this.caseNames, path);
+  }
+
   /** Whether a program's pointer to `size` bytes is committed memory above the null page. */
   writable(a, size) {
     if (a < 0x10000 || a + size > this.m.guestLimit) return false;
@@ -1308,4 +1320,10 @@ function indexDirectories(files) {
     return set(k, v);
   };
   return dirs;
+}
+
+/** Records the case of each name in a DOS path in `map` (lower-case path -> name). */
+export function recordCase(map, path) {
+  const parts = path.split('\\');
+  for (let i = 1; i < parts.length; i++) map.set(parts.slice(0, i + 1).join('\\').toLowerCase(), parts[i]);
 }

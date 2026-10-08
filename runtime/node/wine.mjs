@@ -51,7 +51,7 @@ import { fileURLToPath } from 'node:url';
 
 import { Machine, GuestFault, hex, hasMemory64 } from '../runtime.mjs';
 import { peArch } from '../pe.mjs';
-import { WineHost } from '../wine/host.mjs';
+import { WineHost, recordCase } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
 import { D3DRecorder } from '../wine/d3d.mjs';
@@ -252,6 +252,7 @@ files.set('c:\\windows\\globalization\\sorting\\sortdefault.nls', files.get(`${s
 // The program: at C:\, or with --dir in C:\app, next to the folder's files
 // (--folder: the program's own directory, left as it is).
 const appFiles = new Map(); // DOS path -> [host path, original bytes]
+const caseNames = new Map(); // lower-case DOS path -> name as on disk
 let exeWin = `C:\\${basename(exe)}`;
 const syncDir = appDir;
 if (folder && !appDir) appDir = dirname(resolve(exe));
@@ -265,6 +266,7 @@ if (appDir) {
         // A copy: the program's writes change the file's bytes in place.
         appFiles.set(`c:\\app\\${r.toLowerCase()}`, [join(dir, e.name), Buffer.from(bytes)]);
         files.set(`c:\\app\\${r.toLowerCase()}`, bytes);
+        recordCase(caseNames, `c:\\app\\${r}`);
       }
     }
   };
@@ -406,6 +408,7 @@ const host = new WineHost(machine, {
   translate,
   d3d,
   files,
+  caseNames,
   argv: [exeWin, ...args],
   exePath: exeWin,
   stdout: (b) => stdout(b),
