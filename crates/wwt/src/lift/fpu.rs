@@ -53,7 +53,7 @@ impl<'a> Lifter<'a> {
             self.bini(BinOp::I32And, a, 7)
         };
         let off = self.bini(BinOp::I32Shl, t, 3);
-        self.bin(BinOp::I32Add, CPU, off)
+        self.aop(BinOp::I32Add, CPU, off)
     }
 
     pub(super) fn st(&mut self, i: u32) -> V {
@@ -140,7 +140,7 @@ impl<'a> Lifter<'a> {
                         mem: m(self, 8),
                     },
                 );
-                let a8 = self.bini(BinOp::I32Add, a, 8);
+                let a8 = self.addr_add(a, 8);
                 let hi = self.emit(
                     Ty::I32,
                     Op::Load {
@@ -236,7 +236,7 @@ impl<'a> Lifter<'a> {
                     val: lo,
                     mem: mm,
                 });
-                let a8 = self.bini(BinOp::I32Add, a, 8);
+                let a8 = self.addr_add(a, 8);
                 let mm = mem(self, 2);
                 self.effect(Op::Store {
                     addr: a8,
@@ -760,7 +760,7 @@ impl<'a> Lifter<'a> {
         use Mnemonic as M;
         let (a, sp) = self.ea(i);
         let store = matches!(i.mnemonic(), M::Fnstenv | M::Fnsave);
-        let at = |l: &mut Self, off: u32| l.bini(BinOp::I32Add, a, off);
+        let at = |l: &mut Self, off: u32| l.addr_add(a, off);
         if store {
             let cw = self.bini(BinOp::I32Or, FPU_CW, 0xffff_0000);
             self.store(a, cw, 4, sp);

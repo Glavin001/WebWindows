@@ -9,6 +9,13 @@
 // saved in target/gui.
 //
 //   node runtime/node/wine-bundle.mjs && node tests/web/gui.mjs [--root DIR]
+//   node runtime/node/wine-bundle.mjs --arch x64 && node tests/web/gui.mjs --arch x64
+//
+// --arch x64 runs the 64-bit builds of the programs, from the x86_64 bundle.
+// --no-memory64 as well makes the browser look like one without 64-bit
+// WebAssembly memory (WebKit: modules declaring one do not validate), so the
+// page runs them from the 32-bit-memory bundle
+// (wine-bundle.mjs --arch x64 --mem32).
 //
 // --root serves another directory with the repository's layout, such as the
 // static site tools/site/build.sh assembles; --url tests a deployed site
@@ -34,6 +41,10 @@ const rootArg = process.argv.indexOf('--root');
 const root = rootArg > 0 ? resolve(process.argv[rootArg + 1]) : repo;
 const outDir = join(repo, 'target/gui');
 mkdirSync(outDir, { recursive: true });
+const x64 = process.argv.includes('--arch') && process.argv[process.argv.indexOf('--arch') + 1] === 'x64';
+const noMemory64 = process.argv.includes('--no-memory64');
+const bundleDir = x64 ? (noMemory64 ? 'wine-bundle64-m32' : 'wine-bundle64') : 'wine-bundle';
+const tag = `${x64 ? '64' : ''}${noMemory64 ? '-m32' : ''}`;
 const urlArg = process.argv.indexOf('--url');
 const site = urlArg > 0 ? new URL(process.argv[urlArg + 1]) : null;
 const port = 19000 + Math.floor(Math.random() * 1000);
@@ -74,14 +85,15 @@ async function click(page, x, y) {
   await page.mouse.click(box.x + (x * box.width) / 800, box.y + (y * box.height) / 600);
 }
 
-async function open(page, program, path = `/target/wine-bundle/programs/${program}`, query = '') {
+async function open(page, program, path = `/target/${bundleDir}/programs/${program}`, query = '') {
   await page.goto(`${base}/runtime/web/?exe=${path}&wine=1${query}`);
   await page.waitForFunction(() => window.screenShown || window.lastExit, null, { timeout: 240000 });
   const exit = await page.evaluate(() => window.lastExit);
   if (exit) throw new Error(`${program} exited: ${await page.textContent('#out')}`);
 }
 
-const save = async (page, name) => {
+const save = async (page, file) => {
+  const name = file.replace('.png', `${tag}.png`);
   writeFileSync(join(outDir, name), await page.locator('#screen').screenshot());
   await page.screenshot({ path: join(outDir, `page-${name}`), fullPage: true });
 };
@@ -94,6 +106,16 @@ try {
   const page = await browser.newPage({ viewport: { width: 1000, height: 1100 }, ignoreHTTPSErrors: !!proxy });
   if (site?.searchParams.has('_vercel_share')) await page.goto(site.href);
   page.on('pageerror', (e) => console.error('page error:', e.message));
+  if (noMemory64) {
+    await page.addInitScript(() => {
+      const validate = WebAssembly.validate;
+      // A memory section whose limits have the 64-bit flag (0x04).
+      WebAssembly.validate = (bytes) => {
+        const b = new Uint8Array(bytes);
+        return b[8] === 5 && b[11] & 4 ? false : validate(bytes);
+      };
+    });
+  }
 
   // The sample list: Wine's programs and every test program in
   // runtime/web/samples.json, each one served (the site carries them all).
@@ -143,8 +165,12 @@ try {
   // vertex and pixel shaders (and their constants), and a fixed-function
   // quad. These checks read the screen, so Present reads frames back and
   // draws them into the window (d3dpresent=gdi): headless Chromium cannot
-  // show the WebGPU canvas the page otherwise presents to.
-  if (await page.evaluate(() => !!navigator.gpu)) {
+  // show the WebGPU canvas the page otherwise presents to. These and the
+  // DirectDraw program below are 32-bit programs, which the 32-bit run
+  // checks (x86-64 Wine has no Direct3D or sound bridge yet).
+  if (x64) {
+    console.log('skipping d3d9 and ddsound: 32-bit programs (the run without --arch x64 checks them)');
+  } else if (await page.evaluate(() => !!navigator.gpu)) {
     await open(page, 'd3d9tri.exe', '/tests/programs/gui/d3d9tri.exe', '&d3dpresent=gdi');
     const near = (c) => ([r, g, b]) => Math.abs(r - c[0]) < 24 && Math.abs(g - c[1]) < 24 && Math.abs(b - c[2]) < 24;
     // Window at (40,30); its client area starts at (44,53).
@@ -173,6 +199,31 @@ try {
     await until(() => page.evaluate(() => !!window.lastExit), 60000);
     const summary = (await out()).match(/summary: .*/)?.[0];
     check('d3d9bench: ran and exited', !!summary && (await page.evaluate(() => window.lastExit?.code)) === 0, summary);
+
+    // OpenGL through opengl32 (native/opengl32, over Direct3D 9): gltri's
+    // frame. Window at (40,30) as d3d9tri's, client area from (44,53): a
+    // yellow square at (10,10)-(60,60), a green square in front of a red
+    // one at (230,20)-(310,100) (depth test), a 2x2 red and white texture
+    // at (230,140)-(310,220) with half-transparent white over its right
+    // half, over a dark blue clear.
+    await open(page, 'gltri.exe', '/tests/programs/gui/gltri.exe', '&d3dpresent=gdi');
+    const glDrawn = await until(async () => (await count(page, quad, near([255, 255, 0]))) > 1500, 180000);
+    check('opengl: 2D overlay (yellow)', glDrawn, `${await count(page, quad, near([255, 255, 0]))} yellow pixels`);
+    check('opengl: clear colour', (await count(page, [114, 58, 264, 78], near([0, 0, 128]))) > 1500);
+    check('opengl: depth test', (await count(page, [284, 83, 344, 143], near([0, 255, 0]))) > 2000);
+    check('opengl: texture and blending', (await count(page, [279, 198, 309, 228], near([255, 0, 0]))) > 500 &&
+      (await count(page, [319, 238, 349, 268], near([255, 128, 128]))) > 500);
+    check('opengl: every call succeeded', /SwapBuffers: 1/.test(await out()) && /glGetError: (0x)?0\b/.test(await out()), (await out()).split('\n').slice(-3).join(' | '));
+    await save(page, 'browser-gltri.png');
+
+    // glbench: cubes, one draw each, and a batch of particles, for 3 seconds.
+    await open(page, 'glbench.exe', '/tests/programs/gui/glbench.exe', '&args=60+500+3&d3dpresent=gdi');
+    await until(async () => / fps: /.test(await out()), 180000);
+    const glLit = await count(page, [14, 33, 654, 513], ([r, g, b]) => r + g + b > 300);
+    check('glbench: frames drawn', glLit > 5000, `${glLit} lit pixels`);
+    await until(() => page.evaluate(() => !!window.lastExit), 60000);
+    const glSummary = (await out()).match(/summary: .*/)?.[0];
+    check('glbench: ran and exited', !!glSummary && (await page.evaluate(() => window.lastExit?.code)) === 0, glSummary);
 
     // Presenting on the GPU (no readback), to an offscreen buffer the page
     // can read (headless Chromium cannot show the canvas it uses
@@ -208,7 +259,7 @@ try {
   console.log((await page.textContent('#log')).trim());
 
   // DirectDraw and DirectSound: a red square moving on blue, and a tone.
-  if (!site) {
+  if (!site && !x64) {
     mkdirSync(join(root, 'target/web'), { recursive: true });
     execFileSync('i686-w64-mingw32-gcc', ['-O2', '-mwindows', '-o', join(root, 'target/web/ddsound.exe'),
       join(repo, 'tests/web/ddsound.c'), '-lddraw', '-ldsound', '-ldxguid', '-lgdi32', '-luser32', '-lwinmm']);

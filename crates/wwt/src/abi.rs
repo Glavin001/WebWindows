@@ -47,6 +47,10 @@ pub mod cpu {
     /// Set by translated code that re-enters itself to resume at a loop
     /// header (see `crate::osr`): which one, plus 1; 0 for a plain entry.
     pub const RESUME: u32 = 364;
+    /// When this thread's time slice ends, in the units of the `tick` word
+    /// (milliseconds): translated loops call `preempt` once the tick reaches
+    /// it, so a thread that spins without system calls still lets others run.
+    pub const PREEMPT_AT: u32 = 368;
     /// Non-zero while some page with translated code may be written (the
     /// runtime sets it in every thread's state): stores then go through the
     /// store map, which notices writes to code. Zero when no such page is
@@ -54,13 +58,41 @@ pub mod cpu {
     /// stores then only need the guest-limit check, which they can share
     /// with nearby accesses. Runtimes that do not track page protections
     /// leave it set.
-    pub const CODE_WRITABLE: u32 = 368;
+    pub const CODE_WRITABLE: u32 = 372;
     /// Scratch space for the host and kernel.
     pub const SCRATCH: u32 = 384;
     pub const SIZE: u32 = 512;
 
     pub const fn gpr(i: u32) -> u32 {
         GPR + i * 4
+    }
+}
+
+/// The x86-64 CPU struct. It keeps every field of [`cpu`] that does not
+/// widen (EIP, FK, DF, segment selectors, x87, MMX, xmm0-7, MXCSR, fault
+/// information, scratch) at the same offset, and adds the 64-bit fields in
+/// an extension after the 32-bit struct. The 32-bit GPR, lazy-operand and
+/// segment-base slots are unused in this layout.
+pub mod cpu64 {
+    /// The sixteen general registers (rax, rcx, rdx, rbx, rsp, rbp, rsi,
+    /// rdi, r8..r15), 8 bytes each.
+    pub const GPR: u32 = 512;
+    /// Lazy flag result and operands, 8 bytes each.
+    pub const FR: u32 = 640;
+    pub const FA: u32 = 648;
+    pub const FB: u32 = 656;
+    pub const FC: u32 = 664;
+    pub const FS_BASE: u32 = 672;
+    pub const GS_BASE: u32 = 680;
+    /// xmm8..xmm15 (16 bytes each); xmm0..7 stay at [`super::cpu::XMM`].
+    pub const XMM8: u32 = 688;
+    /// The instruction pointer of 64-bit code (8 bytes); [`super::cpu::EIP`]
+    /// is unused in this layout.
+    pub const RIP: u32 = 816;
+    pub const SIZE: u32 = 832;
+
+    pub const fn gpr(i: u32) -> u32 {
+        GPR + i * 8
     }
 }
 
@@ -115,6 +147,7 @@ pub mod flags {
         let code = match width_bits {
             8 => 0,
             16 => 1,
+            64 => 3,
             _ => 2,
         };
         op | code << 8
@@ -159,15 +192,22 @@ pub mod addr {
     /// Returning to this address stops the dispatcher loop (used as the
     /// return address of thread entry points).
     pub const STOP: u32 = 0xFFFF_FFF0;
+    /// The stop address of 64-bit code, beyond any guest address (and exact
+    /// as a JavaScript number).
+    pub const STOP64: u64 = 1 << 52;
     /// Returning to this address also stops the dispatcher loop: the host
     /// switches threads (the thread resumes later where it left off).
     pub const YIELD: u32 = 0xFFFF_FFE0;
+    /// The yield address of 64-bit code, next to `STOP64`.
+    pub const YIELD64: u64 = STOP64 + 0x20;
 }
 
 /// The store map (import `store_map`): one byte per 4 KB page of the 4 GB
-/// address space. Stores to a page whose byte is zero need no further
-/// checks; any other value sends the store down a slow path that checks the
-/// address precisely and invalidates translated code on the page.
+/// address space (of the guest region, when that is larger, with 64-bit
+/// memory). Stores to a page whose byte is zero need no further checks;
+/// any other value sends the store down a slow path that checks the address
+/// precisely and invalidates translated code on the page. With 64-bit
+/// memory every store checks its address first and the map only marks code.
 pub mod store_map {
     /// The page holds translated code: a store invalidates the page's
     /// translations (resets its lookup entry to `zero_l2`, clears this bit).
@@ -207,22 +247,34 @@ pub mod imports {
     /// The empty second level of the lookup: translated code points a
     /// page's first-level entry here when a store hits its code.
     pub const ZERO_L2: &str = "zero_l2";
+    /// 64-bit code only: the number of 4 KB pages the first-level lookup
+    /// table covers. Targets at or above go through its last entry, which
+    /// points at an empty second-level table.
+    pub const CODE_PAGES: &str = "code_pages";
     pub const FAULT: &str = "fault";
     pub const MATH: &str = "math";
     pub const SIN: &str = "sin";
     pub const COS: &str = "cos";
+    /// `preempt(cpu, eip) -> yield?`: a loop's slice deadline passed; non-zero
+    /// when the host switches threads (the thread resumes at `eip`).
+    pub const PREEMPT: &str = "preempt";
+    /// Address of a u32 millisecond counter the host keeps current.
+    pub const TICK: &str = "tick";
 }
 
 /// Custom section listing the x86 address of each translated function, in
 /// table order: a little-endian u32 count followed by that many u32s.
 pub const FUNCS_SECTION: &str = "wwt.funcs";
+/// The same for 64-bit code (x86-64 on a 64-bit memory): a u32 count
+/// followed by that many u64 addresses.
+pub const FUNCS64_SECTION: &str = "wwt.funcs64";
 /// Custom section with JSON metadata about the translation.
 pub const META_SECTION: &str = "wwt.meta";
 /// Custom section with, per translated function in table order, the
 /// emulation code generation left in it (`codegen::Residue`), as JSON.
 pub const RESIDUE_SECTION: &str = "wwt.residue";
 /// Bumped whenever generated code changes incompatibly, to invalidate caches.
-pub const ABI_VERSION: u32 = 6;
+pub const ABI_VERSION: u32 = 8;
 /// Every translated module exports its lazy-flags evaluator under this
 /// name: `(fk, fr, fa, fb, fc) -> eflags` (the arithmetic flags).
 pub const EFLAGS_EXPORT: &str = "eflags";
@@ -231,13 +283,17 @@ pub const EFLAGS_EXPORT: &str = "eflags";
 struct AbiJson {
     version: u32,
     cpu: std::collections::BTreeMap<&'static str, u32>,
+    cpu64: std::collections::BTreeMap<&'static str, u32>,
     flags: std::collections::BTreeMap<&'static str, u32>,
     fault: std::collections::BTreeMap<&'static str, u32>,
     stop_address: u32,
+    stop_address64: u64,
     yield_address: u32,
+    yield_address64: u64,
     null_limit: u32,
     native_layout: std::collections::BTreeMap<&'static str, u32>,
     funcs_section: &'static str,
+    funcs64_section: &'static str,
     meta_section: &'static str,
 }
 
@@ -268,9 +324,24 @@ pub fn abi_json() -> String {
         ("FAULT_CODE", FAULT_CODE),
         ("FAULT_ADDR", FAULT_ADDR),
         ("RESUME", RESUME),
+        ("PREEMPT_AT", PREEMPT_AT),
         ("CODE_WRITABLE", CODE_WRITABLE),
         ("SCRATCH", SCRATCH),
         ("SIZE", SIZE),
+    ]
+    .into_iter()
+    .collect();
+    let cpu64 = [
+        ("GPR", cpu64::GPR),
+        ("FR", cpu64::FR),
+        ("FA", cpu64::FA),
+        ("FB", cpu64::FB),
+        ("FC", cpu64::FC),
+        ("FS_BASE", cpu64::FS_BASE),
+        ("GS_BASE", cpu64::GS_BASE),
+        ("XMM8", cpu64::XMM8),
+        ("RIP", cpu64::RIP),
+        ("SIZE", cpu64::SIZE),
     ]
     .into_iter()
     .collect();
@@ -307,10 +378,13 @@ pub fn abi_json() -> String {
     serde_json::to_string_pretty(&AbiJson {
         version: ABI_VERSION,
         cpu,
+        cpu64,
         flags: fl,
         fault,
         stop_address: addr::STOP,
+        stop_address64: addr::STOP64,
         yield_address: addr::YIELD,
+        yield_address64: addr::YIELD64,
         null_limit: addr::NULL_LIMIT,
         native_layout: [
             ("LOOKUP_L1", native_layout::LOOKUP_L1),
@@ -320,6 +394,7 @@ pub fn abi_json() -> String {
         .into_iter()
         .collect(),
         funcs_section: FUNCS_SECTION,
+        funcs64_section: FUNCS64_SECTION,
         meta_section: META_SECTION,
     })
     .unwrap()

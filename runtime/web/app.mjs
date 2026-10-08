@@ -6,6 +6,7 @@
 import { InputRing } from '../wine/input-ring.mjs';
 import { createAudioRing, playAudioRing } from '../wine/audio-sink.mjs';
 import { windowsKey, KEYEVENTF_KEYUP } from './keys.mjs';
+import { hasMemory64 } from '../runtime.mjs';
 
 const $ = (id) => document.getElementById(id);
 const out = $('out');
@@ -16,7 +17,17 @@ const params = new URLSearchParams(location.search);
 const translatorUrl = params.get('translator') ?? new URL('../../target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm', import.meta.url).href;
 
 const bundleUrl = params.get('bundle') ?? new URL('../../target/wine-bundle/', import.meta.url).href;
+// 64-bit programs run on Wine's x86_64 DLLs from their own bundle.
+const bundle64Url = params.get('bundle64') ?? new URL('../../target/wine-bundle64/', import.meta.url).href;
+// ... or, in browsers without 64-bit WebAssembly memory, from a bundle for a
+// 32-bit memory (the DLLs below 2 GB, the Unix side lowered to wasm32).
+const bundle64m32Url = params.get('bundle64m32') ?? new URL('../../target/wine-bundle64-m32/', import.meta.url).href;
 if (params.get('wine')) $('wine').checked = true;
+// 64-bit WebAssembly memory: WebKit (Safari, and every browser on iOS) does
+// not ship it yet. Without it 64-bit programs run below 4 GB on a 32-bit
+// memory, on Wine from the 32-bit-memory bundle.
+const memory64 = hasMemory64();
+$('mem64note').hidden = memory64;
 // ?args=a+b: the program's command line (with ?exe=).
 if (params.get('args')) $('args').value = params.get('args');
 
@@ -105,21 +116,53 @@ const at = (e) => {
 };
 // MOUSEEVENTF_* for buttons 0 (left), 1 (middle), 2 (right): [down, up].
 const BUTTONS = [[0x2, 0x4], [0x20, 0x40], [0x8, 0x10]];
-canvas.addEventListener('pointermove', (e) => screen?.ring.mouse(...at(e)));
+// Display.RELATIVE: the event's x and y are a movement, not a position.
+const RELATIVE = 0x10000;
+// Where the program confines the cursor (ClipCursor), or null. Games that
+// read relative mouse movement (Quake moves the cursor back to its window's
+// centre every frame) confine it to their window: then a click locks the
+// pointer, and movement goes to Wine as movement, which it adds to the
+// cursor position. Esc (the browser's) releases the lock.
+let clip = null;
+const locked = () => document.pointerLockElement === canvas;
+let rest = [0, 0];
+const mouse = (e, flags = 0, data = 0) => {
+  if (!locked()) return screen?.ring.mouse(...at(e), flags, data);
+  if (flags) return screen?.ring.mouse(0, 0, flags | RELATIVE, data);
+  // Movement in canvas pixels, fractions carried to the next event.
+  const r = canvas.getBoundingClientRect();
+  const x = (e.movementX * canvas.width) / r.width + rest[0], y = (e.movementY * canvas.height) / r.height + rest[1];
+  const dx = Math.trunc(x), dy = Math.trunc(y);
+  rest = [x - dx, y - dy];
+  if (dx || dy) screen?.ring.mouse(dx, dy, RELATIVE);
+};
+function setClip(rect) {
+  clip = rect;
+  if (!clip && locked()) document.exitPointerLock();
+  updateMouseHint();
+}
+function updateMouseHint() {
+  const s = $('status');
+  s.textContent = s.textContent.replace(/ \(.*\)$/, '');
+  if (clip && !locked() && screen && !canvas.hidden) s.textContent += ' (click the screen to capture the mouse; Esc releases it)';
+}
+document.addEventListener('pointerlockchange', updateMouseHint);
+canvas.addEventListener('pointermove', (e) => mouse(e));
 canvas.addEventListener('pointerdown', (e) => {
   canvas.focus();
-  canvas.setPointerCapture(e.pointerId);
-  if (BUTTONS[e.button]) screen?.ring.mouse(...at(e), BUTTONS[e.button][0]);
+  if (clip && !locked()) Promise.resolve(canvas.requestPointerLock?.()).catch(() => {});
+  if (!locked()) canvas.setPointerCapture(e.pointerId);
+  if (BUTTONS[e.button]) mouse(e, BUTTONS[e.button][0]);
   e.preventDefault();
 });
 canvas.addEventListener('pointerup', (e) => {
-  if (BUTTONS[e.button]) screen?.ring.mouse(...at(e), BUTTONS[e.button][1]);
+  if (BUTTONS[e.button]) mouse(e, BUTTONS[e.button][1]);
 });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 canvas.addEventListener(
   'wheel',
   (e) => {
-    screen?.ring.mouse(...at(e), 0x800, e.deltaY < 0 ? 120 : -120);
+    mouse(e, 0x800, e.deltaY < 0 ? 120 : -120);
     e.preventDefault();
   },
   { passive: false },
@@ -190,6 +233,7 @@ async function run(exeName, exeBytes, files, exePath) {
   $('status').textContent = `running ${exeName}…`;
   $('run').disabled = true;
   worker?.terminate();
+  setClip(null);
   worker = new Worker(new URL('worker.mjs', import.meta.url), { type: 'module' });
   const dec = new TextDecoder('latin1');
   const wine = $('wine').checked;
@@ -217,12 +261,15 @@ async function run(exeName, exeBytes, files, exePath) {
       if (m.type === 'stdout' || m.type === 'stderr') out.textContent += dec.decode(m.bytes);
       else if (m.type === 'log') logEl.textContent += m.text + '\n';
       else if (m.type === 'd3d-window') placeD3D(m);
+      else if (m.type === 'clip') setClip(m.rect);
       else if (m.type === 'screen') {
         canvas.hidden = false;
         canvas.focus();
         $('status').textContent = `${exeName} is running`;
+        updateMouseHint();
         window.screenShown = true;
       } else if (m.type === 'exit') {
+        setClip(null);
         $('status').textContent = m.code === null ? `${exeName} stopped with an error` : `${exeName} exited with code ${m.code} (${m.runMs?.toFixed(0)} ms)`;
         $('run').disabled = false;
         worker.terminate();
@@ -243,6 +290,9 @@ async function run(exeName, exeBytes, files, exePath) {
         noCache: $('nocache').checked,
         wine,
         bundleUrl,
+        bundle64Url,
+        bundle64m32Url,
+        memory64,
         // ?debug=+d3d: Wine's debug channels (WINEDEBUG), on stderr.
         debug: params.get('debug') ?? '',
         display: screen && { width: screen.width, height: screen.height, screen: screen.screen, frame: screen.frame, input: screen.input },
@@ -264,14 +314,18 @@ $('run').onclick = async () => {
   run(name.split('/').pop(), exe, files, name);
 };
 
-// Wine's own programs from the bundle (when it carries Wine's Unix side),
-// then the repository's test programs (./samples.json).
+// Wine's own programs from the bundles that carry Wine's Unix side (the
+// 64-bit one for this browser's memory), then the repository's test
+// programs (./samples.json). Every sample runs on Wine.
 const sampleArgs = new Map();
+const bundle64ForBrowser = memory64 ? bundle64Url : bundle64m32Url;
+const manifestOf = (url) => fetch(new URL('manifest.json', url)).then((r) => (r.ok ? r.json() : null)).catch(() => null);
 Promise.all([
-  fetch(new URL('manifest.json', bundleUrl)).then((r) => (r.ok ? r.json() : null)),
+  manifestOf(bundleUrl),
+  manifestOf(bundle64ForBrowser),
   fetch(new URL('samples.json', import.meta.url)).then((r) => (r.ok ? r.json() : [])),
 ])
-  .then(([manifest, samples]) => {
+  .then(([manifest, manifest64, samples]) => {
     if (!manifest?.programs?.length) return;
     const groups = new Map();
     const group = (label) => {
@@ -283,7 +337,10 @@ Promise.all([
       }
       return groups.get(label);
     };
-    for (const p of manifest.programs) group("Wine's programs").append(new Option(p.split('/').pop(), p));
+    for (const p of manifest.programs) group("Wine's programs").append(new Option(p.split('/').pop(), new URL(p, bundleUrl).href));
+    for (const p of manifest64?.programs ?? []) {
+      group("Wine's programs, 64-bit").append(new Option(`${p.split('/').pop()} (64-bit)`, new URL(p, bundle64ForBrowser).href));
+    }
     for (const s of samples) {
       const url = new URL(`../../${s.path}`, import.meta.url).href;
       group(s.group).append(new Option(s.label, url));
@@ -295,10 +352,10 @@ Promise.all([
 // A sample's suggested arguments go in the arguments box.
 $('sample').onchange = () => ($('args').value = sampleArgs.get($('sample').value) ?? '');
 $('runsample').onclick = async () => {
-  const rel = $('sample').value;
-  const bytes = await (await fetch(new URL(rel, bundleUrl))).arrayBuffer();
+  const url = $('sample').value;
+  const bytes = await (await fetch(url)).arrayBuffer();
   $('wine').checked = true;
-  run(rel.split('/').pop(), bytes, {});
+  run(url.split('/').pop(), bytes, {});
 };
 
 // ?exe=<url> runs a program directly (used by tests and demos).

@@ -31,7 +31,8 @@
 <body>
 <main>
   <h1>WebWindows</h1>
-  <p class="lead">Runs a 32-bit Windows program from a folder on this computer. The program is translated to WebAssembly here in the browser and cached for the next launch; nothing is uploaded. Windowed programs run on Wine and appear below.</p>
+  <p class="lead">Runs a 32-bit or 64-bit Windows program from a folder on this computer. The program is translated to WebAssembly here in the browser and cached for the next launch; nothing is uploaded. Windowed programs run on Wine and appear below.</p>
+  <p id="mem64note" class="lead" hidden>This browser has no 64-bit WebAssembly memory (Safari and every browser on iOS do not yet), so 64-bit programs run in a 32-bit memory, with less room than in Chrome or Firefox.</p>
   <div class="row">
     <button id="pick" class="primary">Choose folder…</button>
     <input id="fallback" type="file" webkitdirectory hidden>

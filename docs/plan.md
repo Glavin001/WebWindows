@@ -10,7 +10,7 @@ We run unmodified 32-bit Windows games in a browser by translating both the game
 - **Rosetta-style translation.** Ahead of time first. Code the first pass missed is translated on the spot when it runs, then folded into the cache for next launch.
 - **Wine is translated, not ported.** Wine's Windows-side DLLs are ordinary x86 DLLs, so the same translator converts them once at build time and we ship the result. Only Wine's narrow Unix side is rewritten or compiled natively.
 - **One shared memory.** The game, translated Wine and the native layer share one WebAssembly memory laid out like a Windows process, so a pointer means the same thing everywhere.
-- **Scope for v1:** 32-bit, single-player, no DRM, Chromium first. Graphics covers normal window and GDI rendering only; Direct3D is disabled for now (problem 11).
+- **Scope for v1:** 32-bit, single-player, no DRM, Chromium first. 64-bit programs follow on a second stack ([64-bit programs](#64-bit-programs)). Graphics covers windows, GDI and DirectDraw, and Direct3D 8/9 through `wined3d`'s WebGPU backend (problem 11).
 - **Delivery order:** a local command-line toolkit that turns an .exe into a web app comes first; the same translator library then moves into the browser.
 
 ## How everything connects
@@ -73,7 +73,7 @@ Eleven problems decide whether this works; the first eight live in the translato
 | 8 | Wine boundary and wineserver | Medium | Size of the port; wineserver speed | M2, M4 |
 | 9 | Threads and memory ordering | Medium-high (medium on ARM) | Strict-mode cost on ARM | M5 |
 | 10 | Module size and caching | Medium | Caching compiled code for generated modules | M3 |
-| 11 | Graphics | Deferred (medium-low) | Synchronous readback; scale of new code | When Direct3D is re-enabled |
+| 11 | Graphics | Medium (built; no real game yet) | Gaps real games hit; per-draw CPU cost | M6 |
 
 ### 1. Finding all the code
 
@@ -259,9 +259,9 @@ Eleven problems decide whether this works; the first eight live in the translato
 
 **Sourced update.** Chrome caches compiled WebAssembly only for modules loaded with `compileStreaming`/`instantiateStreaming` from an HTTP fetch, keyed by URL, for files of 128 kB or more, after the optimizing compiler finishes, with about 150 MB of cached code at most ([V8](https://v8.dev/blog/wasm-code-caching)). So shipped Wine DLLs get cached for free, while game modules we generate locally probably don't; serving them through a service worker under a stable URL is the experiment to try in M3. Compiled code is 5–7× the size of the module, so the 150 MB cap matters for big games.
 
-### 11. Graphics and shaders (deferred: Direct3D disabled)
+### 11. Graphics and shaders
 
-**Status: out of current scope.** Current scope is normal rendering: windows, GDI drawing, and 2D DirectDraw through `wined3d`'s software renderer. Direct3D stays disabled until we pick this up; the notes below are the plan for then.
+**Status: built, in M6.** Direct3D 9 runs through a WebGPU backend in `wined3d` (`native/wined3d-wgpu`) driving a Rust render core (`crates/d3dgpu-*`); `docs/d3d-webgpu.md` has the design, what works, and the gaps. What was built differs from the notes below in three places: shaders are translated straight to WGSL by the core (Direct3D 9 bytecode and DXBC), not through SPIR-V; `wined3d` stays a translated PE DLL and hands command batches to a render worker; and readback blocks the program's thread on a fence while the render worker services it, as the notes proposed. The notes below are the original plan.
 
 **Why hard:** DirectX's state machine and shader bytecode must map onto WebGPU, which has no geometry shaders, tessellation or fixed-function pipeline.
 
@@ -276,7 +276,7 @@ Eleven problems decide whether this works; the first eight live in the translato
 - Missing WebGPU features are emulated: point sizes with quads, triangle fans converted to lists, unsupported 16-bit and paletted texture formats converted on upload, alpha test and fog in shaders (as `wined3d` already does).
 - **The hard one: synchronous readback.** Direct3D 9's `Lock` on render targets and occlusion queries block, but WebGPU's readback is asynchronous. The rendering worker can block the caller with `Atomics.wait` while it services the promise, or use JSPI where available.
 
-**Confidence: medium-low,** the lowest in this plan: it is the most new code, with no existing WebGPU backend for Direct3D 9 to learn from. **We'll know in M6,** or sooner with a readback spike once Direct3D is back in scope.
+**Confidence: medium.** Test programs, a benchmark and the core's scenes run, on desktop and on an iPhone; the open question is what real games need that they don't. **We'll know in M6** with the flagship game.
 
 **Sourced update.** Synchronous WebGPU waits from WebAssembly already exist: Dawn's Emscripten bindings implement `wgpuInstanceWaitAny` on top of Emscripten's async support ([Dawn change](https://dawn.googlesource.com/dawn/+/63cbc06bd56d57488b5234269eee41414e2583fd)), and Flax Engine moved its WebGPU readback from Asyncify to JSPI ([Flax commit](https://git.flaxengine.com/Flax/FlaxEngine/commit/a5ec8565e4bdd2408a3cdeee587c8f65364018a9)). That lifts readback from an open question to a known pattern.
 
@@ -344,13 +344,43 @@ Each milestone builds a permanent part of the target and adds its test layer; M2
    - **Done when:** Wine's `winemine` and `notepad` run, and `user32` and `gdi32` test pass rates are tracked.
 5. **M5 — Threads, audio, timing, exceptions.** A worker per Windows thread; synchronization; DirectSound and `winmm` on `AudioWorklet`; high-resolution timers; full exception dispatch.
    - **Done when:** a 2D DirectDraw game is playable with sound.
-6. **M6 — Direct3D 9 on WebGPU (deferred; Direct3D disabled until then).** `wined3d` WebGPU backend compiled natively; shader translation. Test layer 4 with screenshot comparison.
+6. **M6 — Direct3D 9 on WebGPU (in progress).** `wined3d` WebGPU backend compiled natively; shader translation. Test layer 4 with screenshot comparison.
    - **Done when:** the flagship game is playable. Set the M7 frame-rate target here.
 7. **M7 — Speed.** Profile, then register promotion, flag elimination, SIMD, and native builds of the hottest Wine DLLs.
    - **Done when:** the flagship game meets the frame-rate target set in M6.
 8. **M8 — Product.** Installer handling, a compatibility database, per-game settings, a hosted mode for games whose licenses allow it, Firefox and Safari fallbacks.
 
-After v1: x86-64 on 64-bit WebAssembly memory, then DirectX 10 and 11.
+After v1: x86-64 on 64-bit WebAssembly memory (below, started early), then DirectX 10 and 11.
+
+## 64-bit programs
+
+**Decision: two stacks, one translator.** 32-bit programs keep their stack unchanged (32-bit memory, Wine's i386 DLLs, the pure i386 system-call path). 64-bit programs get a second one: x86-64 code, Wine's x86_64 DLLs translated, Wine's Unix side built for wasm64, and a 64-bit (memory64) WebAssembly memory, so both halves of Wine share a pointer size and no structure conversion is needed. The PE machine field picks the stack per process. Status: [milestone-9.md](milestone-9.md).
+
+**Why not the alternatives.**
+
+| | Two stacks (chosen) | One WoW64 stack | x86-64 in a 32-bit memory |
+| --- | --- | --- | --- |
+| How | Separate 32-bit and 64-bit Wine; one translator with a mode | Upstream Wine's and [Hangover](https://github.com/AndreRH/hangover)'s model: one 64-bit Wine, 32-bit programs through `wow64.dll` with our translator as its CPU backend | Every guest address below 4 GB in today's memory |
+| 32-bit speed | Unchanged | Pays the memory64 cost | Unchanged |
+| 64-bit speed | memory64 cost | memory64 cost | Same as 32-bit |
+| New work | A second Wine build and Unix side | Replaces the working M1–M4 path | A hand-written 64-to-32-bit conversion at every system call, Unix call and graphics call |
+
+[Boxedwine64](https://github.com/0x07C0/Boxedwine64) makes the same choice: 32-bit unchanged, 64-bit behind a switch on `-sMEMORY64`.
+
+**Memory64 cost decides the follow-ups.** Browsers bounds-check every memory64 access: V8 traps on a compare with a constant (13.0 and later), SpiderMonkey checks explicitly, reported at 10% to over 100% ([SpiderMonkey](https://spidermonkey.dev/blog/2025/01/15/is-memory64-actually-worth-using.html)). Chrome 133, Firefox 134 and Node 24 ship it; Safari has it behind a flag. The translator therefore keeps the address model separate from the mode: x86-64 code also runs on a 32-bit memory (guest below 4 GB, addresses checked and wrapped), and 32-bit code on a 64-bit memory. `tools/bench/mem64.sh` measures all four. If the cost is small, 32-bit programs can later move onto the 64-bit stack through WoW64 (one Wine); if it is large, the 32-bit-memory model becomes the default for 64-bit programs that fit in about 3.5 GB, with a 64-to-32-bit conversion layer at the Wine boundary.
+
+**Code addresses are 64-bit on a 64-bit memory.** x86-64 images load at their preferred bases (`0x1_4000_0000` for an .exe, `0x1_7000_0000` and up for Wine's DLLs), the lookup table covers the guest region (8 GB by default) and the dispatcher, translated functions and fault reports carry 64-bit addresses, as Wine's x86_64 loader expects. On a 32-bit memory, images preferred above 4 GB are moved below it by their relocations (64-bit executables are relocatable unless linked with `/FIXED`) and code addresses stay 32-bit.
+
+**What x86-64 changes.** Easier: `.pdata` lists nearly every function (a discovery seed), one calling convention, 16 registers, SSE instead of x87. Harder: 8-byte pointers in every structure that crosses a boundary, and table-based exceptions, whose unwinder needs the stack pointer and saved registers exactly where the unwind data says at every call and possible fault (translated code keeps the guest stack real, so this holds as long as prologue saves are never optimized away).
+
+| # | Milestone | Done when |
+| --- | --- | --- |
+| M9 | x86-64 translator and runtime on the M1 shims | x86-64 instruction suite and program tests pass on both memory models (done; [milestone-9.md](milestone-9.md)) |
+| M10 | 64-bit Wine, console | `hello64.exe` prints through translated x86_64 Wine with its Unix side on wasm64 (done; [milestone-9.md](milestone-9.md#64-bit-wine)) |
+| M11 | 64-bit Wine, windows | x86-64 `winemine` and `notepad` run (done, in Node and the browser); a 64-bit program can start a 32-bit one (each in its own stack, one wineserver: its protocol already uses 64-bit pointer fields) (not yet) |
+| M12 | Exceptions and threads for x86-64 | C++ and SEH exceptions through `.pdata` unwinding; `cmpxchg16b` atomic; `RtlAddFunctionTable` honored by fast mode |
+| M13 | 64-bit graphics, with the Direct3D workstream | A 64-bit game renders through the Direct3D layer built for wasm64 |
+| M14 | Conditional: the 32-bit-memory model as the default for 64-bit programs that fit | Only if `mem64.sh` shows memory64 costs too much |
 
 ## Non-goals and risks
 

@@ -12,10 +12,10 @@ use serde::Serialize;
 
 use crate::abi;
 use crate::codegen::{CodegenConfig, ModuleGen};
-use crate::discover::{scan_data_for_code_pointers, CodeSource, Discovery, SeedKind};
+use crate::discover::{scan_data_for_code_pointers_in, CodeSource, Discovery, SeedKind};
 use crate::ir::{
-    BlockId, CallAbi, CallTarget, FlagFree, FlagFreeCallees, Function, Inst, Mem, Op, Space, Term,
-    Ty,
+    BlockId, CallAbi, CallTarget, FlagFree, FlagFreeCallees, Function, Inst, Mem, Mode, Op, Space,
+    Term, Ty,
 };
 use crate::lift::{lift_function, LiftConfig};
 use crate::opt;
@@ -77,6 +77,23 @@ impl Config {
             ..Config::default()
         }
     }
+
+    /// The same settings for code of `mode` (32-bit or 64-bit x86).
+    pub fn with_mode(mut self, mode: Mode) -> Config {
+        self.lift.mode = mode;
+        self
+    }
+
+    /// Targets a 64-bit (memory64) WebAssembly memory.
+    pub fn with_mem64(mut self, mem64: bool) -> Config {
+        self.lift.mem64 = mem64;
+        self.codegen.mem64 = mem64;
+        self
+    }
+
+    pub fn mode(&self) -> Mode {
+        self.lift.mode
+    }
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -87,7 +104,7 @@ pub struct Report {
     pub wasm_bytes: usize,
     pub seeds: std::collections::BTreeMap<String, usize>,
     /// Instructions the lifter could not translate: (address, text).
-    pub unsupported: Vec<(u32, String)>,
+    pub unsupported: Vec<(u64, String)>,
     /// Indirect jumps recognized as jump tables.
     pub jump_tables: usize,
     /// Functions shown to return without their callers reading the flags
@@ -98,7 +115,7 @@ pub struct Report {
 pub struct Translation {
     pub wasm: Vec<u8>,
     /// Translated function entry points, in table order.
-    pub entries: Vec<u32>,
+    pub entries: Vec<u64>,
     pub report: Report,
     /// The IR of each function after optimization (for inspection).
     pub ir: Vec<Function>,
@@ -108,10 +125,16 @@ pub struct Translation {
 /// without parsing it again.
 #[derive(Serialize)]
 pub struct ImageMeta {
-    pub image_base: u32,
+    /// x86 or x86-64; the runtime picks the CPU layout from it.
+    pub mode: Mode,
+    pub machine: u16,
+    /// The base the translation was made for (where the image must load).
+    pub image_base: u64,
+    /// The base in the file (differs for 64-bit images moved below 4 GB).
+    pub preferred_base: u64,
     pub size_of_image: u32,
     pub size_of_headers: u32,
-    pub entry: Option<u32>,
+    pub entry: Option<u64>,
     pub is_dll: bool,
     pub subsystem: u16,
     pub stack_reserve: u32,
@@ -136,7 +159,10 @@ struct Meta<'a> {
 
 pub fn image_meta(pe: &PeFile) -> ImageMeta {
     ImageMeta {
+        mode: pe.mode,
+        machine: pe.machine,
         image_base: pe.image_base,
+        preferred_base: pe.preferred_base,
         size_of_image: pe.size_of_image,
         size_of_headers: pe.size_of_headers,
         entry: pe.entry_point(),
@@ -158,14 +184,22 @@ const IMAGE_SCN_MEM_DISCARDABLE: u32 = 0x0200_0000;
 
 /// Discovers code in a PE image from all static seeds plus `profile` (code
 /// found at run time on earlier launches).
-pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Config) -> Discovery {
-    let mut d = Discovery::new();
+pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u64], cfg: &Config) -> Discovery {
+    let mut d = Discovery::new_in(pe.mode);
     if let Some(e) = pe.entry_point() {
         d.add_function_seed(e, SeedKind::Entry);
     }
+    // x86-64: every function that calls or allocates stack has a `.pdata`
+    // entry.
+    for &rva in &pe.pdata {
+        let va = pe.image_base + rva as u64;
+        if img.is_code(va) {
+            d.add_function_seed(va, SeedKind::Pdata);
+        }
+    }
     for ex in &pe.exports {
         if let ExportTarget::Rva(rva) = ex.target {
-            let va = pe.image_base + rva;
+            let va = pe.image_base + rva as u64;
             if img.is_code(va) {
                 d.add_function_seed(va, SeedKind::Export);
             }
@@ -196,10 +230,16 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Con
     // Code pointers in data: relocation targets (always present in DLLs),
     // otherwise a scan of data sections. Addresses already known as
     // instruction starts are reached some other way (jump tables, calls).
-    let mut candidates: BTreeSet<(u32, SeedKind)> = BTreeSet::new();
+    let mut candidates: BTreeSet<(u64, SeedKind)> = BTreeSet::new();
     if let Some(relocs) = &pe.relocations {
-        for &r in relocs {
-            if let Some(v) = img.read_u32(pe.image_base + r) {
+        for (k, &r) in relocs.iter().enumerate() {
+            let site = pe.image_base + r as u64;
+            let v = if pe.reloc_types.get(k) == Some(&crate::pe::REL_DIR64) {
+                img.read_u64(site)
+            } else {
+                img.read_u32(site).map(|v| v as u64)
+            };
+            if let Some(v) = v {
                 // Skip values inside code that are operands of instructions in
                 // code (e.g. `push offset label`), unless they point at code.
                 if img.is_code(v) {
@@ -224,9 +264,9 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Con
             {
                 continue;
             }
-            let start = pe.image_base + s.virtual_address;
-            let end = start + s.raw_size.min(s.mem_size());
-            for v in scan_data_for_code_pointers(img, start, end) {
+            let start = pe.image_base + s.virtual_address as u64;
+            let end = start + s.raw_size.min(s.mem_size()) as u64;
+            for v in scan_data_for_code_pointers_in(img, start, end, pe.mode) {
                 candidates.insert((v, SeedKind::DataScan));
             }
         }
@@ -239,40 +279,40 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Con
     d.explore(img);
     // setjmp returns a second time through longjmp, after its caller's
     // frame has moved on: its return sites must be entry points.
-    let setjmp_slots: Vec<u32> = pe
+    let setjmp_slots: Vec<u64> = pe
         .imports
         .iter()
         .filter(|i| {
             let n = i.name.to_string().to_ascii_lowercase();
             n.contains("setjmp")
         })
-        .map(|i| pe.image_base + i.iat_rva)
+        .map(|i| pe.image_base + i.iat_rva as u64)
         .collect();
     if !setjmp_slots.is_empty() {
         use iced_x86::{FlowControl, OpKind, Register};
+        // `[slot]`, or `[rip+slot]` in 64-bit code.
         let via_slot = |i: &iced_x86::Instruction| {
             i.op0_kind() == OpKind::Memory
-                && i.memory_base() == Register::None
+                && matches!(i.memory_base(), Register::None | Register::RIP)
                 && i.memory_index() == Register::None
-                && setjmp_slots.contains(&i.memory_displacement32())
+                && setjmp_slots.contains(&i.memory_displacement64())
         };
         // Import stubs: `jmp [slot]` (how MinGW calls undeclared imports).
-        let stubs: Vec<u32> = d
+        let stubs: Vec<u64> = d
             .insts
             .values()
             .filter(|i| i.flow_control() == FlowControl::IndirectBranch && via_slot(i))
-            .map(|i| i.ip32())
+            .map(|i| i.ip())
             .collect();
-        let returns: Vec<u32> = d
+        let returns: Vec<u64> = d
             .insts
             .values()
             .filter(|i| {
                 (i.flow_control() == FlowControl::IndirectCall && via_slot(i))
                     || (i.flow_control() == FlowControl::Call
-                        && i.op0_kind() == OpKind::NearBranch32
-                        && stubs.contains(&i.near_branch32()))
+                        && crate::lift::branch_target(i, 0).is_some_and(|t| stubs.contains(&t)))
             })
-            .map(|i| i.next_ip32())
+            .map(|i| i.next_ip())
             .collect();
         for r in returns {
             d.add_function_seed(r, SeedKind::Call);
@@ -282,9 +322,16 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u32], cfg: &Con
     d
 }
 
-/// Translates a PE file ahead of time.
-pub fn translate_pe(pe: &PeFile, cfg: &Config, profile: &[u32]) -> Result<Translation> {
-    let mut cfg = cfg.clone();
+/// Translates a PE file ahead of time. The mode (x86 or x86-64) comes from
+/// the file. A 64-bit image preferred above 4 GB is folded below it when the
+/// target is a 32-bit memory.
+pub fn translate_pe(pe: &PeFile, cfg: &Config, profile: &[u64]) -> Result<Translation> {
+    let mut cfg = cfg.clone().with_mode(pe.mode);
+    if !cfg.codegen.mem64 && pe.image_base >> 32 != 0 {
+        let mut low = pe.clone();
+        low.fold_below_4gb()?;
+        return translate_pe(&low, &cfg, profile);
+    }
     match cfg.c_abi {
         Some(true) => cfg.lift.abi = CallAbi::c(),
         None if pe.is_wine_builtin() => cfg.lift.abi = CallAbi::c(),
@@ -297,11 +344,18 @@ pub fn translate_pe(pe: &PeFile, cfg: &Config, profile: &[u32]) -> Result<Transl
         .as_deref()
         .is_some_and(|n| n.eq_ignore_ascii_case("ntdll.dll"));
     cfg.native_heap &= is_ntdll;
+    // The built-in and native function bodies read their arguments the
+    // 32-bit way (from the stack).
+    if pe.mode != Mode::X86 {
+        cfg.builtins = false;
+        cfg.native_heap = false;
+        cfg.native_strings = false;
+    }
     let cfg = &cfg;
     let img = pe.image()?;
     let mut d = discover_pe(pe, &img, profile, cfg);
     let meta = image_meta(pe);
-    let names: HashMap<u32, String> = pe.code_names().into_iter().collect();
+    let names: HashMap<u64, String> = pe.code_names().into_iter().collect();
     let tried = if cfg.native_strings && pe.is_wine_builtin() {
         natives_tried(pe, &img)
     } else {
@@ -313,7 +367,7 @@ pub fn translate_pe(pe: &PeFile, cfg: &Config, profile: &[u32]) -> Result<Transl
 /// Native implementations to try first, by function entry: those
 /// `builtin::NATIVE_TRY` has for this DLL's exports (or COFF symbols), with
 /// the addresses of the symbols they need (all must be present).
-fn natives_tried(pe: &PeFile, img: &crate::pe::Image) -> HashMap<u32, (&'static str, Vec<u32>)> {
+fn natives_tried(pe: &PeFile, img: &crate::pe::Image) -> HashMap<u64, (&'static str, Vec<u32>)> {
     let mut out = HashMap::new();
     let Some(dll) = pe.dll_name.as_deref().map(str::to_ascii_lowercase) else {
         return out;
@@ -329,12 +383,17 @@ fn natives_tried(pe: &PeFile, img: &crate::pe::Image) -> HashMap<u32, (&'static 
                 .iter()
                 .find_map(|ex| match (&ex.name, &ex.target) {
                     (Some(name), ExportTarget::Rva(rva)) if name == n.name => {
-                        Some(pe.image_base + rva)
+                        Some(pe.image_base + *rva as u64)
                     }
                     _ => None,
                 })
         };
-        let args: Option<Vec<u32>> = n.symbols.iter().map(|s| pe.symbol(s)).collect();
+        // 32-bit images only (see `translate_pe`).
+        let args: Option<Vec<u32>> = n
+            .symbols
+            .iter()
+            .map(|s| pe.symbol(s).map(|a| a as u32))
+            .collect();
         if let (Some(va), Some(args)) = (va, args) {
             if img.is_code(va) {
                 out.insert(va, (n.import, args));
@@ -347,7 +406,7 @@ fn natives_tried(pe: &PeFile, img: &crate::pe::Image) -> HashMap<u32, (&'static 
 /// Fast mode: translates code reachable from `entries` in `src`.
 pub fn translate_region(
     src: &dyn CodeSource,
-    entries: &[u32],
+    entries: &[u64],
     cfg: &Config,
 ) -> Result<Translation> {
     translate_region_with_known(src, entries, &[], cfg)
@@ -357,11 +416,11 @@ pub fn translate_region(
 /// which are called through the lookup rather than translated again.
 pub fn translate_region_with_known(
     src: &dyn CodeSource,
-    entries: &[u32],
-    known: &[u32],
+    entries: &[u64],
+    known: &[u64],
     cfg: &Config,
 ) -> Result<Translation> {
-    let mut d = Discovery::new();
+    let mut d = Discovery::new_in(cfg.mode());
     for &k in known {
         if !entries.contains(&k) {
             d.functions.insert(k);
@@ -384,8 +443,8 @@ pub fn translate_discovered(
     d: &mut Discovery,
     cfg: &Config,
     meta: Option<&ImageMeta>,
-    names: &HashMap<u32, String>,
-    tried: &HashMap<u32, (&'static str, Vec<u32>)>,
+    names: &HashMap<u64, String>,
+    tried: &HashMap<u64, (&'static str, Vec<u32>)>,
 ) -> Result<Translation> {
     let mut report = Report::default();
     for k in d.seed_kinds.values() {
@@ -394,9 +453,9 @@ pub fn translate_discovered(
     report.jump_tables = d.jump_tables.len();
     report.x86_instructions = d.insts.len();
     let mut funcs: Vec<Function> = vec![];
-    let mut done: BTreeSet<u32> = BTreeSet::new();
+    let mut done: BTreeSet<u64> = BTreeSet::new();
     loop {
-        let todo: Vec<u32> = d
+        let todo: Vec<u64> = d
             .functions
             .iter()
             .copied()
@@ -420,8 +479,8 @@ pub fn translate_discovered(
                 .and_then(|n| crate::builtin::Builtin::by_name(n))
                 .filter(|_| cfg.builtins);
             let f = match (native, builtin) {
-                (Some(n), _) => crate::builtin::native_body(entry, n),
-                (None, Some(b)) => crate::builtin::body(entry, b),
+                (Some(n), _) => crate::builtin::native_body(entry, n, cfg.lift.mem64),
+                (None, Some(b)) => crate::builtin::body(entry, b, cfg.lift.mem64),
                 (None, None) => {
                     let lifted = lift_function(src, d, entry, &cfg.lift);
                     report.unsupported.extend(lifted.unsupported);
@@ -448,7 +507,7 @@ pub fn translate_discovered(
                 m.imports
                     .iter()
                     .filter(|i| i.name.to_string().contains("chkesp"))
-                    .map(|i| m.image_base + i.iat_rva)
+                    .map(|i| m.image_base + i.iat_rva as u64)
                     .collect()
             })
             .unwrap_or_default();
@@ -472,14 +531,18 @@ pub fn translate_discovered(
     report.functions = funcs.len();
     report.unsupported.sort();
     report.unsupported.dedup();
-    let entries: Vec<u32> = funcs.iter().map(|f| f.entry).collect();
+    let entries: Vec<u64> = funcs.iter().map(|f| f.entry).collect();
     let meta_json = serde_json::to_string(&Meta {
         abi_version: abi::ABI_VERSION,
         guest_limit: cfg.codegen.guest_limit,
         image: meta,
         report: &report,
     })?;
-    let gen = ModuleGen::new(&cfg.codegen, &funcs).with_names(names);
+    // The code width follows the mode even with no functions (a DLL that
+    // only forwards its exports).
+    let gen = ModuleGen::new(&cfg.codegen, &funcs)
+        .with_code64(cfg.mode() == Mode::X64 && cfg.codegen.mem64)
+        .with_names(names);
     let wasm = gen.build(&funcs, &meta_json);
     report.wasm_bytes = wasm.len();
     Ok(Translation {
@@ -494,9 +557,9 @@ pub fn translate_discovered(
 /// call their imports) calls through the slot instead: one call instead of
 /// two, and the lookup resolves the slot's target (which may itself be a
 /// thunk the runtime resolved, see runtime/wine/thunks.mjs). Tail jumps
-/// to stubs likewise.
+/// to stubs likewise. In 64-bit code the slot holds 8 bytes.
 fn call_through_import_stubs(funcs: &mut [Function]) {
-    let stubs: HashMap<u32, u32> = funcs
+    let stubs: HashMap<u64, (u64, u8, Ty, Ty)> = funcs
         .iter()
         .filter_map(|f| {
             let [b] = f.blocks.as_slice() else {
@@ -512,8 +575,12 @@ fn call_through_import_stubs(funcs: &mut [Function]) {
                     dst: Some(l),
                     op: Op::Load { addr, mem },
                     ..
-                }] if *l == v && addr == c && mem.size == 4 && mem.offset == 0 => {
-                    Some((f.entry, *slot as u32))
+                }] if *l == v
+                    && addr == c
+                    && mem.offset == 0
+                    && (mem.size == 4 || f.mode == Mode::X64 && mem.size == 8) =>
+                {
+                    Some((f.entry, (*slot, mem.size, f.ty(*c), f.ty(*l))))
                 }
                 _ => None,
             }
@@ -532,19 +599,19 @@ fn call_through_import_stubs(funcs: &mut [Function]) {
                 | Term::Exit(t) => t,
                 _ => continue,
             };
-            let Some(&slot) = stubs.get(&target) else {
+            let Some(&(slot, size, slot_ty, ty)) = stubs.get(&target) else {
                 continue;
             };
             if target == f.entry {
                 continue;
             }
             let eip = f.blocks[b].insts.last().map_or(f.blocks[b].addr, |i| i.eip);
-            let c = f.new_vreg(Ty::I32);
-            let v = f.new_vreg(Ty::I32);
+            let c = f.new_vreg(slot_ty);
+            let v = f.new_vreg(ty);
             let blk = &mut f.blocks[b];
             blk.insts.push(Inst {
                 dst: Some(c),
-                op: Op::Const(slot as u64),
+                op: Op::Const(slot),
                 eip,
             });
             blk.insts.push(Inst {
@@ -552,7 +619,7 @@ fn call_through_import_stubs(funcs: &mut [Function]) {
                 op: Op::Load {
                     addr: c,
                     mem: Mem {
-                        size: 4,
+                        size,
                         signed: false,
                         space: Space::Trusted,
                         offset: 0,
@@ -591,9 +658,9 @@ const FLAGS: [u32; 5] = crate::ir::FLAG_STATE;
 /// needs them only through its own callees is removed as well; returns
 /// likewise, from all of them flag-free, until no caller reads the flags
 /// after a call to a function assumed not to write them back.
-pub fn prove_flags_abi(funcs: &mut [Function], reading_slots: HashSet<u32>) -> usize {
+pub fn prove_flags_abi(funcs: &mut [Function], reading_slots: HashSet<u64>) -> usize {
     let n = funcs.len();
-    let index: HashMap<u32, usize> = funcs
+    let index: HashMap<u64, usize> = funcs
         .iter()
         .enumerate()
         .map(|(i, f)| (f.entry, i))
@@ -771,12 +838,12 @@ fn flags_needed(f: &Function) -> Vec<u8> {
 
 /// Translates a single code snippet at `base` (used by the instruction test
 /// suite): everything outside the snippet is an exit.
-pub fn translate_snippet(code: &[u8], base: u32, cfg: &Config) -> (Function, Vec<(u32, String)>) {
+pub fn translate_snippet(code: &[u8], base: u64, cfg: &Config) -> (Function, Vec<(u64, String)>) {
     let src = crate::discover::FlatCode {
         base,
         bytes: code.to_vec(),
     };
-    let mut d = Discovery::new();
+    let mut d = Discovery::new_in(cfg.mode());
     d.add_function_seed(base, SeedKind::Profile);
     d.explore(&src);
     let lifted = lift_function(&src, &d, base, &cfg.lift);

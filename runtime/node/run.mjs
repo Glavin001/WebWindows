@@ -7,6 +7,11 @@
 // translate with `wwt`), --wwt <path> (translator binary), --trace (log API
 // calls), --guest-limit <MB>, --profile <file> (append missed addresses),
 // --no-fast (disable run-time translation of code the translator missed).
+// 64-bit programs (detected from the PE header) run on a 64-bit (memory64)
+// WebAssembly memory (Node 22.22 and 24 have it; earlier Node 22 releases
+// need --experimental-wasm-memory64); --mem32 runs them on a 32-bit memory
+// instead (addresses below 4 GB), --mem64 runs 32-bit programs on a 64-bit
+// one.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, appendFileSync, mkdtempSync, statSync } from 'node:fs';
@@ -14,8 +19,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { Machine, ProcessExit, GuestFault, hex } from '../runtime.mjs';
+import { Machine, ProcessExit, GuestFault, hex, hasMemory64 } from '../runtime.mjs';
 import { Process } from '../win32.mjs';
+import { peArch } from '../pe.mjs';
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
 import { stdout, stderr } from './output.mjs';
 
@@ -43,28 +49,55 @@ function findTranslatorWasm() {
   return null;
 }
 
+/**
+ * The default guest region: 8 GB for 64-bit programs on a 64-bit memory,
+ * whose images load at their preferred bases (0x1_4000_0000 for an .exe);
+ * 3 GB on a 32-bit one, where those images fold to 1-2 GB
+ * (0x1_4000_0000 -> 0x4000_0000); 1 GB for 32-bit programs.
+ */
+export function defaultGuestLimitMB(arch, mem64) {
+  if (arch !== 'x64') return 1024;
+  return mem64 ? 8192 : 3072;
+}
+
 export async function runExe(exePath, argv, opts = {}) {
   const wwt = () => findWwt(opts.wwt);
+  const arch = peArch(readFileSync(exePath));
+  const mem64 = opts.mem64 ?? arch === 'x64';
+  if (mem64 && !hasMemory64()) {
+    throw new Error(
+      'this Node has no 64-bit WebAssembly memory, which 64-bit programs use: ' +
+        'run Node 22.22 or 24, or node --experimental-wasm-memory64 (or pass --mem32)',
+    );
+  }
+  const m64 = mem64 ? ['--mem64'] : [];
+  // x86-64 code on a 64-bit memory has 64-bit code addresses.
+  const code64 = mem64 && arch === 'x64';
   let wasmPath = opts.wasm;
   if (!wasmPath) {
     const dir = mkdtempSync(join(tmpdir(), 'wwt-'));
     wasmPath = join(dir, basename(exePath) + '.wasm');
     const extra = opts.translateArgs ?? [];
-    const limit = ['--guest-limit-mb', String(opts.guestLimitMB ?? 1024)];
-    execFileSync(wwt(), ['translate', exePath, '-o', wasmPath, ...limit, ...extra], {
+    // A guest limit known at translation time (a constant in the checks)
+    // with a 32-bit memory; a 64-bit one reads it at run time.
+    const limitMB = opts.guestLimitMB ?? defaultGuestLimitMB(arch, mem64);
+    const limit = mem64 ? [] : ['--guest-limit-mb', String(limitMB)];
+    execFileSync(wwt(), ['translate', exePath, '-o', wasmPath, ...m64, ...limit, ...extra], {
       stdio: ['ignore', 'ignore', opts.quiet ? 'ignore' : 'inherit'],
     });
   }
   const abi = JSON.parse(execFileSync(wwt(), ['abi']).toString());
   const kdir = mkdtempSync(join(tmpdir(), 'wwt-k-'));
-  execFileSync(wwt(), ['kernel', '-o', join(kdir, 'kernel.wasm')]);
+  execFileSync(wwt(), ['kernel', '-o', join(kdir, 'kernel.wasm'), ...m64, ...(code64 ? ['--code64'] : [])]);
   const kernel = readFileSync(join(kdir, 'kernel.wasm'));
 
   const out = [];
   const machine = new Machine({
     abi,
     kernel,
-    guestLimit: (opts.guestLimitMB ?? 1024) * 1024 * 1024,
+    arch,
+    mem64,
+    guestLimit: (opts.guestLimitMB ?? defaultGuestLimitMB(arch, mem64)) * 1024 * 1024,
     log: opts.verbose ? (s) => stderr(s + '\n') : undefined,
   });
   await machine.init();
@@ -113,6 +146,8 @@ async function main() {
     else if (a === '--verbose') opts.verbose = true;
     else if (a === '--profile') opts.profile = args.shift();
     else if (a === '--guest-limit') opts.guestLimitMB = Number(args.shift());
+    else if (a === '--mem64') opts.mem64 = true;
+    else if (a === '--mem32') opts.mem64 = false;
     else throw new Error(`unknown option ${a}`);
   }
   const exe = args.shift();

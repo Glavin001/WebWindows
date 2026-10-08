@@ -25,7 +25,7 @@ export class CodeWriteWatch {
     this.pages = new Set();
     machine.onCodePage = (p) => this.check(p, p + 1);
     vm.onProtect = (p0, p1) => this.check(p0, p1);
-    this.check(0, machine.guestLimit >>> 12);
+    this.check(0, Math.floor(machine.guestLimit / 0x1000));
   }
 
   hasCode(p) {

@@ -22,7 +22,7 @@ const PS_ATTRIBUTE_TEB_ADDRESS = 0x10004;
 /** Scratch memory Wine's Unix side can write results to. */
 function scratch(h) {
   if (!h.threadScratch) {
-    h.threadScratch = h.unix.M._malloc(64) >>> 0;
+    h.threadScratch = h.unix.malloc(64);
     h.m.u8.fill(0, h.threadScratch, h.threadScratch + 64);
   }
   return h.threadScratch;
@@ -40,13 +40,13 @@ export function threadInfo(h, handle) {
     return { tid: t.tid, exitCode: STATUS_PENDING, teb: t.teb };
   }
   const s = scratch(h);
-  const status = h.unix.M._wasm_thread_info(handle, s, s + 4, s + 8) >>> 0;
+  const status = h.unix.call('wasm_thread_info', 'hppp', handle, s, s + 4, s + 8) >>> 0;
   if (status) return null;
   return { tid: h.u32(s), exitCode: h.u32(s + 4), teb: h.u32(s + 8) };
 }
 
 function unixCall(h, name, ...args) {
-  return h.unix.syscalls.get(name)(...args) >>> 0;
+  return h.unix.syscalls.get(name)(args) >>> 0;
 }
 
 /** Polls a server wait: the status, or undefined while it would block. */
@@ -180,7 +180,7 @@ export const THREAD_SYSCALLS = {
     if (process !== CURRENT_PROCESS) return STATUS_NOT_SUPPORTED;
     const t = this.newThread(start, param, stackReserve);
     const s = scratch(this);
-    const status = this.unix.M._wasm_create_thread(t.teb, flags, access, s, s + 4) >>> 0;
+    const status = this.unix.call('wasm_create_thread', 'piipp', t.teb, flags, access, s, s + 4) >>> 0;
     if (status) return status;
     t.tid = this.u32(s + 4);
     t.suspend = flags & THREAD_CREATE_FLAGS_CREATE_SUSPENDED ? 1 : 0;
@@ -209,16 +209,16 @@ export const THREAD_SYSCALLS = {
     const self = this.threads.current;
     const info = handle === 0 ? null : threadInfo(this, handle);
     if (handle === 0 || handle === CURRENT_THREAD || info?.tid === self.tid) {
-      this.unix.M._wasm_exit_thread(status);
+      this.unix.call('wasm_exit_thread', 'i', status);
       this.endThread(self, status);
       throw new ThreadExit(status);
     }
     if (!info) return STATUS_INVALID_HANDLE;
-    const r = this.unix.M._wasm_terminate_thread(handle, status) >>> 0;
+    const r = this.unix.call('wasm_terminate_thread', 'hi', handle, status) >>> 0;
     if (r) return r;
     const t = this.threads.byTid(info.tid);
     if (t) {
-      this.unix.M._wasm_forget_thread(t.teb);
+      this.unix.call('wasm_forget_thread', 'p', t.teb);
       if (t.state === 'waiting') {
         // Its frames are below this one: it ends when its wait returns.
         t.killed = true;
@@ -316,7 +316,7 @@ function threadOf(h, handle) {
 
 function suspendResume(h, handle, pcount, resume) {
   const s = scratch(h);
-  const prev = h.unix.M._wasm_suspend_thread(handle, resume ? 1 : 0, s);
+  const prev = h.unix.call('wasm_suspend_thread', 'hip', handle, resume ? 1 : 0, s);
   if (prev < 0) return h.u32(s);
   if (pcount) h.w32(pcount, prev);
   const t = threadOf(h, handle);
