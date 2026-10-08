@@ -13,6 +13,28 @@ of their files are in the repository.
 | Far Cry demo (2004) | Direct3D 9 (shader model 1 + fixed function) | In the browser: menu, new game, the Fort level, walking and mouse look; rendering bugs (sky, some stretched geometry, render-to-texture) |
 | Unreal Tournament 2004 demo | Direct3D 8/9 | In the browser: menus, Instant Action, a DeathMatch on DM-Rankin, walking and turning |
 
+## Direct3D 9 against Wine's own tests
+
+Wine's `dlls/d3d9/tests/visual.c` (134 rendering tests that read pixels
+back) runs on translated Wine in headless Chrome, whose WebGPU draws the
+frames. Run in batches of ten test functions (one hangs in a full run),
+it found and measured these backend fixes, from 2105 failures to about 600:
+
+* the fixed-function vertex pipe reported zero lights, so wined3d refused
+  every `LightEnable` and lit geometry got only ambient light;
+* fog was applied nowhere: Wine 11's HLSL fixed function leaves it to the
+  backend, and the adapter never passed the fog states on; table fog now
+  reads eye depth under a perspective projection, as Direct3D does;
+* a second Direct3D device read back the first one's frames (fences
+  numbered per device, while the core counts them per process), which
+  also made each test spoil the next;
+* ColorFill and blits to non-render-target surfaces drew nothing;
+* pixel shaders 1.x never got `D3DTTFF_PROJECTED`;
+* texture coordinate generation other than pass-through failed to compile.
+
+Far Cry hits several of these (it runs on shader model 1 and fixed
+function: lights, fog, projected lookups, texgen).
+
 ## Unreal Tournament 2004 demo
 
 From the demo's `System` folder, pick `UT2004.exe` (it starts fullscreen at
