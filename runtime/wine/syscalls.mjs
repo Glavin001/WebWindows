@@ -421,6 +421,10 @@ export const SYSCALLS = {
       case 31: // ProcessDebugFlags
         this.w32(buf, cls === 31 ? 1 : 0);
         return ret(4);
+      case 21: // ProcessAffinityMask: the one processor
+        if (len < this.ps) return STATUS.INFO_LENGTH_MISMATCH;
+        this.wptr(buf, 1);
+        return ret(this.ps);
       case 26: // ProcessWow64Information
         this.wptr(buf, 0);
         return ret(this.ps);
@@ -459,7 +463,7 @@ export const SYSCALLS = {
           if (n >= 48) this.w32(buf + 44, 0x2000000);
           return ret(n);
         }
-        this.log(`NtQueryInformationProcess class ${cls} not implemented`);
+        this.fixme(`NtQueryInformationProcess class ${cls} not implemented`);
         return STATUS.INVALID_INFO_CLASS;
     }
   },
@@ -516,7 +520,7 @@ export const SYSCALLS = {
       }
       case 0x4c: // SystemFirmwareTableInformation etc.
       default:
-        this.log(`NtQuerySystemInformation class ${hex(cls)} not implemented`);
+        this.fixme(`NtQuerySystemInformation class ${hex(cls)} not implemented`);
         // No length needed: callers that size a buffer from it (kernel32's
         // firmware tables) then see the class as unavailable.
         ret(0);
@@ -706,7 +710,7 @@ export const SYSCALLS = {
         return done(4 + name.length * 2);
       }
       default:
-        this.log(`NtQueryInformationFile class ${cls} not implemented`);
+        this.fixme(`NtQueryInformationFile class ${cls} not implemented`);
         return STATUS.INVALID_INFO_CLASS;
     }
   },
@@ -823,7 +827,7 @@ export const SYSCALLS = {
     const LAYOUT = { 1: [64], 2: [68], 3: [94], 12: [12], 37: [104, 96], 38: [80, 72], 60: [88, 72], 63: [114, 72] };
     const layout = LAYOUT[cls];
     if (!layout) {
-      this.log(`NtQueryDirectoryFile class ${cls} not implemented`);
+      this.fixme(`NtQueryDirectoryFile class ${cls} not implemented`);
       return STATUS.INVALID_INFO_CLASS;
     }
     // The listing is taken on the first call (or a restart), with its mask.
@@ -1077,7 +1081,7 @@ export const SYSCALLS64 = {
       if (pret) this.w32(pret, this.ps);
       return STATUS.SUCCESS;
     }
-    this.log(`NtQueryInformationThread class ${cls} not implemented`);
+    this.fixme(`NtQueryInformationThread class ${cls} not implemented`);
     return STATUS.INVALID_INFO_CLASS;
   },
   NtRaiseException(a) {

@@ -270,7 +270,7 @@ export const THREAD_SYSCALLS = {
         this.w32(buf, 0);
         return ret(cls === 18 ? 1 : 4);
       default:
-        this.log(`NtQueryInformationThread class ${cls} not implemented`);
+        this.fixme(`NtQueryInformationThread class ${cls} not implemented`);
         return STATUS_INVALID_INFO_CLASS;
     }
   },

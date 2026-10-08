@@ -1,5 +1,9 @@
 processors: 1
 active processor mask: 1
+GetProcessAffinityMask: 1
+process mask: 1, system mask: 1
+SetThreadAffinityMask on the first processor: 1
+pinned thread ran: 1
 rdtsc runs at 100 MHz or more: 1
 rdtsc moves between reads: 1
 CentralProcessor\0: 0

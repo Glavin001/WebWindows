@@ -424,6 +424,18 @@ export class WineHost {
     if (this.trace) this.stderr(new TextEncoder().encode(`[wine] ${s}\n`));
   }
 
+  /**
+   * Something the host does not do, or only approximates: said once on
+   * stderr, in Wine's style, so a wrong or missing answer shows where the
+   * program first asked instead of as a crash later.
+   */
+  fixme(s) {
+    this.fixmes ??= new Set();
+    if (this.fixmes.has(s)) return;
+    this.fixmes.add(s);
+    this.stderr(new TextEncoder().encode(`fixme:wwt:${s}\n`));
+  }
+
   // ---- Process setup -----------------------------------------------------------
 
   boot(ntdllPath, exeDosPath) {
@@ -906,7 +918,7 @@ export class WineHost {
       // Waits an object satisfies complete when it is signalled.
       if (SIGNALLING.has(name) && !status) this.threads.signalled();
     } else if (!impl) {
-      if (!this.unimplemented.has(name)) this.log(`UNIMPLEMENTED ${name}`);
+      if (!this.unimplemented.has(name)) this.fixme(`${name} not implemented`);
       this.unimplemented.set(name, (this.unimplemented.get(name) ?? 0) + 1);
       status = STATUS.NOT_IMPLEMENTED;
     } else {
@@ -975,7 +987,7 @@ export class WineHost {
     } else if (unixImpl && this.routeToUnix(name, a)) {
       status = unixImpl(slots());
     } else if (!impl) {
-      if (!this.unimplemented.has(name)) this.log(`UNIMPLEMENTED ${name}`);
+      if (!this.unimplemented.has(name)) this.fixme(`${name} not implemented`);
       this.unimplemented.set(name, (this.unimplemented.get(name) ?? 0) + 1);
       status = STATUS.NOT_IMPLEMENTED;
     } else {
@@ -1231,7 +1243,7 @@ export class WineHost {
         return 0;
       }
       default:
-        this.log(`ntdll unix call ${code} not implemented`);
+        this.fixme(`ntdll unix call ${code} not implemented`);
         return STATUS.NOT_IMPLEMENTED;
     }
   }

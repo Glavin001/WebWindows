@@ -1,14 +1,25 @@
 /* What games read to size themselves to the processor: the number of
- * processors, the time stamp counter's rate (timed against the performance
- * counter) and the speed in the registry (~MHz, which wineboot writes).
+ * processors, the affinity masks (Far Cry measures each processor on a
+ * thread pinned to it), the time stamp counter's rate (timed against the
+ * performance counter) and the speed in the registry (~MHz, which wineboot
+ * writes).
  * Prints only what holds on any machine, so the output is the same natively.
  */
 #include <windows.h>
 #include <stdio.h>
 #include <intrin.h>
 
+static DWORD WINAPI on_cpu(void *arg)
+{
+    *(LONG *)arg = 1;
+    return 0;
+}
+
 int main(void)
 {
+    DWORD_PTR process_mask = 0, system_mask = 0;
+    LONG ran = 0;
+    HANDLE thread;
     SYSTEM_INFO si;
     HKEY key;
     DWORD mhz = 0, size = sizeof(mhz);
@@ -19,6 +30,13 @@ int main(void)
     GetSystemInfo(&si);
     printf("processors: %d\n", si.dwNumberOfProcessors >= 1);
     printf("active processor mask: %d\n", si.dwActiveProcessorMask != 0);
+    printf("GetProcessAffinityMask: %d\n", GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask));
+    printf("process mask: %d, system mask: %d\n", process_mask != 0, system_mask != 0);
+    thread = CreateThread(NULL, 0, on_cpu, (void *)&ran, CREATE_SUSPENDED, NULL);
+    printf("SetThreadAffinityMask on the first processor: %d\n", SetThreadAffinityMask(thread, process_mask & -process_mask) != 0);
+    ResumeThread(thread);
+    printf("pinned thread ran: %d\n", WaitForSingleObject(thread, 5000) == WAIT_OBJECT_0 && ran);
+    CloseHandle(thread);
 
     QueryPerformanceFrequency(&f);
     QueryPerformanceCounter(&q0);
