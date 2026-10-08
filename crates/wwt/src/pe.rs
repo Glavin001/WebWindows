@@ -447,6 +447,12 @@ impl PeFile {
         self.characteristics & IMAGE_FILE_DLL != 0
     }
 
+    /// One of Wine's own PE modules: Wine's build tools write this
+    /// signature into the DOS stub (and Wine's loader checks it).
+    pub fn is_wine_builtin(&self) -> bool {
+        self.data.get(0x40..0x50) == Some(b"Wine builtin DLL".as_slice())
+    }
+
     /// Converts an RVA to a file offset.
     pub fn rva_to_offset(&self, rva: u32) -> Option<usize> {
         if rva < self.size_of_headers {
@@ -617,61 +623,86 @@ impl PeFile {
         Ok(tls)
     }
 
-    /// Function symbols of the COFF symbol table (unstripped MinGW
-    /// builds have one, statics included): address -> name, without the
-    /// leading underscore of i386 C names. Empty when stripped.
-    pub fn function_symbols(&self) -> std::collections::BTreeMap<u64, String> {
-        let mut out = std::collections::BTreeMap::new();
-        let d = &self.data;
-        let Ok(pe_off) = rd_u32(d, 0x3c) else {
-            return out;
-        };
-        let coff = pe_off as usize + 4;
-        let (Ok(table), Ok(count)) = (rd_u32(d, coff + 8), rd_u32(d, coff + 12)) else {
-            return out;
-        };
-        let (table, count) = (table as usize, count as usize);
-        if table == 0 || table.saturating_add(count.saturating_mul(18)) > d.len() {
-            return out;
-        }
-        let strings = table + count * 18;
-        let mut i = 0;
-        while i < count {
-            let s = table + i * 18;
-            let value = u32::from_le_bytes(d[s + 8..s + 12].try_into().unwrap());
-            let section = i16::from_le_bytes([d[s + 12], d[s + 13]]);
-            let ty = u16::from_le_bytes([d[s + 14], d[s + 15]]);
-            let aux = d[s + 17] as usize;
-            if section > 0 && ty & 0x30 == 0x20 {
-                let raw = if d[s..s + 4] == [0; 4] {
-                    let off =
-                        strings + u32::from_le_bytes(d[s + 4..s + 8].try_into().unwrap()) as usize;
-                    let end = d
-                        .get(off..)
-                        .and_then(|t| t.iter().position(|&b| b == 0))
-                        .map(|n| off + n);
-                    end.map(|e| &d[off..e]).unwrap_or(&[])
-                } else {
-                    let n = d[s..s + 8].iter().position(|&b| b == 0).unwrap_or(8);
-                    &d[s..s + n]
-                };
-                if let Some(sec) = self.sections.get(section as usize - 1) {
-                    let name = String::from_utf8_lossy(raw);
-                    let name = match self.mode {
-                        crate::ir::Mode::X86 => name.strip_prefix('_').unwrap_or(&name).to_string(),
-                        crate::ir::Mode::X64 => name.into_owned(),
-                    };
-                    out.entry(self.image_base + (sec.virtual_address as u64 + value as u64))
-                        .or_insert(name);
-                }
+    pub fn section_for_rva(&self, rva: u32) -> Option<&Section> {
+        self.sections.iter().find(|s| s.contains_rva(rva))
+    }
+
+    /// Names for code addresses (virtual addresses): the COFF symbol table
+    /// when the file still has one (MinGW keeps it unless stripped), then
+    /// named exports. A malformed table just yields fewer names.
+    pub fn code_names(&self) -> Vec<(u64, String)> {
+        let mut out: Vec<(u64, String)> = self
+            .coff_symbols()
+            .into_iter()
+            .filter(|s| s.2)
+            .map(|(va, name, _)| (va, name))
+            .collect();
+        for e in &self.exports {
+            if let (Some(n), ExportTarget::Rva(rva)) = (&e.name, &e.target) {
+                out.push((self.image_base.wrapping_add(*rva as u64), n.clone()));
             }
-            i += 1 + aux;
         }
         out
     }
 
-    pub fn section_for_rva(&self, rva: u32) -> Option<&Section> {
-        self.sections.iter().find(|s| s.contains_rva(rva))
+    /// The address of a COFF symbol (external or static, in any section).
+    pub fn symbol(&self, name: &str) -> Option<u64> {
+        self.coff_symbols()
+            .into_iter()
+            .find(|s| s.1 == name)
+            .map(|s| s.0)
+    }
+
+    /// External and static symbols of the COFF symbol table: virtual
+    /// address, name, and whether their section is executable.
+    fn coff_symbols(&self) -> Vec<(u64, String, bool)> {
+        let mut out = vec![];
+        let d = &self.data;
+        let coff = match rd_u32(d, 0x3c) {
+            Ok(o) => o as usize + 4,
+            Err(_) => return out,
+        };
+        let (Ok(sym_ptr), Ok(nsyms)) = (rd_u32(d, coff + 8), rd_u32(d, coff + 12)) else {
+            return out;
+        };
+        let (sym_ptr, nsyms) = (sym_ptr as usize, nsyms as usize);
+        let strtab = sym_ptr + nsyms * 18;
+        let mut i = 0;
+        while sym_ptr != 0 && i < nsyms {
+            let e = sym_ptr + i * 18;
+            let Some(ent) = d.get(e..e + 18) else { break };
+            let value = u32::from_le_bytes([ent[8], ent[9], ent[10], ent[11]]);
+            let section = i16::from_le_bytes([ent[12], ent[13]]);
+            let class = ent[16];
+            let aux = ent[17] as usize;
+            i += 1 + aux;
+            if section <= 0 || !(class == 2 || class == 3) {
+                continue;
+            }
+            let Some(sec) = self.sections.get(section as usize - 1) else {
+                continue;
+            };
+            let name = if ent[0..4] == [0, 0, 0, 0] {
+                let off = u32::from_le_bytes([ent[4], ent[5], ent[6], ent[7]]) as usize;
+                let start = strtab + off;
+                let Some(rest) = d.get(start..) else { continue };
+                let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
+                String::from_utf8_lossy(&rest[..end]).into_owned()
+            } else {
+                let end = ent[..8].iter().position(|&b| b == 0).unwrap_or(8);
+                String::from_utf8_lossy(&ent[..end]).into_owned()
+            };
+            // Skip section names and compiler-local labels.
+            if name.is_empty() || name.starts_with('.') {
+                continue;
+            }
+            let va = self
+                .image_base
+                .wrapping_add(sec.virtual_address as u64)
+                .wrapping_add(value as u64);
+            out.push((va, name, sec.is_executable()));
+        }
+        out
     }
 
     pub fn entry_point(&self) -> Option<u64> {

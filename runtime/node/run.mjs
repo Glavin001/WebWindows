@@ -78,7 +78,11 @@ export async function runExe(exePath, argv, opts = {}) {
     const dir = mkdtempSync(join(tmpdir(), 'wwt-'));
     wasmPath = join(dir, basename(exePath) + '.wasm');
     const extra = opts.translateArgs ?? [];
-    execFileSync(wwt(), ['translate', exePath, '-o', wasmPath, ...m64, ...extra], {
+    // A guest limit known at translation time (a constant in the checks)
+    // with a 32-bit memory; a 64-bit one reads it at run time.
+    const limitMB = opts.guestLimitMB ?? defaultGuestLimitMB(arch, mem64);
+    const limit = mem64 ? [] : ['--guest-limit-mb', String(limitMB)];
+    execFileSync(wwt(), ['translate', exePath, '-o', wasmPath, ...m64, ...limit, ...extra], {
       stdio: ['ignore', 'ignore', opts.quiet ? 'ignore' : 'inherit'],
     });
   }

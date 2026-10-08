@@ -234,7 +234,7 @@ pub fn cf(kind: u32) -> E {
 pub fn zf(kind: u32) -> E {
     let c = C::of(kind);
     match op_of(kind) {
-        EXPLICIT => bit(Fr, 6),
+        EXPLICIT | SAHF => bit(Fr, 6),
         _ => c.is_zero(Fr),
     }
 }
@@ -242,7 +242,7 @@ pub fn zf(kind: u32) -> E {
 pub fn sf(kind: u32) -> E {
     let c = C::of(kind);
     match op_of(kind) {
-        EXPLICIT => bit(Fr, 7),
+        EXPLICIT | SAHF => bit(Fr, 7),
         _ => c.sign(Fr, width_of(kind)),
     }
 }
@@ -250,7 +250,7 @@ pub fn sf(kind: u32) -> E {
 pub fn pf(kind: u32) -> E {
     let c = C::of(kind);
     match op_of(kind) {
-        EXPLICIT => bit(Fr, 2),
+        EXPLICIT | SAHF => bit(Fr, 2),
         _ => not1(and(
             Un(UnOp::I32Popcnt, Box::new(and(c.lo(Fr), K(0xff)))),
             K(1),
@@ -265,7 +265,7 @@ pub fn af(kind: u32) -> E {
         INC => not1(and(c.lo(Fr), K(0xf))),
         DEC => bin(BinOp::I32Eq, and(c.lo(Fr), K(0xf)), K(0xf)),
         NEG => bit(xor(c.lo(Fa), c.lo(Fr)), 4),
-        EXPLICIT => bit(Fr, 4),
+        EXPLICIT | SAHF => bit(Fr, 4),
         _ => K(0),
     }
 }
@@ -296,6 +296,7 @@ pub fn of(kind: u32) -> E {
         SHL => xor(c.sign(Fr, w), cf(kind)),
         SHR => c.sign(Fa, w),
         MUL => c.lo(Fb),
+        SAHF => Fa,
         _ => bit(Fr, 11),
     }
 }
@@ -304,6 +305,9 @@ pub fn of(kind: u32) -> E {
 pub fn eflags(kind: u32) -> E {
     if op_of(kind) == EXPLICIT {
         return and(Fr, K(fl::ARITH));
+    }
+    if op_of(kind) == SAHF {
+        return or(and(Fr, K(fl::ARITH & !fl::OF)), shl(Fa, 11));
     }
     let mut e = cf(kind);
     e = or(e, shl(pf(kind), 2));
@@ -363,7 +367,7 @@ fn direct(cc: Cc, op: u32, w: u32) -> Option<E> {
         (LOGIC, Cc::GE) | (LOGIC, Cc::NS) => not1(c.sign(Fr, w)),
         (LOGIC, Cc::LE) => c.v(BinOp::I32LeS, s(Fr), c.k(0)),
         (LOGIC, Cc::G) => c.v(BinOp::I32GtS, s(Fr), c.k(0)),
-        (_, Cc::NE) if op != EXPLICIT => c.v(BinOp::I32Ne, Fr, c.k(0)),
+        (_, Cc::NE) if op != EXPLICIT && op != SAHF => c.v(BinOp::I32Ne, Fr, c.k(0)),
         _ => return None,
     })
 }
@@ -381,7 +385,7 @@ pub fn narrow(e: E) -> E {
 
 /// A formula for a kind in x86-64 code (i64 lazy operands).
 pub fn for_x64(e: E, kind: u32) -> E {
-    if width_of(kind) == 64 && op_of(kind) != EXPLICIT {
+    if width_of(kind) == 64 && !matches!(op_of(kind), EXPLICIT | SAHF) {
         e
     } else {
         narrow(e)

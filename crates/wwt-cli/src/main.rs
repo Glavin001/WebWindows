@@ -47,6 +47,39 @@ struct TranslateOpts {
     /// move below it.
     #[arg(long)]
     base: Option<String>,
+    /// Guest limit (MB) the module will run under: memory checks compare
+    /// against a constant, which is faster, and the runtime refuses the
+    /// module under any other limit. Without it, the module reads the limit
+    /// at run time.
+    #[arg(long)]
+    guest_limit_mb: Option<u32>,
+    /// Do not inline small leaf functions into their callers.
+    #[arg(long)]
+    no_inline: bool,
+    /// Translate exported memory functions instead of using built-ins.
+    #[arg(long)]
+    no_builtins: bool,
+    /// Replace ntdll's heap functions with the runtime's native heap
+    /// (`crates/wwt-heap`), which the runtime must then provide.
+    #[arg(long)]
+    native_heap: bool,
+    /// Try the runtime's native string and locale functions
+    /// (`crates/wwt-strings`) before the translated ones in Wine's DLLs;
+    /// the runtime must then provide them.
+    #[arg(long)]
+    native_strings: bool,
+    /// No re-entry at loop headers (see `wwt::osr`).
+    #[arg(long)]
+    no_osr: bool,
+    /// Lower lock-prefixed instructions to WebAssembly atomics, for a
+    /// runtime that runs guest threads in parallel.
+    #[arg(long)]
+    atomics: bool,
+    /// Whether the image is compiled C, whose code never reads the flags
+    /// across calls and returns, so they need not be written back there:
+    /// `auto` (Wine's own modules), `on` or `off`.
+    #[arg(long, default_value = "auto", value_parser = ["auto", "on", "off"])]
+    c_abi: String,
 }
 
 impl TranslateOpts {
@@ -58,6 +91,18 @@ impl TranslateOpts {
         c.lift.smc_checks = !self.no_smc_checks;
         c.codegen.smc_checks = !self.no_smc_checks;
         c.lift.strict_ordering = self.strict_ordering;
+        c.codegen.guest_limit = self.guest_limit_mb.map(|mb| mb << 20);
+        c.inline = !self.no_inline;
+        c.builtins = !self.no_builtins;
+        c.native_heap = self.native_heap;
+        c.native_strings = self.native_strings;
+        c.codegen.osr = !self.no_osr;
+        c.codegen.atomics = self.atomics;
+        c.c_abi = match self.c_abi.as_str() {
+            "on" => Some(true),
+            "off" => Some(false),
+            _ => None,
+        };
         c.with_mem64(self.mem64)
     }
 
@@ -117,7 +162,8 @@ enum Cmd {
         #[command(flatten)]
         opts: TranslateOpts,
     },
-    /// Print the generated WebAssembly as text.
+    /// Print the generated WebAssembly as text (or, given a .wasm file,
+    /// that module, e.g. an Emscripten build to compare against).
     Wat {
         file: PathBuf,
         #[command(flatten)]
@@ -258,6 +304,11 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Wat { file, opts } => {
+            let bytes = std::fs::read(&file)?;
+            if bytes.starts_with(b"\0asm") {
+                println!("{}", wasmprinter::print_bytes(&bytes)?);
+                return Ok(());
+            }
             let pe = opts.load(&file)?;
             let t = wwt::translate_pe(&pe, &opts.config(), &opts.seeds()?)?;
             println!("{}", wasmprinter::print_bytes(&t.wasm)?);

@@ -21,6 +21,8 @@
 //                     program runs from there (from C:\app if it lives
 //                     elsewhere), and files it creates or changes there are
 //                     written back to DIR when it exits
+//   --file HOST[=DOS] put a host file in the guest's file system (default
+//                     C:\<name>), e.g. a script or document the program reads
 //
 // Wine's PE DLLs come from WINE_BUILD (default /opt/wine-build) and its NLS
 // files from WINE_SRC; translations are cached in target/wine-cache.
@@ -45,14 +47,31 @@ import { windowsKey, KEYEVENTF_KEYUP } from '../web/keys.mjs';
 /** Thrown out of a wait to stop a GUI program that went idle (--screenshot). */
 class ProgramIdle extends Error {}
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
+import { NATIVE_HEAP_FLAG, compileNativeHeap } from '../wine/heap.mjs';
+import { NATIVE_STRINGS_DLLS, NATIVE_STRINGS_FLAG, compileNativeStrings } from '../wine/strings.mjs';
 import { stdout, stderr } from './output.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 let wineBuild = process.env.WINE_BUILD ?? '/opt/wine-build';
 const wineSrc = process.env.WINE_SRC ?? '/opt/wine-src/wine-11.0';
 const cacheDir = join(root, 'target/wine-cache');
+// Wine's address space; translations compile it into their memory checks.
+const GUEST_LIMIT = 0x8000_0000;
+// ntdll's heap as native WebAssembly (crates/wwt-heap), when it is built:
+// ntdll is then translated with --native-heap. WWT_NATIVE_HEAP=0 keeps
+// Wine's own heap.
+const heapWasm = join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_heap.wasm');
+const nativeHeap =
+  process.env.WWT_NATIVE_HEAP !== '0' && existsSync(heapWasm) ? compileNativeHeap(readFileSync(heapWasm)) : null;
+// String and locale functions as native WebAssembly (crates/wwt-strings),
+// when built: the DLLs that have them are then translated with
+// --native-strings. WWT_NATIVE_STRINGS=0 keeps Wine's.
+const stringsWasm = join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_strings.wasm');
+const nativeStrings =
+  process.env.WWT_NATIVE_STRINGS !== '0' && existsSync(stringsWasm) ? compileNativeStrings(readFileSync(stringsWasm)) : null;
 
 function wwt() {
+  if (process.env.WWT) return process.env.WWT;
   return ['target/release/wwt', 'target/debug/wwt']
     .map((p) => join(root, p))
     .filter((p) => existsSync(p))
@@ -70,19 +89,28 @@ function translate(path, bytes) {
   // Keyed by the image and the translator build, so a rebuilt translator
   // never serves stale translations.
   const t = statSync(wwt());
-  // Per-DLL translator flags, as in wine-bundle.mjs (TRANSLATE_FLAGS).
-  const flags = [
-    ...({ 'wined3d.dll': ['--no-smc-checks'], 'd3d9.dll': ['--no-smc-checks'] }[path.split('\\').pop().toLowerCase()] ?? []),
-    ...(mem64 ? ['--mem64'] : []),
+  // Per-DLL translator flags, as in wine-bundle.mjs (TRANSLATE_FLAGS), and
+  // WWT_TRANSLATE_FLAGS: extra `wwt translate` options, for A/B tests
+  // (tools/bench/ab.mjs --wine). All are part of the cache key. With a
+  // 32-bit memory the guest limit is a constant in the memory checks.
+  const flags = { 'wined3d.dll': ['--no-smc-checks'], 'd3d9.dll': ['--no-smc-checks'] }[path.split('\\').pop().toLowerCase()] ?? [];
+  const extra = [
+    ...flags,
+    ...(mem64 ? ['--mem64'] : ['--guest-limit-mb', String(GUEST_LIMIT >>> 20)]),
+    ...(process.env.WWT_TRANSLATE_FLAGS ?? '').split(/\s+/).filter(Boolean),
   ];
-  const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}:${flags}`).digest('hex').slice(0, 16);
+  if (nativeHeap && !x64 && path.toLowerCase().endsWith('\\ntdll.dll')) extra.push(NATIVE_HEAP_FLAG);
+  if (nativeStrings && !x64 && NATIVE_STRINGS_DLLS.includes(path.split('\\').pop().toLowerCase())) extra.push(NATIVE_STRINGS_FLAG);
+  const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}:${extra.join(' ')}`).digest('hex').slice(0, 16);
   const out = join(cacheDir, `${path.split('\\').pop()}-${hash}.wasm`);
   if (!existsSync(out)) {
     // Several runners share the cache: write under a per-process name and
     // rename, so a reader never sees a partial file.
     const tmp = join(cacheDir, `${hash}.${process.pid}`);
     writeFileSync(`${tmp}.bin`, bytes);
-    execFileSync(wwt(), ['translate', ...flags, `${tmp}.bin`, '-o', `${tmp}.wasm`], { stdio: ['ignore', 'ignore', 'inherit'] });
+    execFileSync(wwt(), ['translate', `${tmp}.bin`, '-o', `${tmp}.wasm`, ...extra], {
+      stdio: ['ignore', 'ignore', 'inherit'],
+    });
     renameSync(`${tmp}.wasm`, out);
     rmSync(`${tmp}.bin`);
   }
@@ -98,6 +126,7 @@ let folder = false;
 let runFor = Infinity;
 let script = [];
 let appDir = null;
+const extraFiles = [];
 // --d3d-record FILE: wined3d's WebGPU command stream, recorded (no GPU in Node).
 let d3dRecord = null;
 // Wine's Unix side compiled with Emscripten (native/wine-unix): on when built,
@@ -122,7 +151,10 @@ while (args[0]?.startsWith('--')) {
   else if (a === '--input') script = parseInput(args.shift());
   else if (a === '--dir') appDir = resolve(args.shift());
   else if (a === '--mem32') mem32 = true;
-  else if (a === '--d3d-record') d3dRecord = args.shift();
+  else if (a === '--file') {
+    const [host, dos] = args.shift().split('=');
+    extraFiles.push([host, (dos ?? `C:\\${basename(host)}`).toLowerCase()]);
+  } else if (a === '--d3d-record') d3dRecord = args.shift();
 }
 
 /** "ms:action args; ..." -> [{at, push(display)}], in time order. */
@@ -222,6 +254,7 @@ if (appDir) {
 }
 const exeDos = exeWin.toLowerCase();
 files.set(exeDos, readFileSync(exe));
+for (const [host, dos] of extraFiles) files.set(dos, readFileSync(host));
 
 /** --dir: writes the files the program created or changed in C:\app back to the folder. */
 function syncBack() {
@@ -248,7 +281,7 @@ const machine = new Machine({
   kernel,
   // x86_64 Wine's DLLs load at 0x1_7000_0000 and up; on a 32-bit memory the
   // host moves them into the guest region (2 GB, as for i386).
-  ...(mem64 ? { arch: 'x64', mem64: true, guestLimit: 0x2_0000_0000 } : { arch: x64 ? 'x64' : 'x86', guestLimit: layout?.guestLimit ?? 0x8000_0000 }),
+  ...(mem64 ? { arch: 'x64', mem64: true, guestLimit: 0x2_0000_0000 } : { arch: x64 ? 'x64' : 'x86', guestLimit: GUEST_LIMIT }),
   ...(layout && { nativeSize: layout.nativeSize, extraSize: layout.extraSize }),
   log: trace ? (s) => stderr(`[machine] ${s}\n`) : undefined,
 });
@@ -358,7 +391,13 @@ const host = new WineHost(machine, {
   trace,
   unix,
   debug: process.env.WINEDEBUG ?? '',
+  // WWT_LOCALE: the user's default locale, an LCID (e.g. 0x40e for hu-HU).
+  ...(process.env.WWT_LOCALE && { locale: Number(process.env.WWT_LOCALE) }),
+  // i386 code's (see translate above).
+  nativeHeap: x64 ? null : nativeHeap,
+  aliasThunks: process.env.WWT_THUNK_ALIAS !== '0',
   audioSink: audioOut ? audioCapture : null,
+  nativeStrings: x64 ? null : nativeStrings,
 });
 host.boot(`${sys32}\\ntdll.dll`, exeDos);
 // A program that never waits (a game's busy frame loop) still stops on time.

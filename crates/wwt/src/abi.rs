@@ -44,6 +44,9 @@ pub mod cpu {
     /// Information about the last fault raised by translated code.
     pub const FAULT_CODE: u32 = 356;
     pub const FAULT_ADDR: u32 = 360;
+    /// Set by translated code that re-enters itself to resume at a loop
+    /// header (see `crate::osr`): which one, plus 1; 0 for a plain entry.
+    pub const RESUME: u32 = 364;
     /// Scratch space for the host and kernel.
     pub const SCRATCH: u32 = 384;
     pub const SIZE: u32 = 512;
@@ -122,7 +125,11 @@ pub mod flags {
     pub const SAR: u32 = 11;
     /// Multiplication: res = low part, b = 1 if the high part is significant.
     pub const MUL: u32 = 12;
-    pub const NUM_OPS: u32 = 13;
+    /// `sahf`: res = SF, ZF, AF, PF and CF in eflags bit positions, a = the
+    /// overflow flag (0 or 1), which `sahf` keeps. Apart from `EXPLICIT`,
+    /// so that reading the flags `sahf` sets does not read the old ones.
+    pub const SAHF: u32 = 13;
+    pub const NUM_OPS: u32 = 14;
 
     pub const fn kind(op: u32, width_bits: u32) -> u32 {
         let code = match width_bits {
@@ -183,6 +190,35 @@ pub mod addr {
     pub const YIELD64: u64 = STOP64 + 0x20;
 }
 
+/// The store map (import `store_map`): one byte per 4 KB page of the 4 GB
+/// address space (of the guest region, when that is larger, with 64-bit
+/// memory). Stores to a page whose byte is zero need no further checks;
+/// any other value sends the store down a slow path that checks the address
+/// precisely and invalidates translated code on the page. With 64-bit
+/// memory every store checks its address first and the map only marks code.
+pub mod store_map {
+    /// The page holds translated code: a store invalidates the page's
+    /// translations (resets its lookup entry to `zero_l2`, clears this bit).
+    pub const CODE: u8 = 1;
+    /// The page is in the null region, is the last guest page (where an
+    /// access can straddle the guest limit) or lies above the guest limit.
+    pub const EDGE: u8 = 2;
+}
+
+/// Where the runtime puts its tables, as offsets from the guest limit (the
+/// start of the native region). Modules translated for a known guest limit
+/// (`CodegenConfig::guest_limit`) use these as constant addresses instead
+/// of reading the `lookup_l1`, `zero_l2` and `store_map` imports; the
+/// runtime checks that its layout matches before loading such a module.
+pub mod native_layout {
+    /// First level of the address lookup: one u32 per 4 KB page.
+    pub const LOOKUP_L1: u32 = 0;
+    /// The empty second level.
+    pub const ZERO_L2: u32 = 0x40_0000;
+    /// The store map: one byte per 4 KB page.
+    pub const STORE_MAP: u32 = 0x40_4000;
+}
+
 /// Names of the module imports every translated module expects.
 pub mod imports {
     pub const MODULE: &str = "env";
@@ -191,13 +227,15 @@ pub mod imports {
     pub const TABLE_BASE: &str = "table_base";
     pub const LOOKUP_L1: &str = "lookup_l1";
     pub const GUEST_LIMIT: &str = "guest_limit";
-    pub const CODE_BITMAP: &str = "code_bitmap";
+    pub const STORE_MAP: &str = "store_map";
+    /// The empty second level of the lookup: translated code points a
+    /// page's first-level entry here when a store hits its code.
+    pub const ZERO_L2: &str = "zero_l2";
     /// 64-bit code only: the number of 4 KB pages the first-level lookup
     /// table covers. Targets at or above go through its last entry, which
     /// points at an empty second-level table.
     pub const CODE_PAGES: &str = "code_pages";
     pub const FAULT: &str = "fault";
-    pub const CODE_WRITE: &str = "code_write";
     pub const MATH: &str = "math";
     pub const SIN: &str = "sin";
     pub const COS: &str = "cos";
@@ -212,7 +250,7 @@ pub const FUNCS64_SECTION: &str = "wwt.funcs64";
 /// Custom section with JSON metadata about the translation.
 pub const META_SECTION: &str = "wwt.meta";
 /// Bumped whenever generated code changes incompatibly, to invalidate caches.
-pub const ABI_VERSION: u32 = 5;
+pub const ABI_VERSION: u32 = 6;
 /// Every translated module exports its lazy-flags evaluator under this
 /// name: `(fk, fr, fa, fb, fc) -> eflags` (the arithmetic flags).
 pub const EFLAGS_EXPORT: &str = "eflags";
@@ -229,6 +267,7 @@ struct AbiJson {
     yield_address: u32,
     yield_address64: u64,
     null_limit: u32,
+    native_layout: std::collections::BTreeMap<&'static str, u32>,
     funcs_section: &'static str,
     funcs64_section: &'static str,
     meta_section: &'static str,
@@ -320,6 +359,13 @@ pub fn abi_json() -> String {
         yield_address: addr::YIELD,
         yield_address64: addr::YIELD64,
         null_limit: addr::NULL_LIMIT,
+        native_layout: [
+            ("LOOKUP_L1", native_layout::LOOKUP_L1),
+            ("ZERO_L2", native_layout::ZERO_L2),
+            ("STORE_MAP", native_layout::STORE_MAP),
+        ]
+        .into_iter()
+        .collect(),
         funcs_section: FUNCS_SECTION,
         funcs64_section: FUNCS64_SECTION,
         meta_section: META_SECTION,

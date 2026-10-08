@@ -5,7 +5,7 @@ use wasmtime::{
     Caller, Config, Engine, Extern, Func, Global, GlobalType, Instance, MemoryTypeBuilder, Module,
     Mutability, Ref, RefType, SharedMemory, Store, Table, TableType, Val, ValType,
 };
-use wwt::abi::{cpu, cpu64, fault, flags as fl};
+use wwt::abi::{addr::NULL_LIMIT, cpu, cpu64, fault, flags as fl, store_map};
 
 use crate::case::{hex, mem_diff, Case, Outcome};
 use crate::layout::*;
@@ -32,7 +32,7 @@ pub enum Run {
 struct Native {
     l1: u32,
     zero_l2: u32,
-    code_bitmap: u32,
+    store_map: u32,
     cpu: u32,
     pages: u64,
 }
@@ -43,18 +43,18 @@ impl Native {
             return Native {
                 l1: L1,
                 zero_l2: ZERO_L2,
-                code_bitmap: CODE_BITMAP,
+                store_map: STORE_MAP,
                 cpu: CPU,
                 pages: MEMORY_PAGES,
             };
         }
         let zero_l2 = NATIVE_BASE + 0x80_0000;
-        let code_bitmap = zero_l2 + 0x4000;
-        let cpu = code_bitmap + 0x2_0000;
+        let store_map = zero_l2 + 0x4000;
+        let cpu = store_map + 0x10_0000;
         Native {
             l1: NATIVE_BASE,
             zero_l2,
-            code_bitmap,
+            store_map,
             cpu,
             pages: (cpu as u64 + 0x1_0000) / 65536 + 1,
         }
@@ -213,11 +213,6 @@ impl Executor {
                       -> Result<i32> { Err(on_fault(caller, code, eip, info)) },
             )
         };
-        let code_write = if mem64 {
-            Func::wrap(&mut store, |_cpu: i64, _addr: i64| {})
-        } else {
-            Func::wrap(&mut store, |_cpu: i32, _addr: i32| {})
-        };
         let math = Func::wrap(&mut store, |op: i32, a: f64, b: f64| -> f64 {
             host_math(op as u32, a, b)
         });
@@ -240,6 +235,13 @@ impl Executor {
                 w32(&memory, nat.l1 + p * 4, nat.zero_l2);
             }
         }
+        // Stores to the null region and from the last guest page up take
+        // the precise check.
+        let edge = |p: u32| !(NULL_LIMIT >> 12..(NATIVE_BASE >> 12) - 1).contains(&p);
+        let map: Vec<u8> = (0..1u32 << 20)
+            .map(|p| if edge(p) { store_map::EDGE } else { 0 })
+            .collect();
+        write_bytes(&memory, nat.store_map, &map);
         let imports: Vec<Extern> = module
             .imports()
             .map(|imp| -> Result<Extern> {
@@ -249,10 +251,10 @@ impl Executor {
                     "table_base" => g(&mut store, 1, false)?.into(),
                     "lookup_l1" => g(&mut store, nat.l1, mem64)?.into(),
                     "guest_limit" => g(&mut store, NATIVE_BASE - 0x10000 - 16, mem64)?.into(),
-                    "code_bitmap" => g(&mut store, nat.code_bitmap, mem64)?.into(),
+                    "store_map" => g(&mut store, nat.store_map, mem64)?.into(),
+                    "zero_l2" => g(&mut store, nat.zero_l2, mem64)?.into(),
                     "code_pages" => g(&mut store, (1 << 20) - 1, true)?.into(),
                     "fault" => fault_fn.into(),
-                    "code_write" => code_write.into(),
                     "math" => math.into(),
                     "sin" => sin.into(),
                     "cos" => cos.into(),

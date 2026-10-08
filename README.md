@@ -49,6 +49,8 @@ node runtime/node/run.mjs hello64.exe
 # On translated Wine (build Wine's i386 PE DLLs first; needs flex, bison):
 tools/wine/build.sh
 cargo build --release -p wwt-cli
+cargo build -p wwt-heap --target wasm32-unknown-unknown --profile release-wasm  # ntdll's heap, native
+cargo build -p wwt-strings --target wasm32-unknown-unknown --profile release-wasm  # string functions, native
 node runtime/node/wine.mjs tests/programs/hello.exe
 
 # 64-bit programs on translated x86_64 Wine (a second build tree):
@@ -149,6 +151,7 @@ The plan's verification pipeline, as implemented:
 | 3. Wine's own tests | Every unit of Wine's `kernel32`, `user32` and `gdi32` conformance tests on translated Wine, against recorded baselines | `node tests/wine/winetest.mjs --baseline tests/wine/baseline/user32_test.json .../user32_test.exe` |
 | 4. Real software (start) | The browser front end in headless Chromium: the cache and profile loop, the folder picker, Wine's Minesweeper and Notepad driven with mouse and keyboard, and Direct3D 9 test programs on WebGPU; the same windowed programs headless in Node with screenshots; a Direct3D 9 benchmark | `node tests/web/browser.mjs`, `tests/web/picker.mjs`, `tests/web/gui.mjs`, `tests/wine/gui.mjs`, `tests/web/d3d9bench.mjs` |
 | 5. Own output | Snapshots of IR and WAT for committed binaries | `cargo test -p wwt --test snapshots` |
+| Speed | CoreMark native vs. Emscripten vs. translated, with checksum check; profiles by function | `node tools/bench/coremark.mjs`, see [docs/performance.md](docs/performance.md) |
 
 Instruction fixtures (`tests/fixtures/instructions/*.jsonl.gz`) are recorded
 on x86 hardware and replayed anywhere:
@@ -173,6 +176,8 @@ the `CI passed` job sums up the run and is the one check to require.
 crates/wwt          translator library
 crates/wwt-cli      `wwt` command-line tool
 crates/wwt-wasm     translator compiled to WebAssembly (fast mode, browser)
+crates/wwt-heap     ntdll's heap as native WebAssembly, for translated Wine
+crates/wwt-strings  hot string, locale and TLS functions as native WebAssembly, for translated Wine
 crates/wwt-testkit  instruction generator, oracle driver, wasmtime runner
 crates/d3dgpu-*     Direct3D 9/10/11 on WebGPU core: protocol, shader translators
                     (SM1-3, DXBC SM4/5), emulation library, render core (wgpu),
@@ -186,11 +191,11 @@ tools/wine          builds Wine's i386 PE DLLs, programs, tests and fonts
 tools/wine-layout   generates Wine's structure layouts for the runtime
 tools/samples       builds the test programs the web page lists (runtime/web/samples.json)
 tools/torture       fetches GCC's torture tests
-tools/bench         CoreMark: native vs. translated (shims and Wine)
+tools/bench         CoreMark tiers incl. Emscripten, profiler, per-function comparison, A/B
 tools/site          assembles the static site and deploys it to Vercel
 tests/              fixtures, test programs, Csmith runtime, browser test
 spikes/             M1 spikes: memory size, Emscripten above the guest limit
-docs/               the plan (plan.md) and each milestone's status
+docs/               the plan (plan.md), each milestone's status, performance guide
 ```
 
 ## Direct3D on WebGPU

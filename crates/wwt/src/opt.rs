@@ -7,6 +7,8 @@
 //!   identities.
 //! * [`dce`]: whole-function liveness and dead-code elimination, which is
 //!   what removes flag computations nobody reads.
+//! * [`narrow`]: signed narrow loads and 32-bit multiplies where x86
+//!   semantics were spelled out with extensions and 64-bit products.
 //!
 //! [`analyze`] computes the facts code generation needs: which state vregs
 //! are dirty (differ from the CPU struct) at each point and which are live.
@@ -318,7 +320,8 @@ pub fn simplify(f: &mut Function) {
         // State vregs currently holding an extension of a temporary.
         let mut lext: HashMap<V, V> = HashMap::new();
         let mut insts = std::mem::take(&mut f.blocks[bi].insts);
-        for inst in insts.iter_mut() {
+        let mut no_ops = vec![];
+        for (k, inst) in insts.iter_mut().enumerate() {
             for u in inst.op.uses_mut() {
                 let mut v = resolve_g(*u, &gcopy);
                 if let Some(&s) = lcopy.get(&v) {
@@ -366,6 +369,12 @@ pub fn simplify(f: &mut Function) {
                 inst.op = op;
             }
             let _ = ty;
+            // `v = v` (alignment no-ops such as `lea esi, [esi+0]`) changes
+            // nothing; kept, it would make a state vreg look written.
+            if matches!(inst.op, Op::Copy(s) if Some(s) == inst.dst) {
+                no_ops.push(k);
+                continue;
+            }
             if let Some(d) = inst.dst {
                 // Invalidate facts that depend on the redefined vreg.
                 lconst.remove(&d);
@@ -424,6 +433,9 @@ pub fn simplify(f: &mut Function) {
             }
         }
         f.blocks[bi].term = term;
+        for k in no_ops.into_iter().rev() {
+            insts.remove(k);
+        }
         f.blocks[bi].insts = insts;
     }
     f.remove_unreachable();
@@ -482,6 +494,67 @@ pub fn state_bit(v: V) -> StateMask {
 pub const FAULT_SYNC: StateMask =
     !(1u64 << FK | 1u64 << FR | 1u64 << FA | 1u64 << FB | 1u64 << FC | 1u64 << CPU);
 pub const ALL_STATE: StateMask = !(1u64 << CPU);
+
+/// The import slot `v` was loaded from, when block `b` loads it from a
+/// constant address (`call [slot]`, `jmp [slot]`).
+pub fn slot_of(f: &Function, b: BlockId, v: V) -> Option<u64> {
+    let insts = &f.blocks[b as usize].insts;
+    let load = insts.iter().rev().find(|i| i.dst == Some(v))?;
+    let Op::Load { addr, mem } = &load.op else {
+        return None;
+    };
+    let base = insts.iter().rev().find(|i| i.dst == Some(*addr))?;
+    match base.op {
+        Op::Const(c) if mem.size == 4 => Some((c as u32).wrapping_add(mem.offset) as u64),
+        // x86-64 import slots hold 8 bytes.
+        Op::Const(c) if mem.size == 8 => Some(c.wrapping_add(mem.offset as u64)),
+        _ => None,
+    }
+}
+
+/// State written back at the terminator of block `b`, when it writes back
+/// state (see `CallAbi`).
+pub fn term_sync(f: &Function, b: BlockId) -> StateMask {
+    let flags_dead = match &f.blocks[b as usize].term {
+        Term::Ret(_) => f.abi.flags_dead_at_ret,
+        Term::Call {
+            target: CallTarget::Direct(t),
+            ..
+        } => !f.abi.direct_callee_reads_flags(*t),
+        Term::Call {
+            target: CallTarget::Indirect(v),
+            ..
+        } => !f.abi.indirect_callee_reads_flags(slot_of(f, b, *v)),
+        // A jump to another function's code: it continues there, and
+        // returns to this function's caller. (An exit to the function's own
+        // entry is a re-entry at a loop header, see `osr`, where the flags
+        // may be live.)
+        Term::Exit(t) => *t != f.entry && !f.abi.direct_callee_reads_flags(*t),
+        // A tail jump through an import slot (an import stub): the import
+        // neither reads the flags (see `indirect_callee_reads_flags`) nor
+        // keeps them for its caller (system DLLs follow the C calling
+        // convention). Other indirect jumps may stay within the function.
+        Term::JmpInd(v) => {
+            slot_of(f, b, *v).is_some_and(|s| !f.abi.indirect_callee_reads_flags(Some(s)))
+        }
+        _ => false,
+    };
+    if flags_dead {
+        FAULT_SYNC
+    } else {
+        ALL_STATE
+    }
+}
+
+/// State a call leaves unchanged, which keeps its value across the call
+/// instead of being reloaded (see `CallAbi::callee_saved`).
+pub fn call_preserved(f: &Function) -> StateMask {
+    if f.abi.callee_saved {
+        1u64 << EBX | 1u64 << ESI | 1u64 << EDI | 1u64 << EBP
+    } else {
+        0
+    }
+}
 
 /// A dense bit set.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -657,20 +730,24 @@ fn term_live(
     let mut live = BitSet::new(ng);
     match &blk.term {
         Term::Call { cont, .. } => {
-            // State live after the call is reloaded; temporaries survive.
+            // State live after the call is reloaded (except what the call
+            // preserves); temporaries survive.
             let mut l = live_in[*cont as usize].clone();
+            let keep = call_preserved(f);
             for v in 0..NUM_STATE {
-                l.remove(v as usize);
+                if keep >> v & 1 == 0 {
+                    l.remove(v as usize);
+                }
             }
             live.union(&l);
-            add_mask(&mut live, dirty_end);
+            add_mask(&mut live, dirty_end & term_sync(f, b));
         }
         t => {
             for s in t.successors() {
                 live.union(&live_in[s as usize]);
             }
             if t.syncs() {
-                add_mask(&mut live, dirty_end);
+                add_mask(&mut live, dirty_end & term_sync(f, b));
             }
         }
     }
@@ -697,11 +774,21 @@ fn block_live_in(
     let mut live = term_live(f, b, dirty_end[b as usize], dense, live_in, ng);
     let trace = dirty_trace(blk, dirty_in[b as usize]);
     for (k, inst) in blk.insts.iter().enumerate().rev() {
+        // Strong liveness: a pure instruction whose result is dead does not
+        // make its operands live (a shift by a variable count reads the old
+        // flags, which matters only when its own flags are read).
+        let mut dead = false;
         if let Some(d) = inst.dst {
             let dd = dense[d as usize];
             if dd != u32::MAX {
+                dead = !live.contains(dd as usize)
+                    && !inst.op.has_side_effects()
+                    && !inst.op.may_fault();
                 live.remove(dd as usize);
             }
+        }
+        if dead {
+            continue;
         }
         for u in inst.op.uses() {
             let du = dense[u as usize];
@@ -842,6 +929,87 @@ pub fn fold_address_offsets(f: &mut Function) {
     }
 }
 
+/// Peepholes that do the same work with narrower WebAssembly:
+///
+/// * an 8- or 16-bit load whose only use is a sign extension (`movsx`)
+///   becomes a signed load;
+/// * the low half of a 64-bit product of two extended 32-bit values
+///   (`imul`, which computes the full product for its flags) becomes a
+///   32-bit multiply; the 64-bit one dies if the flags are unused.
+///
+/// Relies on temporaries having a single definition, like [`simplify`].
+pub fn narrow(f: &mut Function) {
+    let n = f.vtypes.len();
+    let mut uses = vec![0u32; n];
+    let mut def: Vec<Option<(usize, usize)>> = vec![None; n];
+    for (bi, b) in f.blocks.iter().enumerate() {
+        for (k, inst) in b.insts.iter().enumerate() {
+            for u in inst.op.uses() {
+                uses[u as usize] += 1;
+            }
+            if let Some(d) = inst.dst {
+                if d >= NUM_STATE {
+                    def[d as usize] = Some((bi, k));
+                }
+            }
+        }
+        for u in b.term.uses() {
+            uses[u as usize] += 1;
+        }
+    }
+    let op_of = |f: &Function, v: V| -> Option<Op> {
+        def.get(v as usize)
+            .copied()
+            .flatten()
+            .map(|(b, k)| f.blocks[b].insts[k].op.clone())
+    };
+    let mut signed_loads = vec![];
+    for bi in 0..f.blocks.len() {
+        for k in 0..f.blocks[bi].insts.len() {
+            let new = match f.blocks[bi].insts[k].op {
+                Op::Un(ext @ (UnOp::I32Extend8S | UnOp::I32Extend16S), t)
+                    if t >= NUM_STATE
+                        && uses[t as usize] == 1
+                        && f.vtypes[t as usize] == Ty::I32 =>
+                {
+                    let size = if ext == UnOp::I32Extend8S { 1 } else { 2 };
+                    match op_of(f, t) {
+                        Some(Op::Load { mem, .. })
+                            if mem.size == size && !mem.signed && !mem.atomic =>
+                        {
+                            signed_loads.push(def[t as usize].unwrap());
+                            Some(Op::Copy(t))
+                        }
+                        _ => None,
+                    }
+                }
+                Op::Un(UnOp::I32WrapI64, x) => match op_of(f, x) {
+                    Some(Op::Bin(BinOp::I64Mul, a, b)) => {
+                        let ext = |v: V| match op_of(f, v) {
+                            Some(Op::Un(UnOp::I64ExtendI32S | UnOp::I64ExtendI32U, s)) => Some(s),
+                            _ => None,
+                        };
+                        match (ext(a), ext(b)) {
+                            (Some(a), Some(b)) => Some(Op::Bin(BinOp::I32Mul, a, b)),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(op) = new {
+                f.blocks[bi].insts[k].op = op;
+            }
+        }
+    }
+    for (b, k) in signed_loads {
+        if let Op::Load { mem, .. } = &mut f.blocks[b].insts[k].op {
+            mem.signed = true;
+        }
+    }
+}
+
 /// Runs the standard pipeline.
 pub fn optimize(f: &mut Function, level: u32) {
     lower_flags(f);
@@ -852,8 +1020,107 @@ pub fn optimize(f: &mut Function, level: u32) {
     simplify(f);
     dce(f);
     simplify(f);
+    propagate_state_copies(f);
     fold_address_offsets(f);
+    narrow(f);
     dce(f);
+}
+
+/// Across blocks, a use of a state vreg that on every path holds a copy of
+/// a single-definition temporary (`esi = v777` in a dominating block, not
+/// redefined since) reads the temporary instead. Code generation knows
+/// more about temporaries (address aliases and checks, see
+/// `codegen::check_covered`); the state vreg stays as it was for write-back.
+pub fn propagate_state_copies(f: &mut Function) {
+    let n = f.blocks.len();
+    let mut defs = vec![0u32; f.vtypes.len()];
+    for b in &f.blocks {
+        for inst in &b.insts {
+            if let Some(d) = inst.dst {
+                defs[d as usize] += 1;
+            }
+        }
+    }
+    let single = |v: V| v >= NUM_STATE && defs[v as usize] == 1;
+    type Copies = Option<Vec<(V, V)>>; // None: not yet reached
+    let step = |b: &Block, mut m: Vec<(V, V)>| -> Vec<(V, V)> {
+        for inst in &b.insts {
+            if let Some(d) = inst.dst {
+                if d < NUM_STATE {
+                    m.retain(|&(s, _)| s != d);
+                    if let Op::Copy(t) = inst.op {
+                        if single(t) {
+                            m.push((d, t));
+                        }
+                    }
+                }
+            }
+        }
+        m
+    };
+    let order = f.rpo();
+    let preds = f.predecessors();
+    let mut inn: Vec<Copies> = vec![None; n];
+    inn[0] = Some(vec![]);
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &b in &order {
+            let m = if b == 0 {
+                Some(vec![])
+            } else {
+                let mut acc: Copies = None;
+                for &p in &preds[b as usize] {
+                    let Some(pin) = &inn[p as usize] else {
+                        continue;
+                    };
+                    // After a call the state is reloaded.
+                    let out = if f.blocks[p as usize].term.clobbers_state() {
+                        vec![]
+                    } else {
+                        step(&f.blocks[p as usize], pin.clone())
+                    };
+                    acc = Some(match acc {
+                        None => out,
+                        Some(a) => a.into_iter().filter(|x| out.contains(x)).collect(),
+                    });
+                }
+                acc
+            };
+            if m.is_some() && m != inn[b as usize] {
+                inn[b as usize] = m;
+                changed = true;
+            }
+        }
+    }
+    for b in 0..n {
+        let Some(mut m) = inn[b].clone() else {
+            continue;
+        };
+        let blk = &mut f.blocks[b];
+        for inst in &mut blk.insts {
+            for u in inst.op.uses_mut() {
+                if let Some(&(_, t)) = m.iter().find(|&&(s, _)| s == *u) {
+                    *u = t;
+                }
+            }
+            if let Some(d) = inst.dst {
+                if d < NUM_STATE {
+                    m.retain(|&(s, _)| s != d);
+                    if let Op::Copy(t) = inst.op {
+                        if single(t) {
+                            m.push((d, t));
+                        }
+                    }
+                }
+            }
+        }
+        for u in blk.term.uses_mut() {
+            if let Some(&(_, t)) = m.iter().find(|&&(s, _)| s == *u) {
+                *u = t;
+            }
+        }
+    }
 }
 
 pub fn flag_kind_count() -> u32 {

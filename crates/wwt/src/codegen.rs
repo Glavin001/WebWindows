@@ -6,7 +6,8 @@
 //! runtime-table globals are i64, and x86-64 code addresses are i64 too
 //! (`(cpu) -> i64`, see [`ModuleGen::code64`]). Branches and loops are
 //! rebuilt as structured control flow from the dominator tree (Ramsey,
-//! "Beyond Relooper", 2022); irreducible graphs fall back to a dispatch loop.
+//! "Beyond Relooper", 2022), after [`reducible`] gives every loop a single
+//! entry; a graph that is still irreducible falls back to a dispatch loop.
 //! Calls between functions in the module are direct; everything else goes
 //! through the two-level address lookup into the shared function table.
 
@@ -16,13 +17,14 @@ use std::collections::HashMap;
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, CustomSection, ElementSection, Elements, EntityType,
     ExportKind, ExportSection, FunctionSection, GlobalType, ImportSection, Instruction as W,
-    MemArg, MemoryType, Module, RefType, TableType, TypeSection, ValType,
+    MemArg, MemoryType, Module, NameMap, NameSection, RefType, TableType, TypeSection, ValType,
 };
 
-use crate::abi::{self, addr::NULL_LIMIT, cpu, cpu64, fault, imports};
+use crate::abi::{self, addr::NULL_LIMIT, cpu, cpu64, fault, imports, native_layout, store_map};
 use crate::flags::{self, E};
 use crate::ir::*;
 use crate::opt::{self, Analysis, StateMask, ALL_STATE, FAULT_SYNC};
+use crate::reducible;
 
 #[derive(Debug, Clone)]
 pub struct CodegenConfig {
@@ -32,6 +34,20 @@ pub struct CodegenConfig {
     /// memory are zero-extended; with a 32-bit memory, x86-64 addresses are
     /// checked against the guest limit and wrapped.
     pub mem64: bool,
+    /// The guest limit the module will run under, when the host knows it at
+    /// translation time: checks then compare against a constant, which
+    /// frees a register in V8's code. `None` reads the `guest_limit` import,
+    /// so the module runs under any limit. Recorded in the module metadata;
+    /// the runtime refuses a module made for another limit.
+    pub guest_limit: Option<u32>,
+    /// Let long-running loops re-enter their function (see `crate::osr`).
+    pub osr: bool,
+    /// Lower `lock`-prefixed read-modify-writes and `cmpxchg` to WebAssembly
+    /// atomics. Without, they are a plain load and store: equivalent while
+    /// guest threads never run in parallel (the runtimes run one at a time,
+    /// and never in the middle of an instruction), and far cheaper than
+    /// sequentially consistent atomics on shared memory.
+    pub atomics: bool,
 }
 
 impl Default for CodegenConfig {
@@ -40,6 +56,9 @@ impl Default for CodegenConfig {
             mem_checks: true,
             smc_checks: true,
             mem64: false,
+            guest_limit: None,
+            osr: true,
+            atomics: false,
         }
     }
 }
@@ -50,28 +69,35 @@ pub const MAX_PAGES_64: u64 = 1 << 18;
 // Type indices.
 const T_FN: u32 = 0;
 const T_FAULT: u32 = 1;
-const T_CODE_WRITE: u32 = 2;
-const T_MATH: u32 = 3;
-const T_F64_F64: u32 = 4;
-const T_FIRST_HELPER: u32 = 5;
+const T_MATH: u32 = 2;
+const T_F64_F64: u32 = 3;
+const T_FIRST_HELPER: u32 = 4;
 
-// Imported function indices.
+// Imported function indices. Native implementations (`Term::Native`,
+// `Term::NativeTry`) follow, one import each, in the order of
+// `ModuleGen::natives`.
 const F_FAULT: u32 = 0;
-const F_CODE_WRITE: u32 = 1;
-const F_MATH: u32 = 2;
+const F_MATH: u32 = 1;
 /// Math.sin and Math.cos themselves, which engines call without going
 /// through JavaScript (the other operations go through `math`).
-const F_SIN: u32 = 3;
-const F_COS: u32 = 4;
-const NUM_FUNC_IMPORTS: u32 = 5;
+const F_SIN: u32 = 2;
+const F_COS: u32 = 3;
+const F_FIRST_NATIVE: u32 = 4;
 
 // Imported global indices.
 const G_TABLE_BASE: u32 = 0;
 const G_LOOKUP_L1: u32 = 1;
 const G_GUEST_CHECK: u32 = 2;
-const G_CODE_BITMAP: u32 = 3;
+const G_STORE_MAP: u32 = 3;
+const G_ZERO_L2: u32 = 4;
 /// 64-bit code only.
-const G_CODE_PAGES: u32 = 4;
+const G_CODE_PAGES: u32 = 5;
+
+/// How far (bytes) a load may be from an address that passed a check and
+/// still skip its own (see `check_covered`).
+const CHECK_WINDOW: u32 = 0x8000 - 16;
+/// Largest index range `root + [0, r]` tracked for check elimination.
+const MAX_INDEX: u32 = CHECK_WINDOW / 2;
 
 fn val_type(t: Ty) -> ValType {
     match t {
@@ -103,6 +129,12 @@ pub struct ModuleGen<'a> {
     pub code64: bool,
     helpers: Vec<Helper>,
     helper_types: Vec<(Vec<Ty>, Ty)>,
+    /// Names of the native implementations the functions leave through or
+    /// try, with the number of constant arguments they take after the CPU
+    /// state.
+    natives: Vec<(&'static str, usize)>,
+    /// Symbol names by x86 address, for the name section.
+    names: HashMap<u64, String>,
 }
 
 impl<'a> ModuleGen<'a> {
@@ -111,10 +143,21 @@ impl<'a> ModuleGen<'a> {
         for (i, f) in funcs.iter().enumerate() {
             func_index.insert(f.entry, i as u32);
         }
-        // Eflags must stay first: EvalCond calls it by index.
+        // The flag helpers come first, in every module.
         let mut helpers = vec![Helper::Eflags, Helper::EvalCond];
+        let mut natives = vec![];
         for f in funcs {
             for b in &f.blocks {
+                let native = match &b.term {
+                    Term::Native(n) => Some((*n, 0)),
+                    Term::NativeTry { name, args, .. } => Some((*name, args.len())),
+                    _ => None,
+                };
+                if let Some(n) = native {
+                    if !natives.contains(&n) {
+                        natives.push(n);
+                    }
+                }
                 for inst in &b.insts {
                     if let Op::CallHelper(h, _) = &inst.op {
                         if *h == Helper::EvalCond64 && !helpers.contains(&Helper::Eflags64) {
@@ -134,6 +177,8 @@ impl<'a> ModuleGen<'a> {
             code64,
             helpers,
             helper_types: vec![],
+            natives,
+            names: HashMap::new(),
         }
     }
 
@@ -144,6 +189,13 @@ impl<'a> ModuleGen<'a> {
         self
     }
 
+    /// Labels translated functions with these symbols in the name section
+    /// (functions without one are named by address).
+    pub fn with_names(mut self, names: &HashMap<u64, String>) -> Self {
+        self.names = names.clone();
+        self
+    }
+
     /// Disables direct calls between the module's functions (for modules
     /// whose functions share entry addresses, like instruction tests).
     pub fn without_direct_calls(mut self) -> Self {
@@ -151,12 +203,20 @@ impl<'a> ModuleGen<'a> {
         self
     }
 
+    fn num_func_imports(&self) -> u32 {
+        F_FIRST_NATIVE + self.natives.len() as u32
+    }
+
+    fn native_func_index(&self, name: &str) -> u32 {
+        F_FIRST_NATIVE + self.natives.iter().position(|n| n.0 == name).unwrap() as u32
+    }
+
     fn helper_func_index(&self, h: Helper) -> u32 {
-        NUM_FUNC_IMPORTS + self.helpers.iter().position(|x| *x == h).unwrap() as u32
+        self.num_func_imports() + self.helpers.iter().position(|x| *x == h).unwrap() as u32
     }
 
     fn translated_func_index(&self, i: u32) -> u32 {
-        NUM_FUNC_IMPORTS + self.helpers.len() as u32 + i
+        self.num_func_imports() + self.helpers.len() as u32 + i
     }
 
     pub fn direct_target(&self, addr: u64) -> Option<u32> {
@@ -184,18 +244,7 @@ impl<'a> ModuleGen<'a> {
     }
 
     /// Generates the module bytes.
-    pub fn build(self, funcs: &[Function], meta_json: &str) -> Vec<u8> {
-        self.build_named(funcs, meta_json, &std::collections::BTreeMap::new())
-    }
-
-    /// [`ModuleGen::build`], with a name section for the functions whose
-    /// entries `names` has (address -> symbol).
-    pub fn build_named(
-        mut self,
-        funcs: &[Function],
-        meta_json: &str,
-        names: &std::collections::BTreeMap<u64, String>,
-    ) -> Vec<u8> {
+    pub fn build(mut self, funcs: &[Function], meta_json: &str) -> Vec<u8> {
         let mut module = Module::new();
         let at = self.addr_type();
         let ct = self.code_type();
@@ -216,7 +265,6 @@ impl<'a> ModuleGen<'a> {
         types.ty().function([at], [ct]);
         // fault(cpu, code, eip, info) -> where to continue
         types.ty().function([at, ValType::I32, ct, ct], [ct]);
-        types.ty().function([at, at], []);
         types
             .ty()
             .function([ValType::I32, ValType::F64, ValType::F64], [ValType::F64]);
@@ -237,6 +285,26 @@ impl<'a> ModuleGen<'a> {
             };
             helper_type_idx.push(T_FIRST_HELPER + idx as u32);
         }
+        // Natives with constant arguments: (cpu, args...) -> next eip.
+        let mut native_type_idx = vec![];
+        for &(_, nargs) in &self.natives {
+            if nargs == 0 {
+                native_type_idx.push(T_FN);
+                continue;
+            }
+            let key = (vec![Ty::I32; 1 + nargs], Ty::I32);
+            let idx = match self.helper_types.iter().position(|k| *k == key) {
+                Some(i) => i,
+                None => {
+                    types
+                        .ty()
+                        .function(vec![ValType::I32; 1 + nargs], [ValType::I32]);
+                    self.helper_types.push(key);
+                    self.helper_types.len() - 1
+                }
+            };
+            native_type_idx.push(T_FIRST_HELPER + idx as u32);
+        }
         module.section(&types);
 
         // Imports.
@@ -245,11 +313,6 @@ impl<'a> ModuleGen<'a> {
             imports::MODULE,
             imports::FAULT,
             EntityType::Function(T_FAULT),
-        );
-        imp.import(
-            imports::MODULE,
-            imports::CODE_WRITE,
-            EntityType::Function(T_CODE_WRITE),
         );
         imp.import(imports::MODULE, imports::MATH, EntityType::Function(T_MATH));
         imp.import(
@@ -262,6 +325,10 @@ impl<'a> ModuleGen<'a> {
             imports::COS,
             EntityType::Function(T_F64_F64),
         );
+        // Native implementations follow (F_FIRST_NATIVE on).
+        for (&(n, _), &t) in self.natives.iter().zip(&native_type_idx) {
+            imp.import(imports::MODULE, n, EntityType::Function(t));
+        }
         imp.import(
             imports::MODULE,
             imports::MEMORY,
@@ -288,7 +355,8 @@ impl<'a> ModuleGen<'a> {
             imports::TABLE_BASE,
             imports::LOOKUP_L1,
             imports::GUEST_LIMIT,
-            imports::CODE_BITMAP,
+            imports::STORE_MAP,
+            imports::ZERO_L2,
         ];
         if self.code64 {
             globals.push(imports::CODE_PAGES);
@@ -345,17 +413,35 @@ impl<'a> ModuleGen<'a> {
 
         // Code.
         let mut code = CodeSection::new();
+        let eflags = self.helper_func_index(Helper::Eflags);
         for h in self.helpers.clone() {
-            let eflags_index = match h {
+            let eflags = match h {
                 Helper::EvalCond64 => self.helper_func_index(Helper::Eflags64),
-                _ => self.helper_func_index(Helper::Eflags),
+                _ => eflags,
             };
-            code.function(&gen_helper(h, eflags_index));
+            code.function(&gen_helper(h, eflags));
         }
         for f in funcs {
             code.function(&self.gen_function(f));
         }
         module.section(&code);
+
+        // Names, for profilers and debuggers: `symbol@address` or
+        // `x86_address`.
+        let mut fnames = NameMap::new();
+        for (i, h) in self.helpers.iter().enumerate() {
+            fnames.append(self.num_func_imports() + i as u32, &format!("helper_{h:?}"));
+        }
+        for (i, f) in funcs.iter().enumerate() {
+            let name = match self.names.get(&f.entry) {
+                Some(n) => format!("{n}@{:x}", f.entry),
+                None => format!("x86_{:x}", f.entry),
+            };
+            fnames.append(self.translated_func_index(i as u32), &name);
+        }
+        let mut names = NameSection::new();
+        names.functions(&fnames);
+        module.section(&names);
 
         // Function address map and metadata.
         let mut map = Vec::with_capacity(4 + funcs.len() * 8);
@@ -379,21 +465,25 @@ impl<'a> ModuleGen<'a> {
             name: Cow::Borrowed(abi::META_SECTION),
             data: Cow::Borrowed(meta_json.as_bytes()),
         });
-        if funcs.iter().any(|f| names.contains_key(&f.entry)) {
-            let mut map = wasm_encoder::NameMap::new();
-            for (i, f) in funcs.iter().enumerate() {
-                if let Some(n) = names.get(&f.entry) {
-                    map.append(self.translated_func_index(i as u32), n);
-                }
-            }
-            let mut sec = wasm_encoder::NameSection::new();
-            sec.functions(&map);
-            module.section(&sec);
-        }
         module.finish()
     }
 
     pub fn gen_function(&self, f: &Function) -> wasm_encoder::Function {
+        let fixed;
+        let f = if reducible::is_reducible(f) && !self.cfg.osr {
+            f
+        } else {
+            let mut c = f.clone();
+            if !reducible::is_reducible(&c) {
+                reducible::merge_switches(&mut c);
+            }
+            reducible::make_reducible(&mut c);
+            if self.cfg.osr {
+                crate::osr::add_reentry(&mut c);
+            }
+            fixed = c;
+            &fixed
+        };
         let a = opt::analyze(f);
         let mut g = FnGen::new(self, f, &a);
         g.run();
@@ -428,6 +518,19 @@ struct FnGen<'g, 'a> {
     loop_header: Vec<bool>,
     /// Scratch locals.
     tmp_i32: u32,
+    /// Labels open at the current point of the body (blocks, loops, ifs).
+    open_labels: u32,
+    /// Shared fault blocks: (state mask, fault code), in creation order.
+    fault_blocks: Vec<(StateMask, u32)>,
+    /// The faulting instruction's address, for the shared fault blocks.
+    fault_eip: u32,
+    /// Uses of each vreg in the function (for stackifying).
+    use_count: Vec<u32>,
+    /// Stackified values not emitted yet: vreg -> (instruction, dirty mask).
+    /// They are emitted where their one use reads them (see `stackify`).
+    pending: Vec<(V, Inst, StateMask)>,
+    /// Scratch for the store-map byte in code-write checks.
+    tmp_map: u32,
     tmp_i32b: u32,
     tmp_i64: u32,
     tmp_i64b: u32,
@@ -435,6 +538,30 @@ struct FnGen<'g, 'a> {
     tmp_ma: u32,
     label_local: u32,
     emitted: Vec<bool>,
+    /// Addresses whose guest-limit check passed, as (vreg, lo, hi): some
+    /// address in `vreg + [lo, hi]` passed (lo = hi: that one did). Loads
+    /// near them skip the check (see `check_covered`). `facts_local` holds
+    /// any vreg and lasts until the end of the block or the vreg's next
+    /// definition; `facts_tree` holds single-definition temporaries and is
+    /// scoped to the dominator subtree being emitted.
+    facts_local: Vec<(V, u32, u32)>,
+    facts_tree: Vec<(V, u32, u32)>,
+    /// Vregs with one definition, in a block that dominates their uses.
+    def_block: Vec<u32>,
+    structured: bool,
+    cur_block: BlockId,
+    /// Within the current block, temporaries known to equal `root + off +
+    /// x` for some x in [0, r] (r = 0: exactly `root + off`), as
+    /// (temporary, root, off, r).
+    alias: Vec<(V, V, u32, u32)>,
+    /// The same, between single-definition temporaries, scoped like
+    /// `facts_tree`.
+    alias_tree: Vec<(V, V, u32, u32)>,
+    /// Constant value of single-definition temporaries defined by a constant.
+    const_of: Vec<Option<u32>>,
+    /// Upper bound of single-definition temporaries' values, where known
+    /// (masks, shifts, zero-extending loads): u32::MAX otherwise.
+    max_of: Vec<u32>,
 }
 
 const UNASSIGNED: u32 = u32::MAX;
@@ -456,16 +583,33 @@ impl<'g, 'a> FnGen<'g, 'a> {
             merge: vec![false; n],
             loop_header: vec![false; n],
             tmp_i32: 0,
+            open_labels: 0,
+            fault_blocks: vec![],
+            fault_eip: 0,
+            use_count: vec![],
+            pending: vec![],
+            tmp_map: 0,
             tmp_i32b: 0,
             tmp_i64: 0,
             tmp_i64b: 0,
             tmp_ma: 0,
             label_local: 0,
             emitted: vec![false; n],
+            facts_local: vec![],
+            facts_tree: vec![],
+            def_block: vec![],
+            structured: true,
+            cur_block: 0,
+            alias: vec![],
+            alias_tree: vec![],
+            const_of: vec![],
+            max_of: vec![],
         };
         g.local_of[CPU as usize] = 0;
         g.assign_locals();
         g.tmp_i32 = g.new_local(ValType::I32);
+        g.fault_eip = g.new_local(m.code_type());
+        g.tmp_map = g.new_local(ValType::I32);
         g.tmp_i32b = g.new_local(ValType::I32);
         g.tmp_i64 = g.new_local(ValType::I64);
         // Scratch for 64-bit addresses, only in code that has them (keeps
@@ -582,10 +726,20 @@ impl<'g, 'a> FnGen<'g, 'a> {
     }
 
     fn emit(&mut self, i: W<'static>) {
+        match i {
+            W::Block(_) | W::Loop(_) | W::If(_) => self.open_labels += 1,
+            W::End => self.open_labels -= 1,
+            _ => {}
+        }
         self.out.push(i);
     }
 
     fn get(&mut self, v: V) {
+        if let Some(i) = self.pending.iter().position(|&(p, _, _)| p == v) {
+            let (_, inst, dirty) = self.pending.remove(i);
+            self.inst_value(&inst, dirty, true);
+            return;
+        }
         let l = self.local_of[v as usize];
         debug_assert!(l != UNASSIGNED, "vreg {v} has no local");
         self.emit(W::LocalGet(l));
@@ -689,10 +843,14 @@ impl<'g, 'a> FnGen<'g, 'a> {
         }
     }
 
-    fn store_eip_const(&mut self, eip: u64) {
-        self.emit(W::LocalGet(0));
-        self.code_const(eip);
-        self.store_eip();
+    /// The local holding the fault information for `raise`: `tmp_i32b`, or
+    /// `tmp_i64b` for 64-bit code.
+    fn fault_info(&self) -> u32 {
+        if self.code64() {
+            self.tmp_i64b
+        } else {
+            self.tmp_i32b
+        }
     }
 
     /// Sets the fault information from the value of type `t` on the stack.
@@ -701,35 +859,75 @@ impl<'g, 'a> FnGen<'g, 'a> {
             if t == Ty::I32 {
                 self.emit(W::I64ExtendI32U);
             }
-            self.emit(W::LocalSet(self.tmp_i64b));
-        } else {
-            if t == Ty::I64 {
-                self.emit(W::I32WrapI64);
-            }
-            self.emit(W::LocalSet(self.tmp_i32b));
+        } else if t == Ty::I64 {
+            self.emit(W::I32WrapI64);
         }
+        self.emit(W::LocalSet(self.fault_info()));
     }
 
-    /// Raises a fault: writes back `mask`, records eip and calls the host,
-    /// which returns where to continue (a Windows exception dispatcher, with
-    /// the guest stack set up for it). The address/info value must already
-    /// be in `tmp_i32b` (`tmp_i64b` for 64-bit code).
+    /// Raises a fault: branches to the function's shared fault block for
+    /// this state mask and code, which writes back `mask`, records eip and
+    /// calls the host. Sharing these blocks (one per distinct mask and code,
+    /// instead of a copy at every check) makes modules 10-15% smaller,
+    /// which shortens compilation. The fault blocks wrap the body
+    /// (see `run`); block k is `open_labels + k` labels out. The
+    /// address/info value must already be in `fault_info()`.
     fn raise(&mut self, mask: StateMask, code: u32, eip: u64) {
+        let k = match self
+            .fault_blocks
+            .iter()
+            .position(|&(m, c)| m == mask && c == code)
+        {
+            Some(k) => k,
+            None => {
+                self.fault_blocks.push((mask, code));
+                self.fault_blocks.len() - 1
+            }
+        } as u32;
+        self.code_const(eip);
+        self.emit(W::LocalSet(self.fault_eip));
+        self.emit(W::Br(self.open_labels + k));
+    }
+
+    /// The code of a shared fault block: writes back `mask`, records eip
+    /// and calls the host, which returns where to continue (a Windows
+    /// exception dispatcher, with the guest stack set up for it).
+    fn fault_block(&mut self, mask: StateMask, code: u32) {
         self.sync(mask);
-        self.store_eip_const(eip);
+        self.emit(W::LocalGet(0));
+        self.emit(W::LocalGet(self.fault_eip));
+        self.store_eip();
         self.emit(W::LocalGet(0));
         self.emit(W::I32Const(code as i32));
-        self.code_const(eip);
-        if self.code64() {
-            self.emit(W::LocalGet(self.tmp_i64b));
-        } else {
-            self.emit(W::LocalGet(self.tmp_i32b));
-        }
+        self.emit(W::LocalGet(self.fault_eip));
+        self.emit(W::LocalGet(self.fault_info()));
         self.emit(W::Call(F_FAULT));
         self.emit(W::Return);
     }
 
     // ---- Lookup --------------------------------------------------------------
+
+    /// With the value on the stack as an index into one of the runtime's
+    /// tables (`global` names its base), returns the memory offset to
+    /// access it with: the table's constant address when the guest limit is
+    /// known at translation time, else 0 after adding the imported base.
+    fn native_table(&mut self, global: u32) -> u32 {
+        match self.m.cfg.guest_limit {
+            Some(l) if !self.mem64() => {
+                let off = match global {
+                    G_LOOKUP_L1 => native_layout::LOOKUP_L1,
+                    G_ZERO_L2 => native_layout::ZERO_L2,
+                    _ => native_layout::STORE_MAP,
+                };
+                l + off
+            }
+            _ => {
+                self.emit(W::GlobalGet(global));
+                self.emit(if self.mem64() { W::I64Add } else { W::I32Add });
+                0
+            }
+        }
+    }
 
     /// Pushes the table index for the address in local `t`.
     fn lookup_index(&mut self, t: u32) {
@@ -759,7 +957,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             self.emit(W::I32Load(memarg(0, 2)));
             return;
         }
-        if self.m.cfg.mem64 {
+        if self.mem64() {
             // L1 entries are 8-byte pointers to the L2 pages.
             self.emit(W::GlobalGet(G_LOOKUP_L1));
             self.emit(W::LocalGet(t));
@@ -780,14 +978,13 @@ impl<'g, 'a> FnGen<'g, 'a> {
             self.emit(W::I32Load(memarg(0, 2)));
             return;
         }
-        self.emit(W::GlobalGet(G_LOOKUP_L1));
         self.emit(W::LocalGet(t));
         self.emit(W::I32Const(12));
         self.emit(W::I32ShrU);
         self.emit(W::I32Const(2));
         self.emit(W::I32Shl);
-        self.emit(W::I32Add);
-        self.emit(W::I32Load(memarg(0, 2)));
+        let o = self.native_table(G_LOOKUP_L1);
+        self.emit(W::I32Load(memarg(o, 2)));
         self.emit(W::LocalGet(t));
         self.emit(W::I32Const(0xfff));
         self.emit(W::I32And);
@@ -863,15 +1060,67 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.children[d as usize].push(b);
             }
         }
+        // Temporaries with a single definition (state vregs have many).
+        let mut defs = vec![0u32; f.vtypes.len()];
+        self.def_block = vec![u32::MAX; f.vtypes.len()];
+        for (bi, b) in f.blocks.iter().enumerate() {
+            for inst in &b.insts {
+                if let Some(d) = inst.dst {
+                    defs[d as usize] += 1;
+                    self.def_block[d as usize] = bi as u32;
+                }
+            }
+        }
+        for v in 0..f.vtypes.len() {
+            if v < NUM_STATE as usize || defs[v] != 1 {
+                self.def_block[v] = u32::MAX;
+            }
+        }
+        self.use_count = vec![0; f.vtypes.len()];
+        for b in &f.blocks {
+            for inst in &b.insts {
+                for u in inst.op.uses() {
+                    self.use_count[u as usize] += 1;
+                }
+            }
+            for u in b.term.uses() {
+                self.use_count[u as usize] += 1;
+            }
+        }
+        self.const_of = vec![None; f.vtypes.len()];
+        for b in &f.blocks {
+            for inst in &b.insts {
+                if let (Some(d), Op::Const(c)) = (inst.dst, &inst.op) {
+                    if self.def_block[d as usize] != u32::MAX && f.vtypes[d as usize] == Ty::I32 {
+                        self.const_of[d as usize] = Some(*c as u32);
+                    }
+                }
+            }
+        }
+        self.compute_max_of(&order);
         // Entry: load live state.
         let live = self.a.state_live_in(0) & ALL_STATE;
         self.reload(live);
         if reducible {
             self.do_tree(0);
         } else {
+            self.structured = false;
             self.dispatch_loop(&order);
         }
         self.emit(W::Unreachable);
+        // Wrap the body in one block per fault block, innermost first, with
+        // each fault block's code after its block's end.
+        let body = std::mem::take(&mut self.out);
+        let n = self.fault_blocks.len();
+        self.out = Vec::with_capacity(body.len() + n * 32);
+        for _ in 0..n {
+            self.out.push(W::Block(BlockType::Empty));
+        }
+        self.out.extend(body);
+        for (mask, code) in self.fault_blocks.clone() {
+            self.out.push(W::End);
+            self.fault_block(mask, code);
+        }
     }
 
     fn compute_dominators(&mut self, order: &[BlockId], preds: &[Vec<BlockId>]) {
@@ -930,6 +1179,15 @@ impl<'g, 'a> FnGen<'g, 'a> {
     fn do_tree(&mut self, x: BlockId) {
         assert!(!self.emitted[x as usize], "block emitted twice");
         self.emitted[x as usize] = true;
+        // Everything emitted from here on until this returns is dominated
+        // by `x`, so facts established in `x` hold there.
+        let scope = (self.facts_tree.len(), self.alias_tree.len());
+        self.do_tree_inner(x);
+        self.facts_tree.truncate(scope.0);
+        self.alias_tree.truncate(scope.1);
+    }
+
+    fn do_tree_inner(&mut self, x: BlockId) {
         let mut merges: Vec<BlockId> = self.children[x as usize]
             .iter()
             .copied()
@@ -1003,7 +1261,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     fn terminator(&mut self, x: BlockId) {
         let blk = &self.f.blocks[x as usize];
-        let dirty = self.a.dirty_end[x as usize];
+        let dirty = self.a.dirty_end[x as usize] & opt::term_sync(self.f, x);
         match blk.term.clone() {
             Term::Jump(t) => self.do_branch(x, t),
             Term::Branch { t, f, .. } if t == f => self.do_branch(x, t),
@@ -1112,7 +1370,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.emit(W::LocalGet(t));
                 self.emit(W::Return);
                 self.emit(W::End);
-                let live = self.a.state_live_in(cont) & ALL_STATE;
+                let live = self.a.state_live_in(cont) & ALL_STATE & !opt::call_preserved(self.f);
                 self.reload(live);
                 self.do_branch(x, cont);
             }
@@ -1145,6 +1403,32 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.emit(W::I32Const(0));
                 self.set_fault_info(Ty::I32);
                 self.raise(dirty, code, eip);
+            }
+            Term::Native(n) => {
+                self.sync(dirty);
+                self.emit(W::LocalGet(0));
+                self.emit(W::ReturnCall(self.m.native_func_index(n)));
+            }
+            Term::NativeTry {
+                name,
+                args,
+                fallback,
+            } => {
+                // Leave with the next address, or continue in the translated
+                // body when the native declined (0): it changed nothing, so
+                // the state in locals is still current.
+                self.sync(dirty);
+                self.emit(W::LocalGet(0));
+                for a in args {
+                    self.emit(W::I32Const(a as i32));
+                }
+                self.emit(W::Call(self.m.native_func_index(name)));
+                self.emit(W::LocalTee(self.tmp_i32));
+                self.emit(W::If(BlockType::Empty));
+                self.emit(W::LocalGet(self.tmp_i32));
+                self.emit(W::Return);
+                self.emit(W::End);
+                self.do_branch(x, fallback);
             }
             Term::None => self.emit(W::Unreachable),
         }
@@ -1197,8 +1481,155 @@ impl<'g, 'a> FnGen<'g, 'a> {
     fn block_body(&mut self, b: BlockId) {
         let blk = &self.f.blocks[b as usize];
         let trace = opt::dirty_trace(blk, self.a.dirty_in[b as usize]);
+        self.facts_local.clear();
+        self.alias.clear();
+        self.cur_block = b;
+        let deferred = self.stackify(blk);
         for (k, inst) in blk.insts.iter().enumerate() {
-            self.inst(inst, trace[k]);
+            if deferred[k] {
+                self.pending
+                    .push((inst.dst.unwrap(), inst.clone(), trace[k]));
+            } else {
+                self.inst(inst, trace[k]);
+            }
+            if let Some(d) = inst.dst {
+                // Facts and aliases about the old value of `d` are void.
+                self.facts_local.retain(|&(v, _, _)| v != d);
+                self.alias.retain(|&(t, r, _, _)| t != d && r != d);
+                if let Op::Bin(BinOp::I32Add, x, y) = inst.op {
+                    let c = (self.const_of[y as usize], self.const_of[x as usize]);
+                    let (mx, my) = (self.max_of[x as usize], self.max_of[y as usize]);
+                    let (root, off, r) = match c {
+                        (Some(c), _) => self.resolve(x, c),
+                        (None, Some(c)) => self.resolve(y, c),
+                        // A base plus a small index (an interpreter's
+                        // operand field, a byte table lookup).
+                        _ if my <= MAX_INDEX && mx > MAX_INDEX => {
+                            let (root, off, r) = self.resolve(x, 0);
+                            (root, off, r.saturating_add(my))
+                        }
+                        _ if mx <= MAX_INDEX && my > MAX_INDEX => {
+                            let (root, off, r) = self.resolve(y, 0);
+                            (root, off, r.saturating_add(mx))
+                        }
+                        _ => (d, 0, 0),
+                    };
+                    if root != d && r <= MAX_INDEX {
+                        let temp = |v: V| self.def_block[v as usize] != u32::MAX;
+                        if self.structured && temp(d) && temp(root) {
+                            self.alias_tree.push((d, root, off, r));
+                        } else {
+                            self.alias.push((d, root, off, r));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Upper bounds of single-definition temporaries (see `max_of`), in
+    /// one pass over the blocks in reverse postorder (definitions come
+    /// before their uses).
+    fn compute_max_of(&mut self, order: &[BlockId]) {
+        let f = self.f;
+        let mut m = vec![u32::MAX; f.vtypes.len()];
+        for &b in order {
+            for inst in &f.blocks[b as usize].insts {
+                let Some(d) = inst.dst else { continue };
+                if self.def_block[d as usize] == u32::MAX || f.vtypes[d as usize] != Ty::I32 {
+                    continue;
+                }
+                let k = |v: V| self.const_of[v as usize];
+                m[d as usize] = match inst.op {
+                    Op::Const(c) => c as u32,
+                    Op::Copy(a) => m[a as usize],
+                    Op::Bin(BinOp::I32And, a, b) => m[a as usize].min(m[b as usize]),
+                    Op::Bin(BinOp::I32ShrU, a, b) => match k(b) {
+                        Some(s) => m[a as usize] >> (s & 31),
+                        None => u32::MAX,
+                    },
+                    Op::Bin(BinOp::I32Shl, a, b) => match k(b) {
+                        Some(s) if m[a as usize].leading_zeros() >= (s & 31) => {
+                            m[a as usize] << (s & 31)
+                        }
+                        _ => u32::MAX,
+                    },
+                    Op::Bin(BinOp::I32Mul, a, b) => {
+                        m[a as usize].checked_mul(m[b as usize]).unwrap_or(u32::MAX)
+                    }
+                    Op::Bin(BinOp::I32Add, a, b) => {
+                        m[a as usize].checked_add(m[b as usize]).unwrap_or(u32::MAX)
+                    }
+                    Op::Load { mem, .. } if !mem.signed && mem.size < 4 => {
+                        (1u32 << (8 * mem.size as u32)) - 1
+                    }
+                    _ => u32::MAX,
+                };
+            }
+        }
+        self.max_of = m;
+    }
+
+    // ---- Check elimination -----------------------------------------------------
+    //
+    // A passed guest-limit check puts `addr + off` in [NULL_LIMIT,
+    // guest limit - 16]. A later load at `addr + off2`, with the same `addr`
+    // value and |off2 - off| up to CHECK_WINDOW, then lies within 32 KB of
+    // that range: in the guest's 64 KB null region or in the lookup's first
+    // level (4 MB) just above the guest limit, so reading it cannot harm
+    // the runtime. Such loads skip their check. Addresses are tracked as a
+    // root plus a constant and, through aliases, a bounded index (an
+    // interpreter's `base + (insn >> 3 & 0xff0)`), so a check of one such
+    // address covers the others within the window. The cost is precision:
+    // a load there reads memory instead of faulting, which only a pointer
+    // within 32 KB of those boundaries can notice. Stores are never skipped
+    // (the store map has to see every page they touch).
+
+    /// `v + off` as `root + off' + x` for some x in [0, r], following this
+    /// block's aliases.
+    fn resolve(&self, v: V, off: u32) -> (V, u32, u32) {
+        match self
+            .alias
+            .iter()
+            .chain(self.alias_tree.iter())
+            .find(|&&(t, _, _, _)| t == v)
+        {
+            Some(&(_, root, o, r)) => (root, o.wrapping_add(off), r),
+            None => (v, off, 0),
+        }
+    }
+
+    /// Whether a passed check covers a load at `v + off`: every address the
+    /// load may access is within CHECK_WINDOW of every address the check
+    /// may have passed.
+    fn check_covered(&self, v: V, off: u32) -> bool {
+        let (v, lo2, r) = self.resolve(v, off);
+        let hi2 = lo2.wrapping_add(r);
+        let near = |a: u32, b: u32| (a.wrapping_sub(b) as i32).unsigned_abs() <= CHECK_WINDOW;
+        self.facts_local
+            .iter()
+            .chain(self.facts_tree.iter())
+            .any(|&(fv, lo, hi)| fv == v && near(hi2, lo) && near(hi, lo2))
+    }
+
+    /// Records that the address `v + off` passed a check.
+    fn checked(&mut self, v: V, off: u32) {
+        let (v, lo, r) = self.resolve(v, off);
+        let hi = lo.wrapping_add(r);
+        let d = self.def_block.get(v as usize).copied().unwrap_or(u32::MAX);
+        if self.structured && d != u32::MAX && self.dominates(d, self.cur_block) {
+            self.facts_tree.push((v, lo, hi));
+        } else {
+            self.facts_local.push((v, lo, hi));
+        }
+    }
+
+    /// Pushes the largest valid `address - NULL_LIMIT` for an access of up
+    /// to 16 bytes.
+    fn guest_check_value(&mut self) {
+        match self.m.cfg.guest_limit {
+            Some(l) => self.emit(W::I32Const(l.wrapping_sub(NULL_LIMIT + 16) as i32)),
+            None => self.emit(W::GlobalGet(G_GUEST_CHECK)),
         }
     }
 
@@ -1238,9 +1669,16 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     /// Pushes the guest-check global as an i64.
     fn guest_check_i64(&mut self) {
-        self.emit(W::GlobalGet(G_GUEST_CHECK));
-        if !self.mem64() {
-            self.emit(W::I64ExtendI32U);
+        match self.m.cfg.guest_limit {
+            Some(l) if !self.mem64() => {
+                self.emit(W::I64Const(l.wrapping_sub(NULL_LIMIT + 16) as i64))
+            }
+            _ => {
+                self.emit(W::GlobalGet(G_GUEST_CHECK));
+                if !self.mem64() {
+                    self.emit(W::I64ExtendI32U);
+                }
+            }
         }
     }
 
@@ -1306,42 +1744,67 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(W::LocalTee(self.tmp_i32b));
         self.emit(W::I32Const(NULL_LIMIT as i32));
         self.emit(W::I32Sub);
-        self.emit(W::GlobalGet(G_GUEST_CHECK));
+        self.guest_check_value();
         self.emit(W::I32GtU);
         self.emit(W::If(BlockType::Empty));
         self.raise(dirty & FAULT_SYNC, Self::av_code(write), eip);
         self.emit(W::End);
     }
 
-    /// Notifies the host when a store hits a page holding translated code.
-    /// `ma` is a local holding the address in the memory's address type.
+    /// Pushes the store-map byte for local `a` (an i32 address).
+    fn store_map_byte(&mut self, a: u32) {
+        self.emit(W::LocalGet(a));
+        self.emit(W::I32Const(12));
+        self.emit(W::I32ShrU);
+        let o = self.native_table(G_STORE_MAP);
+        self.emit(W::I32Load8U(memarg(o, 0)));
+    }
+
+    /// Invalidates the translations of the page a store hits if it holds
+    /// translated code: points the page's lookup entry at the empty second
+    /// level and clears its CODE bit, so the next jump there misses and is
+    /// translated again. Done inline rather than by calling the host, because
+    /// a call on this path, even untaken, makes V8 spill around every store.
+    /// `ma` is a local holding the address in the memory's address type;
+    /// with 64-bit memory it must have passed the address check (the store
+    /// map covers the guest region).
     fn check_code_write(&mut self, ma: u32, off: u32) {
         if self.mem64() {
+            // page = (ma + off) >> 12; L1 entries are 8 bytes. A page with
+            // code is below the guest limit, so within the lookup (64-bit
+            // code's included).
             let a = self.tmp_i64b;
             self.emit(W::LocalGet(ma));
             if off != 0 {
                 self.emit(W::I64Const(off as i64));
                 self.emit(W::I64Add);
             }
-            self.emit(W::LocalTee(a));
-            self.emit(W::I64Const(15));
+            self.emit(W::I64Const(12));
             self.emit(W::I64ShrU);
-            self.emit(W::GlobalGet(G_CODE_BITMAP));
+            self.emit(W::LocalTee(a));
+            self.emit(W::GlobalGet(G_STORE_MAP));
             self.emit(W::I64Add);
             self.emit(W::I32Load8U(memarg(0, 0)));
-            self.emit(W::LocalGet(a));
-            self.emit(W::I32WrapI64);
-            self.emit(W::I32Const(12));
-            self.emit(W::I32ShrU);
-            self.emit(W::I32Const(7));
-            self.emit(W::I32And);
-            self.emit(W::I32ShrU);
-            self.emit(W::I32Const(1));
+            self.emit(W::LocalTee(self.tmp_map));
+            self.emit(W::I32Const(store_map::CODE as i32));
             self.emit(W::I32And);
             self.emit(W::If(BlockType::Empty));
-            self.emit(W::LocalGet(0));
+            // l1[page] = zero_l2
+            self.emit(W::GlobalGet(G_LOOKUP_L1));
             self.emit(W::LocalGet(a));
-            self.emit(W::Call(F_CODE_WRITE));
+            self.emit(W::I64Const(3));
+            self.emit(W::I64Shl);
+            self.emit(W::I64Add);
+            self.emit(W::GlobalGet(G_ZERO_L2));
+            self.emit(W::I64Store(memarg(0, 3)));
+            // store_map[page] &= ~CODE
+            self.emit(W::GlobalGet(G_STORE_MAP));
+            self.emit(W::LocalGet(a));
+            self.emit(W::I64Add);
+            self.emit(W::LocalGet(self.tmp_map));
+            self.emit(W::I32Const(!(store_map::CODE as i32)));
+            self.emit(W::I32And);
+            self.emit(W::I32Store8(memarg(0, 0)));
             self.emit(W::End);
             return;
         }
@@ -1351,24 +1814,74 @@ impl<'g, 'a> FnGen<'g, 'a> {
             self.emit(W::I32Const(off as i32));
             self.emit(W::I32Add);
         }
-        self.emit(W::LocalTee(a));
-        self.emit(W::I32Const(15));
-        self.emit(W::I32ShrU);
-        self.emit(W::GlobalGet(G_CODE_BITMAP));
-        self.emit(W::I32Add);
-        self.emit(W::I32Load8U(memarg(0, 0)));
-        self.emit(W::LocalGet(a));
         self.emit(W::I32Const(12));
         self.emit(W::I32ShrU);
-        self.emit(W::I32Const(7));
-        self.emit(W::I32And);
-        self.emit(W::I32ShrU);
-        self.emit(W::I32Const(1));
+        self.emit(W::LocalTee(a));
+        let o = self.native_table(G_STORE_MAP);
+        self.emit(W::I32Load8U(memarg(o, 0)));
+        self.emit(W::LocalTee(self.tmp_map));
+        self.emit(W::I32Const(store_map::CODE as i32));
         self.emit(W::I32And);
         self.emit(W::If(BlockType::Empty));
-        self.emit(W::LocalGet(0));
+        // l1[page] = zero_l2
         self.emit(W::LocalGet(a));
-        self.emit(W::Call(F_CODE_WRITE));
+        self.emit(W::I32Const(2));
+        self.emit(W::I32Shl);
+        let o = self.native_table(G_LOOKUP_L1);
+        match self.m.cfg.guest_limit {
+            Some(l) => self.emit(W::I32Const((l + native_layout::ZERO_L2) as i32)),
+            None => self.emit(W::GlobalGet(G_ZERO_L2)),
+        }
+        self.emit(W::I32Store(memarg(o, 2)));
+        // store_map[page] &= ~CODE
+        self.emit(W::LocalGet(a));
+        let o = self.native_table(G_STORE_MAP);
+        self.emit(W::LocalGet(self.tmp_map));
+        self.emit(W::I32Const(!(store_map::CODE as i32)));
+        self.emit(W::I32And);
+        self.emit(W::I32Store8(memarg(o, 0)));
+        self.emit(W::End);
+    }
+
+    /// The checks before a plain store: one store-map lookup on the fast
+    /// path; pages that need more (code, the null region, the guest limit)
+    /// get the precise address check and the code-write notification.
+    /// The host hears about a code write before the store happens, which is
+    /// equivalent: it only drops translations, which are redone on demand.
+    ///
+    /// 64-bit addresses (x86-64 code, or a 64-bit memory) have no fast
+    /// path: the map covers only the guest region, so the address is
+    /// checked first, then the map's CODE bit.
+    fn check_store(&mut self, v: V, off: u32, dirty: StateMask, eip: u64) {
+        let (mem, smc) = (self.m.cfg.mem_checks, self.m.cfg.smc_checks);
+        if !smc {
+            if mem {
+                self.check_addr(v, off, true, dirty, eip);
+            }
+            return;
+        }
+        if self.f.ty(v) == Ty::I64 || self.mem64() {
+            if mem || self.mem64() {
+                self.check_addr(v, off, true, dirty, eip);
+            }
+            let la = self.addr_local(v);
+            self.check_code_write(la, off);
+            return;
+        }
+        let addr = self.local_of[v as usize];
+        let a = self.tmp_i32b;
+        self.emit(W::LocalGet(addr));
+        if off != 0 {
+            self.emit(W::I32Const(off as i32));
+            self.emit(W::I32Add);
+        }
+        self.emit(W::LocalSet(a));
+        self.store_map_byte(a);
+        self.emit(W::If(BlockType::Empty));
+        if mem {
+            self.check_addr(v, off, true, dirty, eip);
+        }
+        self.check_code_write(addr, off);
         self.emit(W::End);
     }
 
@@ -1377,6 +1890,12 @@ impl<'g, 'a> FnGen<'g, 'a> {
     }
 
     fn inst(&mut self, inst: &Inst, dirty: StateMask) {
+        self.inst_value(inst, dirty, false);
+    }
+
+    /// Emits `inst`; with `keep`, its value stays on the stack instead of
+    /// going to its local (a stackified value, emitted at its use).
+    fn inst_value(&mut self, inst: &Inst, dirty: StateMask, keep: bool) {
         let ty = inst.dst.map(|d| self.f.ty(d));
         match &inst.op {
             Op::Const(c) => {
@@ -1406,8 +1925,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.emit(W::Select);
             }
             Op::Load { addr, mem } => {
-                if self.needs_check(mem) {
+                if self.needs_check(mem) && !self.check_covered(*addr, mem.offset) {
                     self.check_addr(*addr, mem.offset, false, dirty, inst.eip);
+                    self.checked(*addr, mem.offset);
                 }
                 let la = self.addr_local(*addr);
                 let ty = ty.unwrap();
@@ -1427,8 +1947,11 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 }
             }
             Op::Store { addr, val, mem } => {
-                if self.needs_check(mem) {
-                    self.check_addr(*addr, mem.offset, true, dirty, inst.eip);
+                if mem.space == Space::Guest {
+                    self.check_store(*addr, mem.offset, dirty, inst.eip);
+                    if self.m.cfg.mem_checks {
+                        self.checked(*addr, mem.offset);
+                    }
                 }
                 let la = self.addr_local(*addr);
                 let vty = self.f.ty(*val);
@@ -1447,9 +1970,6 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     self.emit(W::LocalGet(la));
                     self.get(*val);
                     self.emit(store_instr(vty, mem, mem.atomic));
-                }
-                if mem.space == Space::Guest && self.m.cfg.smc_checks {
-                    self.check_code_write(la, mem.offset);
                 }
             }
             Op::AtomicRmw { op, addr, val, mem } => {
@@ -1473,9 +1993,12 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 let ty = ty.unwrap_or(Ty::I32);
                 let wide = ty == Ty::I64;
                 let tmp = if wide { self.tmp_i64 } else { self.tmp_i32 };
-                // Misaligned: plain load + op + store (not atomic).
-                self.misaligned(la, mem.offset, mem.size);
-                self.emit(W::If(BlockType::Result(val_type(ty))));
+                // Misaligned, or no atomics wanted: plain load + op + store.
+                let atomics = self.m.cfg.atomics;
+                if atomics {
+                    self.misaligned(la, mem.offset, mem.size);
+                    self.emit(W::If(BlockType::Result(val_type(ty))));
+                }
                 {
                     self.emit(W::LocalGet(la));
                     self.emit(load_instr(ty, mem, false));
@@ -1503,11 +2026,13 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     self.emit(store_instr(ty, mem, false));
                     self.emit(W::LocalGet(tmp));
                 }
-                self.emit(W::Else);
-                self.emit(W::LocalGet(la));
-                self.get(*val);
-                self.emit(rmw_instr(*op, mem, wide));
-                self.emit(W::End);
+                if atomics {
+                    self.emit(W::Else);
+                    self.emit(W::LocalGet(la));
+                    self.get(*val);
+                    self.emit(rmw_instr(*op, mem, wide));
+                    self.emit(W::End);
+                }
                 if mem.space == Space::Guest && self.m.cfg.smc_checks {
                     if let Some(d) = inst.dst {
                         self.set(d);
@@ -1534,8 +2059,11 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 } else {
                     (self.tmp_i32, W::I32Eq)
                 };
-                self.misaligned(la, mem.offset, mem.size);
-                self.emit(W::If(BlockType::Result(val_type(ty))));
+                let atomics = self.m.cfg.atomics;
+                if atomics {
+                    self.misaligned(la, mem.offset, mem.size);
+                    self.emit(W::If(BlockType::Result(val_type(ty))));
+                }
                 {
                     // old = [a]; [a] = old == expected ? new : old
                     self.emit(W::LocalGet(la));
@@ -1551,15 +2079,19 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     self.emit(store_instr(ty, mem, false));
                     self.emit(W::LocalGet(tmp));
                 }
-                self.emit(W::Else);
-                self.emit(W::LocalGet(la));
-                self.get(*expected);
-                self.get(*new);
-                self.emit(cmpxchg_instr(ty, mem));
-                self.emit(W::End);
+                if atomics {
+                    self.emit(W::Else);
+                    self.emit(W::LocalGet(la));
+                    self.get(*expected);
+                    self.get(*new);
+                    self.emit(cmpxchg_instr(ty, mem));
+                    self.emit(W::End);
+                }
             }
             Op::MemCopy { dst, src, len } => {
-                if self.m.cfg.mem_checks {
+                // With 64-bit memory the code-write check needs the range
+                // checked (the store map covers the guest region only).
+                if self.m.cfg.mem_checks || self.mem64() && self.m.cfg.smc_checks {
                     // The source is read before the destination is written.
                     self.check_range(*src, *len, false, dirty, inst.eip);
                     self.check_range(*dst, *len, true, dirty, inst.eip);
@@ -1576,7 +2108,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 }
             }
             Op::MemFill { dst, val, len } => {
-                if self.m.cfg.mem_checks {
+                if self.m.cfg.mem_checks || self.mem64() && self.m.cfg.smc_checks {
                     self.check_range(*dst, *len, true, dirty, inst.eip);
                 }
                 self.get_ma(*dst);
@@ -1634,6 +2166,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             Op::Cond(_) | Op::Eflags => panic!("flag reads must be lowered before codegen"),
         }
         match inst.dst {
+            Some(_) if keep => {}
             Some(d) => self.set(d),
             None => {
                 if matches!(inst.op, Op::AtomicRmw { .. } | Op::AtomicCmpxchg { .. }) {
@@ -1641,6 +2174,91 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 }
             }
         }
+    }
+
+    // ---- Stackifying -----------------------------------------------------------
+    //
+    // A temporary used once, in the same block, by an instruction that reads
+    // its operands straight from locals in order, can stay on the
+    // WebAssembly stack: its instruction is emitted where the use reads it
+    // instead of before, saving a local.set/local.get pair. Over half of a
+    // module's instructions were local.get/set; fewer instructions compile
+    // faster and run faster before the engine optimizes them. The producers
+    // of a use's operands must be the instructions right before it, in
+    // operand order (so nothing is reordered), and a producer with effects
+    // (a load, which may fault) only when the use emits nothing before
+    // reading it.
+
+    /// Operands of `op` that its emission reads once each, in order, with
+    /// nothing emitted before them; and whether producers with effects may
+    /// supply them.
+    fn stack_operands(op: &Op) -> (Vec<V>, bool) {
+        match op {
+            Op::Copy(a) | Op::Un(_, a) => (vec![*a], true),
+            Op::Bin(_, a, b) => (vec![*a, *b], true),
+            Op::Select { cond, t, f } => (vec![*t, *f, *cond], true),
+            // The value is read after the address checks.
+            Op::Store { val, mem, .. } if !mem.atomic || mem.size == 1 => (vec![*val], false),
+            _ => (vec![], false),
+        }
+    }
+
+    /// Whether `inst` can be emitted at its use: pure, or (with `effects`) a
+    /// plain load.
+    fn stackable(inst: &Inst, effects: bool) -> bool {
+        match &inst.op {
+            Op::Const(_) | Op::Copy(_) | Op::Un(..) | Op::Select { .. } => true,
+            Op::Bin(op, ..) => effects || !op.can_trap(),
+            Op::Load { mem, .. } => effects && !mem.atomic,
+            _ => false,
+        }
+    }
+
+    /// Marks the instructions of a block that are emitted at their use.
+    fn stackify(&self, blk: &Block) -> Vec<bool> {
+        let n = blk.insts.len();
+        let mut deferred = vec![false; n];
+        let one_use = |v: V| {
+            v >= NUM_STATE
+                && self.use_count[v as usize] == 1
+                && self.a.dense[v as usize] == u32::MAX
+        };
+        // Claims producers for `operands`, last operand first, from the
+        // instructions just before `cursor`; returns where they start.
+        fn claim(
+            blk: &Block,
+            deferred: &mut [bool],
+            one_use: &dyn Fn(V) -> bool,
+            operands: &[V],
+            effects: bool,
+            mut cursor: usize,
+        ) -> usize {
+            for &o in operands.iter().rev() {
+                if cursor == 0 {
+                    break;
+                }
+                let j = cursor - 1;
+                let p = &blk.insts[j];
+                if p.dst != Some(o) || !one_use(o) || deferred[j] || !FnGen::stackable(p, effects) {
+                    break;
+                }
+                deferred[j] = true;
+                let (sub, sub_effects) = FnGen::stack_operands(&p.op);
+                cursor = claim(blk, deferred, one_use, &sub, sub_effects, j);
+            }
+            cursor
+        }
+        if let Term::Branch { cond, .. } = blk.term {
+            claim(blk, &mut deferred, &one_use, &[cond], true, n);
+        }
+        for c in (0..n).rev() {
+            if deferred[c] {
+                continue;
+            }
+            let (ops, effects) = FnGen::stack_operands(&blk.insts[c].op);
+            claim(blk, &mut deferred, &one_use, &ops, effects, c);
+        }
+        deferred
     }
 
     /// Checks that [addr, addr+len) lies in the guest region.
@@ -1685,7 +2303,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(W::I32Add);
         self.emit(W::I32Const(NULL_LIMIT as i32));
         self.emit(W::I32Sub);
-        self.emit(W::GlobalGet(G_GUEST_CHECK));
+        self.guest_check_value();
         self.emit(W::I32GtU);
         self.emit(W::I32Or);
         self.emit(W::If(BlockType::Empty));
@@ -2134,7 +2752,8 @@ fn emit_e(out: &mut Vec<W<'static>>, e: &E, map: [u32; 4]) {
     }
 }
 
-fn gen_helper(h: Helper, eflags_index: u32) -> wasm_encoder::Function {
+/// `eflags`: the function index of the Eflags helper.
+fn gen_helper(h: Helper, eflags: u32) -> wasm_encoder::Function {
     let mut out: Vec<W<'static>> = vec![];
     let mut locals: Vec<ValType> = vec![];
     match h {
@@ -2175,7 +2794,7 @@ fn gen_helper(h: Helper, eflags_index: u32) -> wasm_encoder::Function {
             for p in 1..=5 {
                 out.push(W::LocalGet(p));
             }
-            out.push(W::Call(eflags_index));
+            out.push(W::Call(eflags));
             out.push(W::LocalSet(6));
             out.push(W::Block(BlockType::Empty));
             for _ in 0..16 {
@@ -2232,7 +2851,7 @@ fn gen_helper(h: Helper, eflags_index: u32) -> wasm_encoder::Function {
             for p in 1..=5 {
                 out.push(W::LocalGet(p));
             }
-            out.push(W::Call(eflags_index));
+            out.push(W::Call(eflags));
             out.push(W::LocalSet(6));
             out.push(W::Block(BlockType::Empty));
             for _ in 0..16 {
@@ -2320,7 +2939,7 @@ mod tests {
         let g = super::ModuleGen::new(&cfg, &[]);
         assert_eq!(
             g.helper_func_index(crate::ir::Helper::Eflags),
-            super::NUM_FUNC_IMPORTS
+            super::F_FIRST_NATIVE
         );
     }
 }

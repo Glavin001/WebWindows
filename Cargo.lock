@@ -2198,6 +2198,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wwt-heap"
+version = "0.1.0"
+dependencies = [
+ "wwt",
+]
+
+[[package]]
+name = "wwt-strings"
+version = "0.1.0"
+
+[[package]]
 name = "wwt-testkit"
 version = "0.1.0"
 dependencies = [

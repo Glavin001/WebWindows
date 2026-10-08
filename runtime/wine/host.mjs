@@ -33,12 +33,14 @@ export const GL_UNIXLIB = 0x4000;
 import layout from './layout.json' with { type: 'json' };
 import layout64 from './layout64.json' with { type: 'json' };
 import { installAssemblies } from './sxs.mjs';
+import { attachNativeHeap } from './heap.mjs';
 import { installExceptions } from './exceptions.mjs';
 import { Scheduler, Thread } from './threads.mjs';
 import { startTicker, writeClock } from './ticker.mjs';
 import { THREAD_SYSCALLS, WIN32U_WAITS } from './thread-syscalls.mjs';
 import { AUDIO_UNIXLIB, BrowserAudio } from './audio.mjs';
 import { installRegistrations } from './registry-setup.mjs';
+import { attachNativeStrings } from './strings.mjs';
 
 export const L = layout;
 export const L64 = layout64;
@@ -189,6 +191,10 @@ export class WineHost {
    *        returns the translated module for an image file (`bytes` are
    *        already rebased when the image could not load at its own base)
    * @param {Map<string, Uint8Array>} opts.files  DOS paths (c:/...) -> contents
+   * @param {WebAssembly.Module} [opts.nativeHeap]  ntdll's heap as native WebAssembly
+   *        (./heap.mjs), for an ntdll translated with --native-heap
+   * @param {WebAssembly.Module} [opts.nativeStrings]  string and locale functions as
+   *        native WebAssembly (./strings.mjs), for DLLs translated with --native-strings
    */
   constructor(machine, opts) {
     this.m = machine;
@@ -199,12 +205,15 @@ export class WineHost {
     this.L = this.x64 ? layout64 : layout;
     this.translate = opts.translate;
     this.files = opts.files;
+    this.dirs = indexDirectories(this.files);
     // The side-by-side store wineboot would have filled.
     installAssemblies(this.files);
     this.stdout = opts.stdout ?? (() => {});
     this.stderr = opts.stderr ?? (() => {});
     this.trace = opts.trace ?? false;
     this.vm = new VirtualMemory(machine, 0x10000, machine.thunkBase);
+    this.nativeHeap = opts.nativeHeap ? attachNativeHeap(machine, opts.nativeHeap, this.vm) : null;
+    if (opts.nativeStrings) attachNativeStrings(machine, opts.nativeStrings);
     this.handles = new Map();
     // The host's own handles (files, sections) are numbered apart from the
     // ones wineserver hands out (4, 8, 12, ...) when Wine's Unix side is
@@ -220,14 +229,20 @@ export class WineHost {
     /** Results of NtCallbackReturn, one per user callback in progress. */
     this.callbackResults = [];
     this.images = new Map(); // base -> {path, info}
+    /** Resolve import thunks in the address lookup (./thunks.mjs). */
+    this.aliasThunks = opts.aliasThunks ?? true;
     this.modulesByPath = new Map();
     this.unimplemented = new Map();
-    this.counts = new Map();
+    /** The system call being run: its name, return address and stack. */
+    this.sys = { name: '', ret: 0, esp: 0, espAfter: undefined };
+    this.syscallEntries = [];
     this.argv = opts.argv;
     this.exePath = opts.exePath; // DOS path, e.g. c:\hello.exe
     this.env = opts.env ?? {};
     /** Wine's debug channels, as WINEDEBUG sets them ("+actctx,warn+heap") */
     this.debug = opts.debug ?? '';
+    /** The user's default locale (an LCID); the system's is always en-US. */
+    this.userLocale = opts.locale ?? 0x409;
   }
 
   /**
@@ -352,10 +367,7 @@ export class WineHost {
   }
 
   isDir(dosPath) {
-    if (/^[a-z]:$/.test(dosPath)) return true;
-    const prefix = dosPath + '\\';
-    for (const k of this.files.keys()) if (k.startsWith(prefix)) return true;
-    return false;
+    return /^[a-z]:$/.test(dosPath) || this.dirs.has(dosPath);
   }
 
   // ---- Images ----------------------------------------------------------------
@@ -429,6 +441,7 @@ export class WineHost {
       this.w64(USER_SHARED_DATA + 0x1000, this.syscallThunk);
     }
     this.kiUserCallbackDispatcher = ex('KiUserCallbackDispatcher');
+    this.nativeHeap?.init(ex('RtlRaiseStatus'));
     // Exception dispatch (./exceptions.mjs) builds i386 records and
     // contexts; on x86-64 an exception still stops the program.
     if (!this.x64) installExceptions(this, ex);
@@ -529,6 +542,7 @@ export class WineHost {
   /** Starts the clock in KUSER_SHARED_DATA (call before run). */
   async startClock() {
     this.ticker = await startTicker(this.m.memory, this.clockBoot);
+    this.threads.useTicker(this.clockBoot);
   }
 
   /**
@@ -767,7 +781,29 @@ export class WineHost {
         if (!this.syscallNames.has(id) || name.startsWith('Nt')) this.syscallNames.set(id, name.replace(/^Zw/, 'Nt'));
       }
     }
+    this.syscallEntries = [];
     this.log(`${this.syscallNames.size} system calls`);
+  }
+
+  /** What system call `id` runs, looked up once per number. */
+  syscallEntry(id) {
+    const name = this.syscallNames.get(id) ?? this.unix?.win32uNames.get(id) ?? `syscall_${id.toString(16)}`;
+    const e = {
+      name,
+      impl: (this.x64 && SYSCALLS64[name]) || SYSCALLS[name],
+      unixImpl: this.unix?.syscalls.get(name),
+      // The scheduler's system calls serve i386 only so far.
+      threadImpl: this.unix && !this.x64 ? THREAD_SYSCALLS[name] : undefined,
+      win32uWait: id >= 0x1000 && this.unix ? WIN32U_WAITS[this.unix.win32uNames.get(id)] : undefined,
+      calls: 0,
+    };
+    this.syscallEntries[id] = e;
+    return e;
+  }
+
+  /** Calls per system call name, for diagnostics. */
+  get counts() {
+    return new Map(this.syscallEntries.filter(Boolean).map((e) => [e.name, e.calls]));
   }
 
   syscall(cpu) {
@@ -775,19 +811,20 @@ export class WineHost {
     const id = m.reg(cpu, EAX);
     const esp = m.reg(cpu, ESP);
     const ret = this.u32(esp);
-    const name = this.syscallNames.get(id) ?? this.unix?.win32uNames.get(id) ?? `syscall_${id.toString(16)}`;
+    const e = this.syscallEntries[id] ?? this.syscallEntry(id);
+    const { name, impl, unixImpl, threadImpl, win32uWait } = e;
+    e.calls++;
     const argBase = esp + 8; // [esp] -> stub, [esp+4] -> caller
     const a = (i) => this.u32(argBase + i * 4);
-    this.counts.set(name, (this.counts.get(name) ?? 0) + 1);
-    const unixImpl = this.unix?.syscalls.get(name);
-    const threadImpl = this.unix ? THREAD_SYSCALLS[name] : undefined;
-    const impl = SYSCALLS[name];
     const t = this.threads.current;
-    this.sys = { name, ret, esp };
+    const sys = this.sys;
+    sys.name = name;
+    sys.ret = ret;
+    sys.esp = esp;
+    sys.espAfter = undefined;
     const outer = t.inCall;
     t.inCall = name;
     let status;
-    const win32uWait = id >= 0x1000 && this.unix ? WIN32U_WAITS[this.unix.win32uNames.get(id)] : undefined;
     if (win32uWait) {
       status = win32uWait.call(this, a, cpu, argBase);
     } else if (id >= 0x1000 && this.unix) {
@@ -851,13 +888,12 @@ export class WineHost {
     const id = m.reg(cpu, EAX);
     const rsp = m.sp(cpu);
     const ret = m.ptr(rsp);
-    const name = this.syscallNames.get(id) ?? this.unix?.win32uNames.get(id) ?? `syscall_${id.toString(16)}`;
+    const e = this.syscallEntries[id] ?? this.syscallEntry(id);
+    const { name, impl, unixImpl } = e;
+    e.calls++;
     const R = [10, EDX, 8, 9];
     const raw = (i) => (i < 4 ? m.reg64(cpu, R[i]) : this.u64(rsp + 0x30 + (i - 4) * 8));
     const a = (i) => this.arg64(raw(i));
-    this.counts.set(name, (this.counts.get(name) ?? 0) + 1);
-    const impl = SYSCALLS64[name] ?? SYSCALLS[name];
-    const unixImpl = this.unix?.syscalls.get(name);
     // The module's thunks take the raw slots: C's casts drop a 32-bit
     // argument's garbage upper half. The most any call takes is 17
     // (NtUserCreateWindowEx, whose last is `ansi`); the module has room for 32.
@@ -898,7 +934,7 @@ export class WineHost {
     // wasm64 passes 64-bit slots (BigInts); pseudo-handles read as their
     // 32-bit forms, as on i386.
     const a = this.x64 ? (i) => exactArg64(BigInt(args[i] ?? 0)) : (i) => args[i] >>> 0;
-    this.sys = { name, ret: 0, esp: 0 };
+    this.sys = { name, ret: 0, esp: 0, espAfter: undefined };
     let status = impl.call(this, a, this.cpu, 0);
     // Under the Unix side the thread cannot yield: waits come back done.
     if (status && typeof status === 'object') status = status.status ?? 0;
@@ -1118,3 +1154,28 @@ function exactArg64(v) {
 }
 
 export { EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI, MEM_PRIVATE };
+
+/**
+ * The directories of an in-memory file system (path -> bytes): every
+ * ancestor of every file, kept up to date as files are added. Directories
+ * stay when their files are deleted, as on Windows. Programs probe for
+ * missing files often (SQLite checks for its journal on every transaction),
+ * and each probe asks whether the path is a directory.
+ */
+function indexDirectories(files) {
+  const dirs = new Set();
+  const add = (path) => {
+    for (let i = path.lastIndexOf('\\'); i > 0; i = path.lastIndexOf('\\', i - 1)) {
+      const d = path.slice(0, i);
+      if (dirs.has(d)) break;
+      dirs.add(d);
+    }
+  };
+  for (const k of files.keys()) add(k);
+  const set = files.set.bind(files);
+  files.set = (k, v) => {
+    if (!files.has(k)) add(k);
+    return set(k, v);
+  };
+  return dirs;
+}

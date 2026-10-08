@@ -68,6 +68,12 @@ pub struct LiftConfig {
     pub mode: Mode,
     /// The CPU pointer is i64 (64-bit memory).
     pub mem64: bool,
+    /// What lifted functions may assume across calls and returns.
+    pub abi: CallAbi,
+    /// Every flag-setting instruction defines the whole lazy flag state,
+    /// operands its kind does not use included, so that the old state is
+    /// visibly dead (see `translate::prove_flags_abi`).
+    pub define_all_flags: bool,
 }
 
 impl Default for LiftConfig {
@@ -79,6 +85,8 @@ impl Default for LiftConfig {
             max_blocks: 4000,
             mode: Mode::X86,
             mem64: false,
+            abi: CallAbi::default(),
+            define_all_flags: false,
         }
     }
 }
@@ -224,6 +232,7 @@ pub fn lift_function(
         }
     }
     let mut f = Function::new_in(entry, cfg.mode, cfg.mem64);
+    f.abi = cfg.abi.clone();
     let mut blocks = HashMap::new();
     for &b in &order {
         let id = f.new_block(b);
@@ -731,7 +740,19 @@ impl<'a> Lifter<'a> {
                     GS_BASE
                 };
                 a = self.bin(BinOp::I32Add, a, b);
-                Space::Guest
+                // A constant offset into the TEB (`fs:[0x18]`, the TEB's
+                // own address, is in every Windows API function that sets
+                // the last error): the runtime keeps the FS base at the
+                // thread's TEB, which is mapped and never holds code.
+                if seg == Register::FS
+                    && base == Register::None
+                    && index == Register::None
+                    && disp < 0x1000
+                {
+                    Space::Trusted
+                } else {
+                    Space::Guest
+                }
             }
             _ => {
                 if base != Register::None
@@ -902,13 +923,21 @@ impl<'a> Lifter<'a> {
         self.emit_to(FR, o);
         let o = self.flag_op(a);
         self.emit_to(FA, o);
-        if let Some(b) = b {
-            let o = self.flag_op(b);
-            self.emit_to(FB, o);
+        match b {
+            Some(b) => {
+                let o = self.flag_op(b);
+                self.emit_to(FB, o);
+            }
+            None if self.cfg.define_all_flags => self.emit_to(FB, Op::Const(0)),
+            None => {}
         }
-        if let Some(c) = c {
-            let o = self.flag_op(c);
-            self.emit_to(FC, o);
+        match c {
+            Some(c) => {
+                let o = self.flag_op(c);
+                self.emit_to(FC, o);
+            }
+            None if self.cfg.define_all_flags => self.emit_to(FC, Op::Const(0)),
+            None => {}
         }
     }
 
@@ -916,6 +945,11 @@ impl<'a> Lifter<'a> {
         self.emit_to(FK, Op::Const(fl::EXPLICIT as u64));
         let o = self.flag_op(eflags);
         self.emit_to(FR, o);
+        if self.cfg.define_all_flags {
+            for v in [FA, FB, FC] {
+                self.emit_to(v, Op::Const(0));
+            }
+        }
     }
 
     /// Sets the flag state only when `cond` is non-zero (shifts by a
@@ -1327,9 +1361,7 @@ impl<'a> Lifter<'a> {
                 let ah = self.read_reg(Register::AH);
                 let ah = self.bini(BinOp::I32And, ah, 0xd5);
                 let of = self.cond(Cc::O);
-                let of = self.bini(BinOp::I32Shl, of, 11);
-                let e = self.bin(BinOp::I32Or, ah, of);
-                self.set_flags_explicit(e);
+                self.set_flags(fl::SAHF, 32, ah, of, None, None);
             }
             M::Cbw => {
                 let v = self.read_reg(Register::AL);
@@ -1664,6 +1696,19 @@ impl<'a> Lifter<'a> {
                 v,
                 w.min(16).max(if k0 == OpKind::Register { w } else { 16 }),
             );
+            return;
+        }
+        // `mov edi, edi` (the hot-patch prologue of every Windows API
+        // function) changes nothing; lifting it as a copy would make the
+        // register look written, costing a write-back on every call. (In
+        // 64-bit code a 32-bit move clears the upper half, so only a 64-bit
+        // one changes nothing.)
+        if k0 == OpKind::Register
+            && k1 == OpKind::Register
+            && i.op0_register() == i.op1_register()
+            && i.op0_register().is_gpr()
+            && (!self.x64() || i.op0_register().is_gpr64())
+        {
             return;
         }
         let w = self.op_width(i, 0);

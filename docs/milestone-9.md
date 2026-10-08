@@ -91,9 +91,9 @@ A fixed-base image above 4 GB runs only on a 64-bit memory.
   bases. Code addresses are u64 throughout the translator (instructions,
   blocks, discovery maps, call targets, reports).
 * **Code generation and kernel:** with 64-bit memory the memory import is
-  memory64, the CPU pointer, `lookup_l1`, `guest_limit` and `code_bitmap`
-  are i64, the first-level lookup table holds 8-byte pointers, and narrower
-  addresses are zero-extended. x86-64 code on it also has 64-bit code
+  memory64, the CPU pointer, `lookup_l1`, `guest_limit`, `store_map` and
+  `zero_l2` are i64, the first-level lookup table holds 8-byte pointers, and
+  narrower addresses are zero-extended. x86-64 code on it also has 64-bit code
   addresses (`(cpu) -> i64` functions, the `code_pages` global, a third
   kernel, `wwt kernel --code64`); faults then report a 64-bit eip and
   address. With 32-bit memory, x86-64 addresses are checked in i64 against
@@ -122,6 +122,36 @@ A fixed-base image above 4 GB runs only on a 64-bit memory.
   `wwt_kernel_code64`, and u64 addresses in its C ABI (base, entries,
   known functions, profile). The browser keeps a profile per memory model,
   as float64s.
+
+### The translator's performance work on x86-64
+
+The optimizations of `docs/performance.md` were written for 32-bit code;
+on x86-64 they apply as follows.
+
+* **Store checks.** On a 32-bit memory a store's fast path is one store-map
+  lookup, whatever the code (x86-64 code included, once its 64-bit address
+  is checked against the guest limit and wrapped). A 64-bit memory has no
+  such fast path: the map covers only the guest region, so every store
+  checks its address first and then reads the page's CODE bit, which
+  invalidates the page's translations inline as on 32-bit memory (8-byte
+  lookup entries). The guest limit as a constant (`--guest-limit-mb`)
+  applies only to 32-bit memories; modules for a 64-bit one read it at run
+  time.
+* **Kept as on i386:** load-check elimination (facts about one address
+  register and constant offsets; the index aliases track 32-bit additions
+  only), shared fault blocks, re-entry at loop headers (`cpu.RESUME` lies
+  in the part of the CPU struct both layouts share), reducible control
+  flow, inlining of leaf functions (return addresses compare as i64 in
+  64-bit code), plain loads and stores for `lock`ed instructions, the flags
+  calling convention for Wine's DLLs and proven programs (rbx, rbp, rsi and
+  rdi are callee-saved on x86-64 too), calls through import stubs
+  (`jmp [rip+slot]`, 8-byte slots) and import thunks resolved in the lookup
+  (`jmp [rip+disp]`).
+* **i386 only:** the built-in memory and division bodies and the native
+  heap and string functions read their arguments from the stack, the
+  32-bit calling convention; x86-64 images keep their translated bodies.
+  `mov edi, edi` is skipped as a no-op only in 32-bit code (in 64-bit code
+  it clears the upper half).
 
 ## Test results
 

@@ -10,6 +10,17 @@ function putAddrs(x, arr) {
   return p;
 }
 
+/**
+ * Translator flags for a guest limit known at translation time (bits 16-31,
+ * in MB): memory checks then compare against a constant, and the runtime
+ * accepts the module only under that limit. 0 (or a limit that is not a
+ * whole number of MB, or 4 GB and more) leaves the limit to be read at run
+ * time.
+ */
+function limitFlags(guestLimit) {
+  return guestLimit && guestLimit % (1 << 20) === 0 && guestLimit < 2 ** 32 ? (guestLimit / (1 << 20)) << 16 : 0;
+}
+
 export class FastTranslator {
   static async load(bytes) {
     const { instance } = await WebAssembly.instantiate(bytes, {});
@@ -32,13 +43,13 @@ export class FastTranslator {
    * Translates code in `code` (located at `base`) reachable from `entries`;
    * `x64` for x86-64 code, `mem64` for a 64-bit (memory64) memory.
    */
-  translate(code, base, entries, { known = [], opt = 0, memChecks = true, smcChecks = true, x64 = false, mem64 = false } = {}) {
+  translate(code, base, entries, { known = [], opt = 0, memChecks = true, smcChecks = true, x64 = false, mem64 = false, guestLimit = 0 } = {}) {
     const x = this.x;
     const cp = x.wwt_alloc(code.length);
     new Uint8Array(x.memory.buffer).set(code, cp);
     const ep = putAddrs(x, entries);
     const kp = putAddrs(x, known);
-    const flags = (memChecks ? 0 : 1) | (smcChecks ? 0 : 2) | (x64 ? 4 : 0) | (mem64 ? 8 : 0);
+    const flags = (memChecks ? 0 : 1) | (smcChecks ? 0 : 2) | (x64 ? 4 : 0) | (mem64 ? 8 : limitFlags(guestLimit));
     const res = x.wwt_translate(cp, code.length, BigInt(base), ep, entries.length, kp, known.length, opt, flags);
     x.wwt_free(cp, code.length);
     x.wwt_free(ep, Math.max(entries.length, 1) * 8);
@@ -47,12 +58,12 @@ export class FastTranslator {
   }
 
   /** Translates a whole PE file; `profile` lists extra entry points. */
-  translatePe(file, { profile = [], opt = 1, mem64 = false } = {}) {
+  translatePe(file, { profile = [], opt = 1, mem64 = false, guestLimit = 0 } = {}) {
     const x = this.x;
     const fp = x.wwt_alloc(file.length);
     new Uint8Array(x.memory.buffer).set(file, fp);
     const pp = putAddrs(x, profile);
-    const res = x.wwt_translate_pe(fp, file.length, pp, profile.length, opt, mem64 ? 8 : 0);
+    const res = x.wwt_translate_pe(fp, file.length, pp, profile.length, opt, mem64 ? 8 : limitFlags(guestLimit));
     x.wwt_free(fp, file.length);
     x.wwt_free(pp, Math.max(profile.length, 1) * 8);
     return this.take(res);
@@ -79,7 +90,7 @@ export function enableFastMode(machine, translator, { window = 0x40000, log } = 
     const code = machine.u8.slice(addr, end);
     const t0 = performance.now();
     const known = machine.entriesIn(addr, end);
-    const bytes = translator.translate(code, addr, [addr], { known, x64: machine.x64, mem64: machine.mem64 });
+    const bytes = translator.translate(code, addr, [addr], { known, x64: machine.x64, mem64: machine.mem64, guestLimit: machine.guestLimit });
     if (!bytes.length) return 0;
     let rec;
     try {

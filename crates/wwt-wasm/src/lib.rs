@@ -41,6 +41,15 @@ fn apply_flags(cfg: wwt::Config, flags: u32) -> wwt::Config {
     cfg.with_mode(mode).with_mem64(flags & FLAG_MEM64 != 0)
 }
 
+/// Bits 16-31 of `flags`: the guest limit in MB the module will run under
+/// (see `CodegenConfig::guest_limit`), or 0 to read it at run time.
+fn guest_limit(flags: u32) -> Option<u32> {
+    match flags >> 16 {
+        0 => None,
+        mb => Some(mb << 20),
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn wwt_alloc(len: usize) -> *mut u8 {
     let mut v = Vec::<u8>::with_capacity(len.max(1));
@@ -86,7 +95,7 @@ pub unsafe extern "C" fn wwt_translate(
     } else {
         std::slice::from_raw_parts(known, n_known).to_vec()
     };
-    let cfg = apply_flags(
+    let mut cfg = apply_flags(
         if opt_level == 0 {
             wwt::Config::fast()
         } else {
@@ -94,6 +103,7 @@ pub unsafe extern "C" fn wwt_translate(
         },
         flags,
     );
+    cfg.codegen.guest_limit = guest_limit(flags);
     let src = FlatCode { base, bytes: code };
     match wwt::translate::translate_region_with_known(&src, &entries, &known, &cfg) {
         Ok(t) => result(t.wasm),
@@ -122,7 +132,7 @@ pub unsafe extern "C" fn wwt_translate_pe(
     } else {
         std::slice::from_raw_parts(profile, n_profile).to_vec()
     };
-    let cfg = apply_flags(
+    let mut cfg = apply_flags(
         if opt_level == 0 {
             wwt::Config::fast()
         } else {
@@ -130,6 +140,7 @@ pub unsafe extern "C" fn wwt_translate_pe(
         },
         flags,
     );
+    cfg.codegen.guest_limit = guest_limit(flags);
     let Ok(pe) = wwt::pe::PeFile::parse(data) else {
         return result(vec![]);
     };

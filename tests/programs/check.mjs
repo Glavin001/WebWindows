@@ -176,7 +176,10 @@ async function runOne(p, opt) {
     return { status: 'skip', detail: 'needs a C99 runtime (msvcrt.dll is not one)' };
   }
   const wasm = b.exe + '.wasm';
-  const tr = await sh(wwt, ['translate', b.exe, '-o', wasm, ...(mem64 ? ['--mem64'] : [])]);
+  // run.mjs's guest limit (defaultGuestLimitMB), a constant in the checks
+  // with a 32-bit memory.
+  const guestLimitMB = arch === 'x64' ? 3072 : 1024;
+  const tr = await sh(wwt, ['translate', b.exe, '-o', wasm, ...(mem64 ? ['--mem64'] : ['--guest-limit-mb', String(guestLimitMB)])]);
   if (tr.status !== 0) return { status: 'fail', detail: 'translate: ' + tr.stderr.slice(-800) };
   const t0 = performance.now();
   // With --wine the program runs on translated Wine DLLs (Milestone 2)

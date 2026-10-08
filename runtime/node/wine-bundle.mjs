@@ -32,6 +32,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { parsePe, peImports as imports, rebaseImage } from '../wine/host.mjs';
+import { NATIVE_HEAP_FLAG } from '../wine/heap.mjs';
+import { NATIVE_STRINGS_DLLS, NATIVE_STRINGS_FLAG } from '../wine/strings.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const argv = process.argv.slice(2);
@@ -93,6 +95,13 @@ function stripped(path) {
 
 const unixDir = join(root, mem32 ? 'target/wine-unix64-m32' : x64 ? 'target/wine-unix64' : 'target/wine-unix');
 const withUnix = existsSync(join(unixDir, 'wine_unix.mjs'));
+// ntdll's heap as native WebAssembly (crates/wwt-heap), when built: the
+// bundle's ntdll then imports it (--native-heap), and the bundle ships it.
+const heapWasm = join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_heap.wasm');
+const withHeap = existsSync(heapWasm);
+// Likewise the native string and locale functions (crates/wwt-strings).
+const stringsWasm = join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_strings.wasm');
+const withStrings = existsSync(stringsWasm);
 
 mkdirSync(out, { recursive: true });
 const manifest = { wine: '11.0', arch: x64 ? 'x64' : 'x86', mem64, dlls: {}, nls: [] };
@@ -119,9 +128,25 @@ for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS, ...NET_DLL
   }
   writeFileSync(join(out, name), bytes);
   const group = MEDIA_DLLS.includes(d) ? 'media' : NET_DLLS.includes(d) ? 'network' : null;
-  const flags = [...(TRANSLATE_FLAGS[d] ?? []), ...(mem64 ? ['--mem64'] : [])];
-  execFileSync(wwt, ['translate', ...flags, join(out, name), '-o', join(out, `${name}.wasm`)], { stdio: ['ignore', 'ignore', 'inherit'] });
+  // The browser runs Wine with a 2 GB guest on a 32-bit memory
+  // (runtime/web/worker.mjs), a constant in the memory checks; a 64-bit
+  // memory reads its limit at run time. The native heap and string
+  // functions are i386 code's.
+  const flags = [...(TRANSLATE_FLAGS[d] ?? []), ...(mem64 ? ['--mem64'] : ['--guest-limit-mb', '2048'])];
+  if (withHeap && !x64 && d === 'ntdll') flags.push(NATIVE_HEAP_FLAG);
+  if (withStrings && !x64 && NATIVE_STRINGS_DLLS.includes(name)) flags.push(NATIVE_STRINGS_FLAG);
+  execFileSync(wwt, ['translate', ...flags, join(out, name), '-o', join(out, `${name}.wasm`)], {
+    stdio: ['ignore', 'ignore', 'inherit'],
+  });
   manifest.dlls[name] = { pe: name, wasm: `${name}.wasm`, ...(group && { group }) };
+}
+if (withHeap && !x64) {
+  copyFileSync(heapWasm, join(out, 'wwt_heap.wasm'));
+  manifest.heap = 'wwt_heap.wasm';
+}
+if (withStrings && !x64) {
+  copyFileSync(stringsWasm, join(out, 'wwt_strings.wasm'));
+  manifest.strings = 'wwt_strings.wasm';
 }
 for (const n of NLS) {
   copyFileSync(join(wineSrc, 'nls', `${n}.nls`), join(out, `${n}.nls`));

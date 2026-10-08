@@ -5,7 +5,7 @@
 //! program runs. Both produce one WebAssembly module whose functions are
 //! registered under their x86 addresses at load time.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use anyhow::Result;
 use serde::Serialize;
@@ -13,7 +13,10 @@ use serde::Serialize;
 use crate::abi;
 use crate::codegen::{CodegenConfig, ModuleGen};
 use crate::discover::{scan_data_for_code_pointers_in, CodeSource, Discovery, SeedKind};
-use crate::ir::{Function, Mode};
+use crate::ir::{
+    BlockId, CallAbi, CallTarget, FlagFree, FlagFreeCallees, Function, Inst, Mem, Mode, Op, Space,
+    Term, Ty,
+};
 use crate::lift::{lift_function, LiftConfig};
 use crate::opt;
 use crate::pe::{ExportTarget, PeFile};
@@ -26,6 +29,27 @@ pub struct Config {
     pub opt_level: u32,
     /// Scan data sections for code pointers when the file has no relocations.
     pub scan_data: bool,
+    /// Inline small leaf functions into their callers (opt level 1).
+    pub inline: bool,
+    /// Give exported memory functions (`memmove`, `memset`, ...) built-in
+    /// bodies using WebAssembly's bulk memory operations.
+    pub builtins: bool,
+    /// Whether the image is compiled C, which follows the C calling
+    /// convention (`CallAbi::c`). `None`: decide from the image: Wine's own
+    /// modules are; for a program, what its own code shows (see
+    /// `prove_flags_abi`).
+    pub c_abi: Option<bool>,
+    /// Look for evidence that the module's code never reads the flags
+    /// across calls and returns, and assume so where it holds (see
+    /// `prove_flags_abi`). Set for programs (not DLLs, whose callers are
+    /// unknown).
+    pub prove_flags_abi: bool,
+    /// Replace ntdll's heap functions with the host's native heap
+    /// (`builtin::NATIVE_HEAP`); applies to ntdll.dll only.
+    pub native_heap: bool,
+    /// Try the host's native string and locale functions before the
+    /// translated ones (`builtin::NATIVE_TRY`); applies to Wine's own DLLs.
+    pub native_strings: bool,
 }
 
 impl Default for Config {
@@ -35,6 +59,12 @@ impl Default for Config {
             codegen: CodegenConfig::default(),
             opt_level: 1,
             scan_data: true,
+            inline: true,
+            builtins: true,
+            c_abi: None,
+            prove_flags_abi: false,
+            native_heap: false,
+            native_strings: false,
         }
     }
 }
@@ -77,6 +107,9 @@ pub struct Report {
     pub unsupported: Vec<(u64, String)>,
     /// Indirect jumps recognized as jump tables.
     pub jump_tables: usize,
+    /// Functions shown to return without their callers reading the flags
+    /// (`prove_flags_abi`).
+    pub flag_free_returns: usize,
 }
 
 pub struct Translation {
@@ -117,6 +150,9 @@ pub struct ImageMeta {
 #[derive(Serialize)]
 struct Meta<'a> {
     abi_version: u32,
+    /// Set when checks were compiled against this guest limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    guest_limit: Option<u32>,
     image: Option<&'a ImageMeta>,
     report: &'a Report,
 }
@@ -142,6 +178,9 @@ pub fn image_meta(pe: &PeFile) -> ImageMeta {
         has_relocations: pe.relocations.is_some(),
     }
 }
+
+/// Sections the loader may drop after loading (debug information, relocations).
+const IMAGE_SCN_MEM_DISCARDABLE: u32 = 0x0200_0000;
 
 /// Discovers code in a PE image from all static seeds plus `profile` (code
 /// found at run time on earlier launches).
@@ -178,6 +217,15 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u64], cfg: &Con
             d.add_function_seed(p, SeedKind::Profile);
         }
     }
+    // Native functions must be functions of their own, also where ntdll
+    // only tail-jumps to them (`_heap_thread_detach`).
+    if cfg.native_heap {
+        for (va, name) in pe.code_names() {
+            if crate::builtin::native_heap(&name).is_some() && img.is_code(va) {
+                d.add_function_seed(va, SeedKind::Export);
+            }
+        }
+    }
     d.explore(img);
     // Code pointers in data: relocation targets (always present in DLLs),
     // otherwise a scan of data sections. Addresses already known as
@@ -200,11 +248,20 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u64], cfg: &Con
             }
         }
     }
-    // Executables often carry few or no relocations: also scan their data
-    // for code pointers (each confirmed by decoding).
-    if cfg.scan_data && !pe.is_dll() {
+    // Executables often carry no relocations: then scan their data for
+    // code pointers (each confirmed by decoding). With relocations, those
+    // list every pointer (one without would break when the image is
+    // rebased), and a scan only finds false ones: in debug information,
+    // DWARF line tables hold an address for every statement, and each
+    // would split its function. Discardable sections (debug information,
+    // `.reloc`) hold no pointers the program uses.
+    let relocated = pe.relocations.as_ref().is_some_and(|r| !r.is_empty());
+    if cfg.scan_data && !pe.is_dll() && !relocated {
         for s in &pe.sections {
-            if s.is_executable() || s.characteristics & 0xC0 == 0x80 {
+            if s.is_executable()
+                || s.characteristics & 0xC0 == 0x80
+                || s.characteristics & IMAGE_SCN_MEM_DISCARDABLE != 0
+            {
                 continue;
             }
             let start = pe.image_base + s.virtual_address as u64;
@@ -269,18 +326,81 @@ pub fn discover_pe(pe: &PeFile, img: &dyn CodeSource, profile: &[u64], cfg: &Con
 /// the file. A 64-bit image preferred above 4 GB is folded below it when the
 /// target is a 32-bit memory.
 pub fn translate_pe(pe: &PeFile, cfg: &Config, profile: &[u64]) -> Result<Translation> {
-    let cfg = &cfg.clone().with_mode(pe.mode);
+    let mut cfg = cfg.clone().with_mode(pe.mode);
     if !cfg.codegen.mem64 && pe.image_base >> 32 != 0 {
         let mut low = pe.clone();
         low.fold_below_4gb()?;
-        return translate_pe(&low, cfg, profile);
+        return translate_pe(&low, &cfg, profile);
     }
+    match cfg.c_abi {
+        Some(true) => cfg.lift.abi = CallAbi::c(),
+        None if pe.is_wine_builtin() => cfg.lift.abi = CallAbi::c(),
+        None => cfg.prove_flags_abi = !pe.is_dll(),
+        Some(false) => {}
+    }
+    cfg.lift.define_all_flags = cfg.lift.abi.flags_dead_at_ret || cfg.prove_flags_abi;
+    let is_ntdll = pe
+        .dll_name
+        .as_deref()
+        .is_some_and(|n| n.eq_ignore_ascii_case("ntdll.dll"));
+    cfg.native_heap &= is_ntdll;
+    // The built-in and native function bodies read their arguments the
+    // 32-bit way (from the stack).
+    if pe.mode != Mode::X86 {
+        cfg.builtins = false;
+        cfg.native_heap = false;
+        cfg.native_strings = false;
+    }
+    let cfg = &cfg;
     let img = pe.image()?;
     let mut d = discover_pe(pe, &img, profile, cfg);
     let meta = image_meta(pe);
-    // Function names for profilers, when the file has symbols.
-    let names = pe.function_symbols();
-    translate_discovered_named(&img, &mut d, cfg, Some(&meta), &names)
+    let names: HashMap<u64, String> = pe.code_names().into_iter().collect();
+    let tried = if cfg.native_strings && pe.is_wine_builtin() {
+        natives_tried(pe, &img)
+    } else {
+        HashMap::new()
+    };
+    translate_discovered(&img, &mut d, cfg, Some(&meta), &names, &tried)
+}
+
+/// Native implementations to try first, by function entry: those
+/// `builtin::NATIVE_TRY` has for this DLL's exports (or COFF symbols), with
+/// the addresses of the symbols they need (all must be present).
+fn natives_tried(pe: &PeFile, img: &crate::pe::Image) -> HashMap<u64, (&'static str, Vec<u32>)> {
+    let mut out = HashMap::new();
+    let Some(dll) = pe.dll_name.as_deref().map(str::to_ascii_lowercase) else {
+        return out;
+    };
+    for n in crate::builtin::NATIVE_TRY
+        .iter()
+        .filter(|n| n.dlls.contains(&dll.as_str()))
+    {
+        let va = if n.name.starts_with('_') {
+            pe.symbol(n.name)
+        } else {
+            pe.exports
+                .iter()
+                .find_map(|ex| match (&ex.name, &ex.target) {
+                    (Some(name), ExportTarget::Rva(rva)) if name == n.name => {
+                        Some(pe.image_base + *rva as u64)
+                    }
+                    _ => None,
+                })
+        };
+        // 32-bit images only (see `translate_pe`).
+        let args: Option<Vec<u32>> = n
+            .symbols
+            .iter()
+            .map(|s| pe.symbol(s).map(|a| a as u32))
+            .collect();
+        if let (Some(va), Some(args)) = (va, args) {
+            if img.is_code(va) {
+                out.insert(va, (n.import, args));
+            }
+        }
+    }
+    out
 }
 
 /// Fast mode: translates code reachable from `entries` in `src`.
@@ -311,28 +431,20 @@ pub fn translate_region_with_known(
         d.add_function_seed(e, SeedKind::Profile);
     }
     d.explore(src);
-    translate_discovered(src, &mut d, cfg, None)
+    translate_discovered(src, &mut d, cfg, None, &HashMap::new(), &HashMap::new())
 }
 
 /// Lifts, optimizes and generates code for every discovered function.
+/// `names` (symbols by address) label functions in the module's name
+/// section, for profilers and debuggers, and select native heap functions;
+/// `tried` gives functions a native implementation to try first.
 pub fn translate_discovered(
     src: &dyn CodeSource,
     d: &mut Discovery,
     cfg: &Config,
     meta: Option<&ImageMeta>,
-) -> Result<Translation> {
-    translate_discovered_named(src, d, cfg, meta, &BTreeMap::new())
-}
-
-/// [`translate_discovered`], naming functions found in `names` (address ->
-/// symbol) in the module's name section, where profilers and debuggers
-/// look for them.
-pub fn translate_discovered_named(
-    src: &dyn CodeSource,
-    d: &mut Discovery,
-    cfg: &Config,
-    meta: Option<&ImageMeta>,
-    names: &BTreeMap<u64, String>,
+    names: &HashMap<u64, String>,
+    tried: &HashMap<u64, (&'static str, Vec<u32>)>,
 ) -> Result<Translation> {
     let mut report = Report::default();
     for k in d.seed_kinds.values() {
@@ -359,15 +471,60 @@ pub fn translate_discovered_named(
             if !d.insts.contains_key(&entry) {
                 continue;
             }
-            let lifted = lift_function(src, d, entry, &cfg.lift);
-            report.unsupported.extend(lifted.unsupported);
-            for e in lifted.extra_entries {
-                d.add_function_seed(e, SeedKind::Call);
-            }
-            let mut f = lifted.func;
-            opt::optimize(&mut f, cfg.opt_level);
-            report.blocks += f.blocks.len();
+            let name = names.get(&entry);
+            let native = name
+                .and_then(|n| crate::builtin::native_heap(n))
+                .filter(|_| cfg.native_heap);
+            let builtin = name
+                .and_then(|n| crate::builtin::Builtin::by_name(n))
+                .filter(|_| cfg.builtins);
+            let f = match (native, builtin) {
+                (Some(n), _) => crate::builtin::native_body(entry, n, cfg.lift.mem64),
+                (None, Some(b)) => crate::builtin::body(entry, b, cfg.lift.mem64),
+                (None, None) => {
+                    let lifted = lift_function(src, d, entry, &cfg.lift);
+                    report.unsupported.extend(lifted.unsupported);
+                    for e in lifted.extra_entries {
+                        d.add_function_seed(e, SeedKind::Call);
+                    }
+                    match tried.get(&entry) {
+                        Some((n, args)) => {
+                            crate::builtin::with_native_try(lifted.func, n, args.clone())
+                        }
+                        None => lifted.func,
+                    }
+                }
+            };
             funcs.push(f);
+        }
+    }
+    call_through_import_stubs(&mut funcs);
+    if cfg.prove_flags_abi {
+        // Imports: Wine's exports never read the flags on entry, except
+        // `_chkesp` (MSVC debug builds' stack check after calls).
+        let reading = meta
+            .map(|m| {
+                m.imports
+                    .iter()
+                    .filter(|i| i.name.to_string().contains("chkesp"))
+                    .map(|i| m.image_base + i.iat_rva as u64)
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Condition reads name the flag operands they use once lowered
+        // (`jp` after `sahf` reads only the flags `sahf` set).
+        for f in &mut funcs {
+            opt::lower_flags(f);
+        }
+        report.flag_free_returns = prove_flags_abi(&mut funcs, reading);
+    }
+    for f in &mut funcs {
+        opt::optimize(f, cfg.opt_level);
+        report.blocks += f.blocks.len();
+    }
+    if cfg.opt_level > 0 && cfg.inline {
+        for i in crate::inline::inline_leaves(&mut funcs) {
+            opt::optimize(&mut funcs[i], cfg.opt_level);
         }
     }
     funcs.sort_by_key(|f| f.entry);
@@ -377,14 +534,16 @@ pub fn translate_discovered_named(
     let entries: Vec<u64> = funcs.iter().map(|f| f.entry).collect();
     let meta_json = serde_json::to_string(&Meta {
         abi_version: abi::ABI_VERSION,
+        guest_limit: cfg.codegen.guest_limit,
         image: meta,
         report: &report,
     })?;
     // The code width follows the mode even with no functions (a DLL that
     // only forwards its exports).
     let gen = ModuleGen::new(&cfg.codegen, &funcs)
-        .with_code64(cfg.mode() == Mode::X64 && cfg.codegen.mem64);
-    let wasm = gen.build_named(&funcs, &meta_json, names);
+        .with_code64(cfg.mode() == Mode::X64 && cfg.codegen.mem64)
+        .with_names(names);
+    let wasm = gen.build(&funcs, &meta_json);
     report.wasm_bytes = wasm.len();
     Ok(Translation {
         wasm,
@@ -392,6 +551,289 @@ pub fn translate_discovered_named(
         report,
         ir: funcs,
     })
+}
+
+/// A direct call to an import stub (`jmp [slot]`, how MinGW programs
+/// call their imports) calls through the slot instead: one call instead of
+/// two, and the lookup resolves the slot's target (which may itself be a
+/// thunk the runtime resolved, see runtime/wine/thunks.mjs). Tail jumps
+/// to stubs likewise. In 64-bit code the slot holds 8 bytes.
+fn call_through_import_stubs(funcs: &mut [Function]) {
+    let stubs: HashMap<u64, (u64, u8, Ty, Ty)> = funcs
+        .iter()
+        .filter_map(|f| {
+            let [b] = f.blocks.as_slice() else {
+                return None;
+            };
+            let Term::JmpInd(v) = b.term else { return None };
+            match b.insts.as_slice() {
+                [Inst {
+                    dst: Some(c),
+                    op: Op::Const(slot),
+                    ..
+                }, Inst {
+                    dst: Some(l),
+                    op: Op::Load { addr, mem },
+                    ..
+                }] if *l == v
+                    && addr == c
+                    && mem.offset == 0
+                    && (mem.size == 4 || f.mode == Mode::X64 && mem.size == 8) =>
+                {
+                    Some((f.entry, (*slot, mem.size, f.ty(*c), f.ty(*l))))
+                }
+                _ => None,
+            }
+        })
+        .collect();
+    if stubs.is_empty() {
+        return;
+    }
+    for f in funcs.iter_mut() {
+        for b in 0..f.blocks.len() {
+            let target = match f.blocks[b].term {
+                Term::Call {
+                    target: CallTarget::Direct(t),
+                    ..
+                }
+                | Term::Exit(t) => t,
+                _ => continue,
+            };
+            let Some(&(slot, size, slot_ty, ty)) = stubs.get(&target) else {
+                continue;
+            };
+            if target == f.entry {
+                continue;
+            }
+            let eip = f.blocks[b].insts.last().map_or(f.blocks[b].addr, |i| i.eip);
+            let c = f.new_vreg(slot_ty);
+            let v = f.new_vreg(ty);
+            let blk = &mut f.blocks[b];
+            blk.insts.push(Inst {
+                dst: Some(c),
+                op: Op::Const(slot),
+                eip,
+            });
+            blk.insts.push(Inst {
+                dst: Some(v),
+                op: Op::Load {
+                    addr: c,
+                    mem: Mem {
+                        size,
+                        signed: false,
+                        space: Space::Trusted,
+                        offset: 0,
+                        atomic: false,
+                    },
+                },
+                eip,
+            });
+            blk.term = match blk.term {
+                Term::Call { ret, cont, .. } => Term::Call {
+                    target: CallTarget::Indirect(v),
+                    ret,
+                    cont,
+                },
+                _ => Term::JmpInd(v),
+            };
+        }
+    }
+}
+
+/// Lazy flag state, which the C calling convention leaves dead across calls.
+const FLAGS: [u32; 5] = crate::ir::FLAG_STATE;
+
+/// For a program's functions (lifted, not yet optimized): finds the callees
+/// that never need the flags on entry, so calls to them need not write the
+/// flags back, and the functions whose callers never read the flags they
+/// return with (as Delphi's runtime has its callers do), whose returns then
+/// skip writing them back too. That holds of almost all compiled C, where
+/// it saves the flag write-backs and often the flag computations
+/// themselves. A program's functions are called by the program itself or by
+/// system code, which never reads the flags after a call. Returns how many
+/// functions return without writing the flags back.
+///
+/// Callees are found from the optimistic start (all of them) by removing
+/// those that need the flags on entry until none does, so a function that
+/// needs them only through its own callees is removed as well; returns
+/// likewise, from all of them flag-free, until no caller reads the flags
+/// after a call to a function assumed not to write them back.
+pub fn prove_flags_abi(funcs: &mut [Function], reading_slots: HashSet<u64>) -> usize {
+    let n = funcs.len();
+    let index: HashMap<u64, usize> = funcs
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.entry, i))
+        .collect();
+    // Who calls or jumps to whom, within the module; who leaves through an
+    // indirect jump that is not an import stub.
+    let mut callers: Vec<Vec<usize>> = vec![vec![]; n];
+    let mut exits: Vec<Vec<usize>> = vec![vec![]; n];
+    let mut jumps_anywhere = vec![false; n];
+    for (i, f) in funcs.iter().enumerate() {
+        for (b, blk) in f.blocks.iter().enumerate() {
+            match blk.term {
+                Term::Call {
+                    target: CallTarget::Direct(t),
+                    ..
+                } => {
+                    if let Some(&j) = index.get(&t) {
+                        callers[j].push(i);
+                    }
+                }
+                Term::Exit(t) => {
+                    if let Some(&j) = index.get(&t) {
+                        callers[j].push(i);
+                        exits[i].push(j);
+                    }
+                }
+                Term::JmpInd(v) => jumps_anywhere[i] |= opt::slot_of(f, b as BlockId, v).is_none(),
+                _ => {}
+            }
+        }
+    }
+    let shared = std::sync::Arc::new(FlagFree {
+        entries: index.keys().copied().collect(),
+        needing: Default::default(),
+        reading_slots,
+    });
+    for f in funcs.iter_mut() {
+        f.abi.flags_dead_at_ret = true;
+        f.abi.flag_free_callees = FlagFreeCallees::Known(shared.clone());
+    }
+    let mut need: Vec<Vec<u8>> = vec![vec![]; n];
+    let mut queued = vec![true; n];
+    let mut work: Vec<usize> = (0..n).collect();
+    loop {
+        // Callees that need the flags on entry, until none is added.
+        while let Some(i) = work.pop() {
+            queued[i] = false;
+            need[i] = flags_needed(&funcs[i]);
+            if need[i][0] != 0 && shared.needing.write().unwrap().insert(funcs[i].entry) {
+                for &c in &callers[i] {
+                    if !queued[c] {
+                        queued[c] = true;
+                        work.push(c);
+                    }
+                }
+            }
+        }
+        // Whose returns are observed: callees of calls whose continuation
+        // needs the flags, and, through tail jumps, the functions those
+        // leave through. (Calls and jumps through import slots reach other
+        // modules, whose returns are not decided here.)
+        let mut observed = vec![false; n];
+        let mut any = false;
+        for (i, f) in funcs.iter().enumerate() {
+            for (b, blk) in f.blocks.iter().enumerate() {
+                if let Term::Call { target, cont, .. } = &blk.term {
+                    if need[i][*cont as usize] == 0 {
+                        continue;
+                    }
+                    match target {
+                        CallTarget::Direct(t) => {
+                            if let Some(&j) = index.get(t) {
+                                observed[j] = true;
+                            }
+                        }
+                        CallTarget::Indirect(v) => {
+                            any |= opt::slot_of(f, b as BlockId, *v).is_none();
+                        }
+                    }
+                }
+            }
+        }
+        let mut stack: Vec<usize> = (0..n).filter(|&i| observed[i]).collect();
+        while let Some(i) = stack.pop() {
+            any |= jumps_anywhere[i];
+            for &j in &exits[i] {
+                if !observed[j] {
+                    observed[j] = true;
+                    stack.push(j);
+                }
+            }
+        }
+        // A function whose returns now keep the flags may pass its
+        // caller's on to its callees: look at it again.
+        for (i, f) in funcs.iter_mut().enumerate() {
+            if (observed[i] || any) && f.abi.flags_dead_at_ret {
+                f.abi.flags_dead_at_ret = false;
+                queued[i] = true;
+                work.push(i);
+            }
+        }
+        if work.is_empty() {
+            return funcs.iter().filter(|f| f.abi.flags_dead_at_ret).count();
+        }
+    }
+}
+
+/// For each block of `f`: which of the lazy flag vregs (bit k for
+/// `FLAGS[k]`) the code from its start on reads before writing, itself or
+/// by passing them on, unwritten, to code that reads them: a callee or
+/// jump target that is not flag-free, or a caller when returns keep the
+/// flags (`term_sync`). Faults do not count: the flags are not precise
+/// there.
+fn flags_needed(f: &Function) -> Vec<u8> {
+    let flag_bit = |v: u32| FLAGS.iter().position(|&x| x == v).map(|k| 1u8 << k);
+    let all = (1u8 << FLAGS.len()) - 1;
+    let flag_mask: opt::StateMask = FLAGS.iter().map(|&v| 1u64 << v).sum();
+    let at_term: Vec<u8> = (0..f.blocks.len())
+        .map(|b| {
+            let t = &f.blocks[b].term;
+            let passes = t.syncs()
+                && !matches!(t, Term::Fault { .. })
+                && opt::term_sync(f, b as BlockId) & flag_mask != 0;
+            if passes {
+                all
+            } else {
+                0
+            }
+        })
+        .collect();
+    let mut need = vec![0u8; f.blocks.len()];
+    let post: Vec<BlockId> = f.rpo().into_iter().rev().collect();
+    loop {
+        let mut changed = false;
+        for &b in &post {
+            let blk = &f.blocks[b as usize];
+            let mut n = at_term[b as usize];
+            // After a call the flags are the callee's.
+            if !matches!(blk.term, Term::Call { .. }) {
+                for s in blk.term.successors() {
+                    n |= need[s as usize];
+                }
+            }
+            for u in blk.term.uses() {
+                n |= flag_bit(u).unwrap_or(0);
+            }
+            for inst in blk.insts.iter().rev() {
+                if let Some(bit) = inst.dst.and_then(flag_bit) {
+                    let used = n & bit != 0;
+                    n &= !bit;
+                    // A dead flag computation reads nothing.
+                    if !used && !inst.op.has_side_effects() && !inst.op.may_fault() {
+                        continue;
+                    }
+                }
+                // Before optimization, condition and EFLAGS reads name the
+                // flag state implicitly.
+                if matches!(inst.op, Op::Cond(_) | Op::Eflags) {
+                    n |= all;
+                }
+                for u in inst.op.uses() {
+                    n |= flag_bit(u).unwrap_or(0);
+                }
+            }
+            if n != need[b as usize] {
+                need[b as usize] = n;
+                changed = true;
+            }
+        }
+        if !changed {
+            return need;
+        }
+    }
 }
 
 /// Translates a single code snippet at `base` (used by the instruction test

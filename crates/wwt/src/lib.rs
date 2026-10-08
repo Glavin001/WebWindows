@@ -12,16 +12,20 @@
 //! 7. [`translate`] — orchestration, module metadata and caching.
 
 pub mod abi;
+pub mod builtin;
 pub mod codegen;
 pub mod discover;
 pub mod flags;
 pub mod fpu;
 mod fpu_helpers;
+pub mod inline;
 pub mod ir;
 pub mod kernel;
 pub mod lift;
 pub mod opt;
+pub mod osr;
 pub mod pe;
+pub mod reducible;
 pub mod translate;
 
 pub use translate::{translate_pe, translate_region, Config, Translation};

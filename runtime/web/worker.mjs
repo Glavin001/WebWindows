@@ -15,8 +15,10 @@ import { WineHost, parsePe, peImports, rebaseImage } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
 import { InputRing } from '../wine/input-ring.mjs';
+import { compileNativeHeap } from '../wine/heap.mjs';
 import { startD3D } from '../wine/d3d.mjs';
 import { ringWriter } from '../wine/audio-sink.mjs';
+import { compileNativeStrings } from '../wine/strings.mjs';
 
 const log = (text) => postMessage({ type: 'log', text });
 
@@ -26,6 +28,10 @@ async function sha256(bytes) {
 }
 
 // ---- Cache in the origin private file system --------------------------------
+
+// Wine's address space (the bundle is translated for it, see
+// runtime/node/wine-bundle.mjs).
+const WINE_GUEST_LIMIT = 0x8000_0000;
 
 async function cacheDir() {
   try {
@@ -161,7 +167,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
   files.set(exeDos, exe);
   const translateTimed = (path, bytes) => {
     const t = performance.now();
-    const w = ft.translatePe(bytes, { mem64 });
+    const w = ft.translatePe(bytes, { mem64, guestLimit: WINE_GUEST_LIMIT });
     log(`translated ${path} in ${(performance.now() - t).toFixed(0)} ms`);
     return w;
   };
@@ -190,7 +196,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
     kernel: ft.kernel({ mem64, code64: mem64 }),
     // x86_64 Wine's DLLs load at 0x1_7000_0000 and up (below 2 GB in the
     // 32-bit-memory bundle).
-    ...(mem64 ? { arch: 'x64', mem64: true, guestLimit: 0x2_0000_0000 } : { arch: x64 ? 'x64' : 'x86', guestLimit: layout?.guestLimit ?? 0x8000_0000 }),
+    ...(mem64 ? { arch: 'x64', mem64: true, guestLimit: 0x2_0000_0000 } : { arch: x64 ? 'x64' : 'x86', guestLimit: WINE_GUEST_LIMIT }),
     ...(layout && { nativeSize: layout.nativeSize, extraSize: layout.extraSize }),
     log,
   });
@@ -237,7 +243,11 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
     stdout: (b) => postMessage({ type: 'stdout', bytes: b }),
     stderr: (b) => postMessage({ type: 'stderr', bytes: b }),
     unix,
+    // The bundle's ntdll uses the native heap when the bundle has it.
+    nativeHeap: manifest.heap ? compileNativeHeap(await bytesOf(manifest.heap)) : undefined,
     audioSink: shared?.audio ? ringWriter(shared.audio.buffer, shared.audio.rate) : null,
+    // Likewise the native string functions.
+    nativeStrings: manifest.strings ? compileNativeStrings(await bytesOf(manifest.strings)) : undefined,
   });
   host.boot(`${sys32}\\ntdll.dll`, exeDos);
   await host.startClock();
@@ -257,7 +267,7 @@ onmessage = async (e) => {
     const ft = await FastTranslator.load(await (await fetch(translatorUrl)).arrayBuffer());
     const abi = ft.abi();
     const exe = new Uint8Array(exeBytes);
-    const key = `${await sha256(exe)}-abi${abi.version}`;
+    const key = `${await sha256(exe)}-abi${abi.version}-g${guestLimitMB}`;
     const dir = noCache ? null : await cacheDir();
     if (wine) {
       const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, bundle64Url, bundle64m32Url, memory64, display: display && { ...display, audio }, debug, d3dCanvas, d3dOffscreen, d3dPort });
@@ -271,7 +281,11 @@ onmessage = async (e) => {
     const arch = peArch(exe);
     const mem64 = arch === 'x64' && memory64;
     if (arch === 'x64') log(mem64 ? '64-bit program: 64-bit WebAssembly memory' : '64-bit program: this browser has no 64-bit WebAssembly memory; running it below 4 GB');
-    const mkey = `${key}${mem64 ? '-m64' : ''}`;
+    // 64-bit images load at their preferred bases (0x1_4000_0000 for an
+    // .exe) on a 64-bit memory, so its guest region is 8 GB; on a 32-bit one
+    // they fold to 1 GB and up, and the region is at least 2 GB.
+    const limitMB = arch === 'x64' ? Math.max(guestLimitMB, mem64 ? 8192 : 2048) : guestLimitMB;
+    const mkey = `${key}${mem64 ? '-m64' : ''}${limitMB !== guestLimitMB ? `-g${limitMB}` : ''}`;
     // The profile lists code found at run time on earlier launches (as
     // float64s: 64-bit code addresses are above 4 GB). Images load at other
     // bases on the two memories, so each has its own.
@@ -281,7 +295,7 @@ onmessage = async (e) => {
     let translated = false;
     if (!wasm) {
       const t = performance.now();
-      wasm = ft.translatePe(exe, { profile, mem64 });
+      wasm = ft.translatePe(exe, { profile, mem64, guestLimit: limitMB * 1024 * 1024 });
       if (!wasm.length) throw new Error('translation failed');
       translated = true;
       log(`translated ${exeName} in ${(performance.now() - t).toFixed(0)} ms (${(wasm.length / 1024).toFixed(0)} KB${profile.length ? `, ${profile.length} profiled entries` : ''})`);
@@ -290,10 +304,6 @@ onmessage = async (e) => {
       log(`loaded cached translation of ${exeName} (${(wasm.length / 1024).toFixed(0)} KB)`);
     }
 
-    // 64-bit images load at their preferred bases (0x1_4000_0000 for an
-    // .exe) on a 64-bit memory, so its guest region is 8 GB; on a 32-bit one
-    // they fold to 1 GB and up, and the region is at least 2 GB.
-    const limitMB = arch === 'x64' ? Math.max(guestLimitMB, mem64 ? 8192 : 2048) : guestLimitMB;
     const code64 = arch === 'x64' && mem64;
     const machine = new Machine({ abi, kernel: ft.kernel({ mem64, code64 }), arch, mem64, guestLimit: limitMB * 1024 * 1024, log });
     await machine.init();
