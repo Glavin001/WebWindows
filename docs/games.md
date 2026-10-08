@@ -10,7 +10,7 @@ of their files are in the repository.
 | Quake II demo 3.14 | Software renderer (`ref_soft`, DirectDraw/GDI) | `demo1` renders and runs, in Node and in the browser |
 | Quake II demo 3.14 | OpenGL (`ref_gl`, through `native/opengl32` over Direct3D 9) | `demo1` renders (recorded in Node, replayed on the GPU); not yet tried in a browser |
 | Quake (shareware) on FTEQW | Direct3D 9 | Starts; exits before its window opens |
-| Far Cry demo (2004) | Direct3D 9 (shader model 1 + fixed function) | In the browser: menu, new game, the Fort level, walking and mouse look; rendering bugs (sky, some stretched geometry, render-to-texture) |
+| Far Cry demo (2004) | Direct3D 9 (shader model 1 + fixed function) | In the browser: menu, new game, the Fort level rendered (sky, terrain, water, distance fog, HUD), walking and mouse look |
 | Unreal Tournament 2004 demo | Direct3D 8/9 | In the browser: menus, Instant Action, a DeathMatch on DM-Rankin, walking and turning |
 
 ## Direct3D 9 against Wine's own tests
@@ -34,6 +34,37 @@ it found and measured these backend fixes, from 2105 failures to about 600:
 
 Far Cry hits several of these (it runs on shader model 1 and fixed
 function: lights, fog, projected lookups, texgen).
+
+## Far Cry demo
+
+What its rendering needed, besides the fixes above:
+
+* **Fixed-function shaders above the backend's shader model.** wined3d
+  turned away its own fixed-function shaders (HLSL compiled to shader model
+  2.1) for a backend reporting less, then used the freed shader: menu
+  frames came out black or garbage (the patch on `shader.c`).
+* **A larger depth buffer.** Its reflection and shadow passes render to
+  512x512 textures with the 800x600 depth buffer bound, which Direct3D 9
+  allows and WebGPU does not; the core gives such passes a depth buffer of
+  the target's size. The validation error had dropped whole frames.
+* **Sampling the render target.** A draw that reads the texture it renders
+  to now reads a copy taken before the draw.
+* **The GPU's vendor.** As a "software" adapter it took a generic path
+  whose terrain shaders compute fog for a lookup no hardware does, which
+  fogged the whole level; the adapter now reports a card of the host GPU's
+  vendor, as wined3d's GL and Vulkan adapters do.
+
+To look at a frame in seconds rather than minutes, record the command
+stream in Node and replay it on the GPU:
+
+```sh
+node runtime/node/wine.mjs --folder --d3d-record fc.rec.gz --input "..." FarCry.exe
+FROM=113000 READ_EVERY=150 target/release/examples/replay fc.rec.gz out/
+```
+
+`FROM` skips drawing before that batch, `RS=28:0` overrides a render state
+(here fog) to test a guess, `SHADERS=dir` saves the shaders for the
+`d3dgpu-shader` translate example and `DUMP=full` prints every command.
 
 ## Unreal Tournament 2004 demo
 
