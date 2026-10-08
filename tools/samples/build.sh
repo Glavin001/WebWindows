@@ -1,10 +1,11 @@
 #!/bin/sh
 # Builds the Windows test programs the web page offers as samples
-# (runtime/web/samples.json) into tests/programs/samples/, with MinGW at -O2:
+# (runtime/web/samples.json), with MinGW at -O2: into tests/programs/samples/
 # the Windows-only tests (tests/wine/win32/*.c, linked with the libraries
 # their `libs:` line names) and the DirectDraw and DirectSound demo
-# (tests/web/ddsound.c). The executables are committed, so the page and the
-# site need no compiler.
+# (tests/web/ddsound.c); next to their sources the Direct3D 9 programs
+# (tests/programs/gui/d3d9*.c, which load d3d9.dll themselves). The
+# executables are committed, so the page and the site need no compiler.
 #
 #   tools/samples/build.sh
 set -eu
@@ -19,4 +20,7 @@ for src in "$root"/tests/wine/win32/*.c; do
 done
 i686-w64-mingw32-gcc -O2 -s -mwindows -o "$out/ddsound.exe" "$root/tests/web/ddsound.c" \
   -lddraw -ldsound -ldxguid -lgdi32 -luser32 -lwinmm
-ls -la "$out"
+for name in d3d9tri d3d9bench; do
+  i686-w64-mingw32-gcc -O2 -s -Wno-missing-braces -o "$root/tests/programs/gui/$name.exe" "$root/tests/programs/gui/$name.c"
+done
+ls -la "$out" "$root"/tests/programs/gui/d3d9*.exe

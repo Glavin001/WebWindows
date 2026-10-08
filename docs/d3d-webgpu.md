@@ -365,13 +365,22 @@ of Wine.
 game ─► d3d9.dll ─► wined3d.dll (adapter_wgpu) ─► d3dgpu batches in guest memory
     ─► unix call (WINED3D_UNIXLIB) ─► runtime/wine/d3d.mjs: SharedArrayBuffer slot
     ─► runtime/wine/d3d-worker.mjs: d3dgpu core (wasm) ─► WebGPU
-    ◄─ readbacks: fence + readback region ◄─ Present: back buffer ─► GDI ─► window
+    ◄─ readbacks: fence + readback region      Present ─► canvas over the window
 ```
 
 * **Selection.** With `renderer` unset (or `webgpu`), wined3d asks the host
   for the WebGPU unix library; without one (Node, no WebGPU) it runs
-  without 3D. The command stream runs on the application's thread
-  (`csmt` off) until the runtime has threads.
+  without 3D. The host sets `WINE_D3D_CONFIG`: `csmt=0` always, as the
+  runtime's threads take turns in one worker (a command-stream thread
+  would only add switches), and `renderer=no3d` when no WebGPU bridge is
+  attached, which is how DirectDraw programs run (`docs/milestone-5.md`).
+* **Starting.** A program that names `d3d8.dll` or `d3d9.dll` gets the
+  render worker, started as soon as the program is read, so it loads the
+  core and sets up WebGPU while Wine's DLLs load. The Wine worker waits
+  for it until it has gone 30 s without reporting a setup step; a
+  failure (no WebGPU in workers, no adapter, a panic in the core, a
+  script that does not load) is logged as `d3d: ...` on the page, and
+  the program runs without 3D.
 * **Resources.** Buffers get a buffer object with a CPU shadow; uploads and
   unmaps are mirrored as `WriteBuffer`. Textures have a GPU location
   (`TEXTURE_RGB`): loading it uploads with `WriteTexture`, applies deferred
@@ -448,7 +457,9 @@ GPU):
 | ... x87 sin/cos as direct imports, Direct3D DLLs without store checks | 0.1 ms | 5.5 µs | 88 fps |
 
 On a desktop browser with a real GPU, 400 cubes and 2000 particles run at
-about 175 fps. The render worker is a third busy at 2000 draws
+about 175 fps, and at about 250 fps on an iPhone (Safari, WebGPU). The
+container numbers vary with the machine the container lands on: the same
+build measured 70 fps on a later one. The render worker is a third busy at 2000 draws
 (`?d3dstats=1` logs how busy it is); the program's thread is the limit.
 What it spends on a draw is mostly wined3d's own state handling
 (`wined3d_device_apply_stateblock`, constant uploads, critical sections),

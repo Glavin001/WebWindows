@@ -148,6 +148,7 @@ native/wined3d-wgpu wined3d's WebGPU backend (patched into Wine's source by tool
 tools/oracle        native x86 oracle for instruction tests
 tools/wine          builds Wine's i386 PE DLLs, programs, tests and fonts
 tools/wine-layout   generates Wine's structure layouts for the runtime
+tools/samples       builds the test programs the web page lists (runtime/web/samples.json)
 tools/torture       fetches GCC's torture tests
 tools/bench         CoreMark: native vs. translated (shims and Wine)
 tools/site          assembles the static site and deploys it to Vercel
