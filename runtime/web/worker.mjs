@@ -15,6 +15,7 @@ import { filetimeFromMs } from '../wine/syscalls.mjs';
 import { WineHost, parsePe, peImports, rebaseImage, recordCase } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
+import { StatusSampler } from '../wine/status.mjs';
 import { InputRing } from '../wine/input-ring.mjs';
 import { compileNativeHeap } from '../wine/heap.mjs';
 import { startD3D } from '../wine/d3d.mjs';
@@ -220,10 +221,20 @@ async function runOnWine({ exeName, exePath, exe, folder, times = {}, argv, ft, 
   await machine.init();
   enableFastMode(machine, ft, { log });
   let unix = null;
+  let display = null;
+  // The last lines the program printed, for status samples.
+  const tail = [];
+  const keepTail = (bytes) => {
+    for (const line of new TextDecoder('latin1').decode(bytes).split('\n')) {
+      if (line.trim()) tail.push(line.slice(0, 200));
+    }
+    if (tail.length > 16) tail.splice(0, tail.length - 16);
+  };
+  let statusSampler = null;
   if (layout) {
     const ring = new InputRing(shared.input);
     const frame = new Int32Array(shared.frame);
-    const display = new Display({
+    display = new Display({
       width: shared.width,
       height: shared.height,
       buffer: shared.screen,
@@ -241,6 +252,7 @@ async function runOnWine({ exeName, exePath, exe, folder, times = {}, argv, ft, 
       display,
       // The program waits: sleep until its timeout or the page's next event.
       wait: (ms) => {
+        statusSampler?.tick();
         if (display.hasInput()) return 1;
         ring.wait(ms);
         return display.hasInput() ? 1 : 0;
@@ -262,8 +274,8 @@ async function runOnWine({ exeName, exePath, exe, folder, times = {}, argv, ft, 
     fileTimes,
     argv: [exeWin, ...argv],
     exePath: exeWin,
-    stdout: (b) => postMessage({ type: 'stdout', bytes: b }),
-    stderr: (b) => postMessage({ type: 'stderr', bytes: b }),
+    stdout: (b) => (keepTail(b), postMessage({ type: 'stdout', bytes: b })),
+    stderr: (b) => (keepTail(b), postMessage({ type: 'stderr', bytes: b })),
     unix,
     // The bundle's ntdll uses the native heap when the bundle has it.
     nativeHeap: manifest.heap ? compileNativeHeap(await bytesOf(manifest.heap)) : undefined,
@@ -274,6 +286,13 @@ async function runOnWine({ exeName, exePath, exe, folder, times = {}, argv, ft, 
   // The first faults go to stderr with where they happened, so the page's
   // record of the run shows a crash.
   host.traceFaults = 20;
+  // Status samples every 2 s (../wine/status.mjs), to the page, which keeps
+  // them (window.webwindows.status()) and logs them on the console.
+  host.status = statusSampler = new StatusSampler(host, {
+    display,
+    emit: (status) => postMessage({ type: 'status', status }),
+    extra: () => ({ output: tail.slice(-4) }),
+  });
   // The program's own files that it writes in C:\app (a game's log.txt), to
   // the page as they change (at most every 2 s, and at the end): the page
   // keeps them with its record of the run, which outlives a hang or crash.

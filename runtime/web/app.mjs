@@ -276,7 +276,8 @@ function startRecord(exe) {
     const last = localStorage.getItem(RECORD);
     if (last) localStorage.setItem(PREVIOUS, last);
   } catch {}
-  record = { exe, started: new Date().toISOString(), files: {} };
+  record = { exe, started: new Date().toISOString(), files: {}, status: [] };
+  statusHistory.length = 0;
   clearInterval(recordTimer);
   recordTimer = setInterval(saveRecord, 2000);
 }
@@ -294,7 +295,22 @@ const readRecord = (key) => {
     return null;
   }
 };
+// Status samples from the worker (runtime/wine/status.mjs), every 2 s:
+// threads and where they are, system calls, screen, windows, input. Kept
+// here (the last 60, the last 30 also in the run record) and logged on the
+// console as "webwindows:status <json>" for tools that watch it.
+const statusHistory = [];
+function onStatus(s) {
+  statusHistory.push(s);
+  if (statusHistory.length > 60) statusHistory.shift();
+  if (record) record.status = statusHistory.slice(-30);
+  console.debug('webwindows:status ' + JSON.stringify(s));
+}
+
 window.webwindows = {
+  /** The latest status sample, and the last 60. */
+  status: () => statusHistory.at(-1) ?? null,
+  statusHistory: () => statusHistory.slice(),
   lastRun: () => (saveRecord(), readRecord(RECORD)),
   previousRun: () => readRecord(PREVIOUS),
   download(which = 'lastRun') {
@@ -346,6 +362,7 @@ async function run(exeName, exeBytes, files, exePath, times = {}) {
       if (m.type === 'stdout' || m.type === 'stderr') out.textContent += dec.decode(m.bytes);
       else if (m.type === 'log') logEl.textContent += m.text + '\n';
       else if (m.type === 'files') Object.assign(record.files, m.files);
+      else if (m.type === 'status') onStatus(m.status);
       else if (m.type === 'd3d-window') placeD3D(m);
       else if (m.type === 'clip') setClip(m.rect);
       else if (m.type === 'screen') {

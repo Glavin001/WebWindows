@@ -42,6 +42,9 @@
 //                          where they happened and the frames above
 //   WWT_THREAD_DUMP=MS     the scheduler's thread states after MS, and when
 //                          nothing can run
+//   WWT_STATUS=1           a status line every 2 s (runtime/wine/status.mjs:
+//                          busiest thread and where, system calls, screen,
+//                          input); WWT_STATUS=json prints the whole sample
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -55,6 +58,7 @@ import { WineHost, recordCase } from '../wine/host.mjs';
 import { filetimeFromMs } from '../wine/syscalls.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
+import { StatusSampler, formatStatus } from '../wine/status.mjs';
 import { D3DRecorder } from '../wine/d3d.mjs';
 import { windowsKey, KEYEVENTF_KEYUP } from '../web/keys.mjs';
 
@@ -428,6 +432,12 @@ const host = new WineHost(machine, {
   audioSink: audioOut ? audioCapture : null,
   nativeStrings: x64 ? null : nativeStrings,
 });
+if (process.env.WWT_STATUS) {
+  host.status = new StatusSampler(host, {
+    display,
+    emit: (st) => stderr(process.env.WWT_STATUS === 'json' ? `webwindows:status ${JSON.stringify(st)}\n` : formatStatus(st) + '\n'),
+  });
+}
 host.boot(`${sys32}\\ntdll.dll`, exeDos);
 // A program that never waits (a game's busy frame loop) still stops on time.
 if (screenshot) host.threads.onSlice = () => {

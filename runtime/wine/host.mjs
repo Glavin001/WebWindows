@@ -247,6 +247,9 @@ export class WineHost {
     this.aliasThunks = opts.aliasThunks ?? true;
     this.modulesByPath = new Map();
     this.unimplemented = new Map();
+    /** A ./status.mjs StatusSampler a host can attach; ticked from system calls and preemption. */
+    this.status = null;
+    this.statusCalls = 0;
     /** The system call being run: its name, return address and stack. */
     this.sys = { name: '', ret: 0, esp: 0, espAfter: undefined };
     this.syscallEntries = [];
@@ -504,7 +507,10 @@ export class WineHost {
     this.ex = ex;
     this.stackReserve = exe.info.stackReserve;
     this.threads = new Scheduler(this);
-    this.m.onPreempt = (cpu, eip) => this.threads.preempt(cpu, eip);
+    this.m.onPreempt = (cpu, eip) => {
+      this.status?.tick();
+      return this.threads.preempt(cpu, eip);
+    };
     // Fast mode translates within the executable section around a miss.
     this.m.codeEnd = (addr) => this.codeEnd(addr);
     // The main thread: its TEB, CPU state and initial context. Wine's Unix
@@ -897,6 +903,8 @@ export class WineHost {
     const e = this.syscallEntries[id] ?? this.syscallEntry(id);
     const { name, impl, unixImpl, threadImpl, win32uWait } = e;
     e.calls++;
+    // Status samples (./status.mjs), checked every 64 calls.
+    if (this.status && (++this.statusCalls & 63) === 0) this.status.tick();
     const argBase = esp + 8; // [esp] -> stub, [esp+4] -> caller
     const a = (i) => this.u32(argBase + i * 4);
     const t = this.threads.current;
