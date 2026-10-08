@@ -249,8 +249,11 @@ function saveRecord() {
   record.status = $('status').textContent;
   record.out = tail(out.textContent, 192 << 10);
   record.log = tail(logEl.textContent, 192 << 10);
-  // The six files written last, each up to its last 128 KB.
-  const files = Object.entries(record.files).slice(-6).map(([k, v]) => [k, tail(v, 128 << 10)]);
+  // Logs (.txt, .log), and the six other files written last, each up to
+  // its last 128 KB.
+  const entries = Object.entries(record.files);
+  const isLog = ([k]) => /\.(txt|log)$/i.test(k);
+  const files = [...entries.filter(isLog), ...entries.filter((e) => !isLog(e)).slice(-6)].map(([k, v]) => [k, tail(v, 128 << 10)]);
   for (const kept of [files, []]) {
     try {
       localStorage.setItem(RECORD, JSON.stringify({ ...record, files: Object.fromEntries(kept) }));
