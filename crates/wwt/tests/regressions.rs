@@ -38,9 +38,11 @@ fn cmpxchg_accumulator_destination() {
 }
 
 /// Wine's kernel32 tests: data decoded as code produced `jmp far [m]`, whose
-/// 6-byte far pointer reached code generation as an ordinary load.
+/// 6-byte far pointer reached code generation as an ordinary load. Far
+/// pointers now raise a general protection fault (no unsupported
+/// instruction), and the module must still be valid.
 #[test]
-fn far_pointer_operands_are_unsupported() {
+fn far_pointer_operands_fault() {
     let cfg = wwt::Config::default();
     // jmp far [eax]; call far [eax]; lfs eax, [ecx]
     for code in [
@@ -49,7 +51,7 @@ fn far_pointer_operands_are_unsupported() {
         &[0x0f, 0xb4, 0x01, 0xc3],
     ] {
         let (f, unsupported) = translate_snippet(code, 0x401000, &cfg);
-        assert_eq!(unsupported.len(), 1, "{code:x?}: {unsupported:?}");
+        assert!(unsupported.is_empty(), "{code:x?}: {unsupported:?}");
         let wasm = build_module(&[f], &cfg);
         wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
             .validate_all(&wasm)

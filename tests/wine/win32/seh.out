@@ -1,0 +1,29 @@
+divide by zero:
+  code c0000094, address at the instruction, esi 00005151, edi 0000d1d1
+  eip offset 0, eax after 0000600d
+divide overflow:
+  code c0000095, address at the instruction, esi 00005151, edi 0000d1d1
+  eip offset 0, eax after 0000600d
+null read:
+  code c0000005, params 2 [0, 00000010], address at the instruction, esi 00005151, edi 0000d1d1
+  eip offset 0, eax after 0000600d
+write above the address space:
+  code c0000005, params 2 [1, fffffff0], address at the instruction, esi 00005151, edi 0000d1d1
+  eip offset 0, eax after 0000600d
+int3:
+  code 80000003, address at the instruction, esi 00005151, edi 0000d1d1
+  eip offset 0, eax after 0000600d
+ud2:
+  code c000001d, address at the instruction, esi 00005151, edi 0000d1d1
+  eip offset 0, eax after 0000600d
+hlt:
+  code c0000096, address at the instruction, esi 00005151, edi 0000d1d1
+  eip offset 0, eax after 0000600d
+handler frame:
+  frame handler: code c0000005, eip matches the address
+  frame handler: unwinding
+  longjmp returned 42, frame removed
+RaiseException:
+  code e0000001, flags 0, params 2 [1234, abcd]
+  returned
+done

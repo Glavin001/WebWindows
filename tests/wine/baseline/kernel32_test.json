@@ -10,8 +10,8 @@
   },
   "change": {
     "status": "done",
-    "tests": 301,
-    "failures": 175
+    "tests": 316,
+    "failures": 151
   },
   "codepage": {
     "status": "done",
@@ -48,8 +48,9 @@
     "failures": 25
   },
   "fiber": {
-    "status": "timeout",
-    "failures": 1
+    "status": "done",
+    "tests": 32956,
+    "failures": 2
   },
   "file": {
     "status": "crash",
@@ -104,8 +105,9 @@
     "failures": 4
   },
   "profile": {
-    "status": "crash",
-    "failures": 21
+    "status": "done",
+    "tests": 572,
+    "failures": 31
   },
   "resource": {
     "status": "crash",

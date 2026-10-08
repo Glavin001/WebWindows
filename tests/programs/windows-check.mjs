@@ -15,7 +15,8 @@ const results = readdirSync(dir)
 let bad = 0;
 let ran = 0;
 for (const r of results) {
-  if (r.status !== 'pass') continue;
+  // Programs that need what CI's Windows machines lack (a sound device).
+  if (r.status !== 'pass' || r.native === false) continue;
   // Results name their executable (torture tests share names with ours and
   // live in a subdirectory, which CI does not upload).
   const exe = join(dir, r.exe ?? `${r.name}-${r.opt}.exe`);
@@ -26,8 +27,14 @@ for (const r of results) {
     console.log(`MISMATCH ${r.name} -${r.opt}: native exit ${run.status}, translated ${r.exitCode}`);
     bad++;
   }
-  if (r.stdout !== undefined && run.stdout.replace(/\r\n/g, '\n') !== r.stdout) {
-    console.log(`MISMATCH ${r.name} -${r.opt}: stdout differs`);
+  // Line ends: the Linux reference prints \n; native Windows programs and
+  // translated Wine's msvcrt (recorded for the Windows-only tests) print \r\n.
+  const lf = (t) => t.replace(/\r\n/g, '\n');
+  if (r.stdout !== undefined && lf(run.stdout) !== lf(r.stdout)) {
+    const [want, got] = [lf(r.stdout).split('\n'), lf(run.stdout).split('\n')];
+    const i = want.findIndex((l, k) => l !== got[k]);
+    console.log(`MISMATCH ${r.name} -${r.opt}: stdout differs at line ${i + 1}`);
+    console.log(`  translated: ${JSON.stringify(want[i])}\n  native:     ${JSON.stringify(got[i])}`);
     bad++;
   }
 }

@@ -1,0 +1,9 @@
+[package]
+name = "d3dgpu-emu"
+description = "CPU-side emulation of Direct3D 9 features WebGPU lacks: index rewrites, texture and vertex format conversion"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+d3dgpu-proto = { path = "../d3dgpu-proto" }

@@ -103,7 +103,7 @@ impl Executor {
              code: i32,
              eip: i32,
              info: i32|
-             -> Result<()> {
+             -> Result<i32> {
                 caller.data_mut().fault = Some((code as u32, eip as u32, info as u32));
                 Err(anyhow!("guest fault"))
             },
@@ -111,6 +111,8 @@ impl Executor {
         let math = Func::wrap(&mut store, |op: i32, a: f64, b: f64| -> f64 {
             host_math(op as u32, a, b)
         });
+        let sin = Func::wrap(&mut store, |a: f64| -> f64 { a.sin() });
+        let cos = Func::wrap(&mut store, |a: f64| -> f64 { a.cos() });
         let g = |store: &mut Store<State>, v: u32| {
             Global::new(
                 store,
@@ -142,6 +144,8 @@ impl Executor {
                     "zero_l2" => g(&mut store, ZERO_L2)?.into(),
                     "fault" => fault_fn.into(),
                     "math" => math.into(),
+                    "sin" => sin.into(),
+                    "cos" => cos.into(),
                     n => return Err(anyhow!("unexpected import {n}")),
                 })
             })
@@ -193,7 +197,11 @@ impl Executor {
                             fault::INTEGER_DIVIDE_BY_ZERO | fault::INTEGER_OVERFLOW => "DE",
                             fault::ILLEGAL_INSTRUCTION => "UD",
                             fault::BREAKPOINT => "BP",
-                            fault::ACCESS_VIOLATION | fault::PRIVILEGED_INSTRUCTION => "AV",
+                            fault::ACCESS_VIOLATION
+                            | fault::ACCESS_VIOLATION_WRITE
+                            | fault::ACCESS_VIOLATION_EXECUTE
+                            | fault::GENERAL_PROTECTION
+                            | fault::PRIVILEGED_INSTRUCTION => "AV",
                             fault::UNSUPPORTED => "UNSUPPORTED",
                             _ => "??",
                         }
