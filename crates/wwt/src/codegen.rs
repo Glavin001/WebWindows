@@ -2969,6 +2969,25 @@ fn gen_helper(h: Helper, eflags: u32) -> wasm_encoder::Function {
             out.push(W::End);
             out.push(W::I32Const(0));
         }
+        Helper::Tsc => {
+            // param: previous (i64); local 1: the clock's value.
+            locals.push(ValType::I64);
+            out.push(W::GlobalGet(G_TICK));
+            out.push(W::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+            out.push(W::I64ExtendI32U);
+            out.push(W::I64Const(3_000_000));
+            out.push(W::I64Mul);
+            out.push(W::LocalSet(1));
+            out.push(W::LocalGet(0));
+            out.push(W::I64Const(64));
+            out.push(W::I64Add);
+            out.push(W::LocalTee(0));
+            out.push(W::LocalGet(1));
+            out.push(W::LocalGet(0));
+            out.push(W::LocalGet(1));
+            out.push(W::I64GtU);
+            out.push(W::Select);
+        }
         Helper::DivU128 => {
             // params: hi lo d (i64); locals: 3 = i (i32), 4 = top bit (i64).
             // Restoring division, one quotient bit per round; hi < d keeps
