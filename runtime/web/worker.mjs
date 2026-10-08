@@ -122,8 +122,8 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
         })
       : null;
   // The optional groups (sound, DirectDraw and Direct3D; networking) only
-  // for a program that imports one of their DLLs, itself or through a DLL
-  // of its folder (Direct3D also when it names one).
+  // for a program that imports one of their DLLs, itself or in a DLL of its
+  // folder (Direct3D also when it names one).
   const groupOf = new Map(Object.entries(manifest.dlls).filter(([, f]) => f.group).map(([n, f]) => [n.toLowerCase(), f.group]));
   const wanted = new Set();
   {
@@ -145,6 +145,9 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
       }
     };
     visit(exe);
+    // And the folder's other DLLs: games load theirs with LoadLibrary
+    // (Far Cry's CrySystem.dll imports WININET).
+    for (const [name, bytes] of local) if (name.endsWith('.dll') && !seen.has(name)) visit(bytes);
     if (wantsD3D) wanted.add('media');
   }
   await Promise.all([
