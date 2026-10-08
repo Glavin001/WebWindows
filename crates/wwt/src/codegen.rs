@@ -481,6 +481,11 @@ impl<'a> ModuleGen<'a> {
 
     pub fn gen_function(&self, f: &Function) -> wasm_encoder::Function {
         let fixed;
+        // Blocks from here on are made by the passes below, not lifted.
+        let lifted = f.blocks.len();
+        // Where the optimizer kept the state a preemption check writes back.
+        let preempt = opt::preempt_points(f);
+        let irreducible = !reducible::is_reducible(f);
         let f = if reducible::is_reducible(f) && !self.cfg.osr {
             f
         } else {
@@ -497,6 +502,9 @@ impl<'a> ModuleGen<'a> {
         };
         let a = opt::analyze(f);
         let mut g = FnGen::new(self, f, &a);
+        g.lifted = lifted;
+        g.preempt = preempt;
+        g.irreducible = irreducible;
         g.run();
         g.finish()
     }
@@ -548,6 +556,13 @@ struct FnGen<'g, 'a> {
     /// Scratch address in the memory's address type.
     tmp_ma: u32,
     label_local: u32,
+    /// Blocks numbered from here on were added by code generation's own
+    /// passes (`reducible`, `osr`), not lifted from x86 code.
+    lifted: usize,
+    /// `opt::preempt_points` of the lifted function, and whether it was
+    /// irreducible: where its back edges' state survived the optimizer.
+    preempt: Vec<bool>,
+    irreducible: bool,
     emitted: Vec<bool>,
     /// Addresses whose guest-limit check passed, as (vreg, lo, hi): some
     /// address in `vreg + [lo, hi]` passed (lo = hi: that one did). Loads
@@ -605,6 +620,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
             tmp_i64b: 0,
             tmp_ma: 0,
             label_local: 0,
+            lifted: n,
+            preempt: vec![],
+            irreducible: false,
             emitted: vec![false; n],
             facts_local: vec![],
             facts_tree: vec![],
@@ -1247,6 +1265,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
     /// if so, the loop's frames return the yield address and the thread
     /// resumes at the loop header later. Two loads and a compare otherwise.
     fn preempt_check(&mut self, src: BlockId, tgt: BlockId) {
+        let Some(resume) = self.resume_addr(src, tgt) else {
+            return;
+        };
         self.emit(W::GlobalGet(G_TICK));
         self.emit(W::I32Load(memarg(0, 2)));
         self.emit(W::LocalGet(0));
@@ -1256,7 +1277,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.ctx.push(Ctx::If);
         self.sync(self.a.dirty_end[src as usize]);
         self.emit(W::LocalGet(0));
-        self.code_const(self.f.blocks[tgt as usize].addr);
+        self.code_const(resume);
         self.emit(W::Call(F_PREEMPT));
         self.emit(W::If(BlockType::Empty));
         self.code_const(if self.code64() {
@@ -1268,6 +1289,41 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(W::End);
         self.ctx.pop();
         self.emit(W::End);
+    }
+
+    /// The x86 address a back edge continues at, where a preempted thread
+    /// resumes. A block made by restructuring has none of its own: a
+    /// multi-entry loop's dispatch header carries its first entry's address
+    /// whichever entry the label selects, and a merged jump table's block
+    /// that of one of the table jumps. An edge into one resumes at the entry
+    /// it was meant for when that is known (the label setter in front of a
+    /// dispatch header carries its entry's address); otherwise it gets no
+    /// check.
+    ///
+    /// The edge must also leave a block whose dirty state the optimizer kept
+    /// for it (`opt::preempt_points`): a lifted block it marked, or a label
+    /// setter, whose predecessors' edges into the loop entry it marked.
+    fn resume_addr(&self, src: BlockId, tgt: BlockId) -> Option<u64> {
+        let s = &self.f.blocks[src as usize];
+        if (src as usize) < self.lifted {
+            if !self.preempt.get(src as usize).copied().unwrap_or(false)
+                || tgt as usize >= self.lifted
+            {
+                return None;
+            }
+            return Some(self.f.blocks[tgt as usize].addr);
+        }
+        let setter = self.irreducible
+            && matches!(s.term, Term::Jump(t) if t == tgt)
+            && matches!(
+                s.insts.as_slice(),
+                [Inst {
+                    dst: Some(_),
+                    op: Op::Const(_),
+                    ..
+                }]
+            );
+        setter.then_some(s.addr)
     }
 
     fn do_branch(&mut self, src: BlockId, tgt: BlockId) {
