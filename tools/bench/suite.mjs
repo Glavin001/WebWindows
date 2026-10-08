@@ -15,6 +15,8 @@
 //   emcc       the C source built with Emscripten, in Node: the WebAssembly ceiling
 //   wine       the .exe on Wine running natively (`wine` on PATH): Wine without translation
 //   wwt-wine   the .exe translated, on translated Wine, in Node: what we ship
+//   wwt-traps  wwt-wine with the program and Wine's DLLs translated with bounds
+//              traps instead of memory checks (wine.mjs --mem-traps)
 //   wwt-fast   wwt-wine with the program translated in place by the translator
 //              compiled to WebAssembly, as the page does without an
 //              ahead-of-time translation (WWT_TRANSLATOR=wasm)
@@ -85,6 +87,7 @@ const available = {
   emcc: !!emcc,
   wine: which('wine'),
   'wwt-wine': which('i686-w64-mingw32-gcc') && existsSync(join(root, 'target/release/wwt')) && existsSync(wineBuild),
+  'wwt-traps': which('i686-w64-mingw32-gcc') && existsSync(join(root, 'target/release/wwt')) && existsSync(wineBuild),
   qemu: which('gcc') && which('qemu-i386'),
   'wwt-fast': which('i686-w64-mingw32-gcc') && existsSync(join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm')) && existsSync(wineBuild),
   'wine-assembly': !!process.env.WINE_ASSEMBLY && existsSync(join(process.env.WINE_ASSEMBLY, 'test/run.js')) && which('i686-w64-mingw32-gcc'),
@@ -260,9 +263,16 @@ function command(tier, files, w, dir) {
       );
     case 'wwt-fast':
     case 'wwt-wine':
+    case 'wwt-traps':
       return [
         process.execPath,
-        [join(root, 'runtime/node/wine.mjs'), ...(w.files ?? []).flatMap(([h, d]) => ['--file', `${h}=${d}`]), files.exe, ...args],
+        [
+          join(root, 'runtime/node/wine.mjs'),
+          ...(tier === 'wwt-traps' ? ['--mem-traps'] : []),
+          ...(w.files ?? []).flatMap(([h, d]) => ['--file', `${h}=${d}`]),
+          files.exe,
+          ...args,
+        ],
       ];
   }
 }
@@ -295,7 +305,7 @@ const median = (xs) => {
   return s.length ? (s[(s.length - 1) >> 1] + s[s.length >> 1]) / 2 : NaN;
 };
 
-const ALL_TIERS = ['native', 'emcc', 'wine', 'qemu', 'wine-assembly', 'wwt-fast', 'wwt-wine'];
+const ALL_TIERS = ['native', 'emcc', 'wine', 'qemu', 'wine-assembly', 'wwt-fast', 'wwt-wine', 'wwt-traps'];
 const TIERS = ALL_TIERS.filter((t) => available[t] && (!opts.tiers || opts.tiers.includes(t)));
 for (const t of ALL_TIERS) if (!available[t]) console.error(`skipping tier ${t} (not installed${t === 'wine-assembly' ? ': set WINE_ASSEMBLY' : ''})`);
 
@@ -307,6 +317,7 @@ for (const name of Object.keys(WORKLOADS)) {
   const tiers = TIERS.filter((t) => command(t, files, w, '/tmp'));
   // Warm the translation cache (and the OS caches) with one untimed run.
   if (tiers.includes('wwt-wine')) runOnce('wwt-wine', files, w);
+  if (tiers.includes('wwt-traps')) runOnce('wwt-traps', files, w);
   const samples = {};
   for (let r = 0; r < opts.rounds; r++) {
     for (const t of tiers) {
