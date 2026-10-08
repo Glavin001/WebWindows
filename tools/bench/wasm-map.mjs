@@ -33,7 +33,8 @@ while (argv.length) {
 }
 const RUNS = {
   lua: { emcc: (d) => [join(workloads, 'bench.lua'), '4'], wine: ['--file', `${join(workloads, 'bench.lua')}=C:\\bench.lua`], args: ['C:\\bench.lua', '4'] },
-  sqlite: { emcc: (d) => ['--size', '50', join(d, 'speedtest.db')], wine: [], args: (d) => ['--size', '50', join(d, 'speedtest.db')] },
+  // Emscripten's build sees the working directory (NODERAWFS), not absolute paths.
+  sqlite: { emcc: () => ['--size', '50', 'speedtest.db'], wine: [], args: (d) => ['--size', '50', join(d, 'speedtest.db')] },
   coremark: { emcc: () => [], wine: [], args: [] },
 };
 if (!RUNS[workload]) {
@@ -162,6 +163,8 @@ function profileRun(args, cwd) {
   let total = 0;
   for (const file of files) {
     const p = JSON.parse(readFileSync(join(dir, file), 'utf8'));
+    // Worker threads (the runtime's clock ticker) have profiles of their own.
+    if (p.nodes.some((n) => n.callFrame.url.endsWith('-worker.mjs'))) continue;
     const byId = new Map(p.nodes.map((n) => [n.id, n]));
     p.samples.forEach((id, i) => {
       const f = byId.get(id).callFrame;
