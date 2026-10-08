@@ -13,7 +13,10 @@ use serde::Serialize;
 use crate::abi;
 use crate::codegen::{CodegenConfig, ModuleGen};
 use crate::discover::{scan_data_for_code_pointers, CodeSource, Discovery, SeedKind};
-use crate::ir::{BlockId, CallAbi, CallTarget, FlagFree, FlagFreeCallees, Function, Op, Term};
+use crate::ir::{
+    BlockId, CallAbi, CallTarget, FlagFree, FlagFreeCallees, Function, Inst, Mem, Op, Space, Term,
+    Ty,
+};
 use crate::lift::{lift_function, LiftConfig};
 use crate::opt;
 use crate::pe::{ExportTarget, PeFile};
@@ -386,6 +389,7 @@ pub fn translate_discovered(
             funcs.push(f);
         }
     }
+    call_through_import_stubs(&mut funcs);
     if cfg.prove_flags_abi {
         // Imports: Wine's exports never read the flags on entry, except
         // `_chkesp` (MSVC debug builds' stack check after calls).
@@ -434,6 +438,89 @@ pub fn translate_discovered(
         report,
         ir: funcs,
     })
+}
+
+/// A direct call to an import stub (`jmp [slot]`, how MinGW programs
+/// call their imports) calls through the slot instead: one call instead of
+/// two, and the lookup resolves the slot's target (which may itself be a
+/// thunk the runtime resolved, see runtime/wine/thunks.mjs). Tail jumps
+/// to stubs likewise.
+fn call_through_import_stubs(funcs: &mut [Function]) {
+    let stubs: HashMap<u32, u32> = funcs
+        .iter()
+        .filter_map(|f| {
+            let [b] = f.blocks.as_slice() else {
+                return None;
+            };
+            let Term::JmpInd(v) = b.term else { return None };
+            match b.insts.as_slice() {
+                [Inst {
+                    dst: Some(c),
+                    op: Op::Const(slot),
+                    ..
+                }, Inst {
+                    dst: Some(l),
+                    op: Op::Load { addr, mem },
+                    ..
+                }] if *l == v && addr == c && mem.size == 4 && mem.offset == 0 => {
+                    Some((f.entry, *slot as u32))
+                }
+                _ => None,
+            }
+        })
+        .collect();
+    if stubs.is_empty() {
+        return;
+    }
+    for f in funcs.iter_mut() {
+        for b in 0..f.blocks.len() {
+            let target = match f.blocks[b].term {
+                Term::Call {
+                    target: CallTarget::Direct(t),
+                    ..
+                }
+                | Term::Exit(t) => t,
+                _ => continue,
+            };
+            let Some(&slot) = stubs.get(&target) else {
+                continue;
+            };
+            if target == f.entry {
+                continue;
+            }
+            let eip = f.blocks[b].insts.last().map_or(f.blocks[b].addr, |i| i.eip);
+            let c = f.new_vreg(Ty::I32);
+            let v = f.new_vreg(Ty::I32);
+            let blk = &mut f.blocks[b];
+            blk.insts.push(Inst {
+                dst: Some(c),
+                op: Op::Const(slot as u64),
+                eip,
+            });
+            blk.insts.push(Inst {
+                dst: Some(v),
+                op: Op::Load {
+                    addr: c,
+                    mem: Mem {
+                        size: 4,
+                        signed: false,
+                        space: Space::Trusted,
+                        offset: 0,
+                        atomic: false,
+                    },
+                },
+                eip,
+            });
+            blk.term = match blk.term {
+                Term::Call { ret, cont, .. } => Term::Call {
+                    target: CallTarget::Indirect(v),
+                    ret,
+                    cont,
+                },
+                _ => Term::JmpInd(v),
+            };
+        }
+    }
 }
 
 /// Lazy flag state, which the C calling convention leaves dead across calls.
