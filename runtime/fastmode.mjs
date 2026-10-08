@@ -43,13 +43,13 @@ export class FastTranslator {
    * Translates code in `code` (located at `base`) reachable from `entries`;
    * `x64` for x86-64 code, `mem64` for a 64-bit (memory64) memory.
    */
-  translate(code, base, entries, { known = [], opt = 0, memChecks = true, smcChecks = true, x64 = false, mem64 = false, guestLimit = 0 } = {}) {
+  translate(code, base, entries, { known = [], opt = 0, memChecks = true, smcChecks = true, x64 = false, mem64 = false, guestLimit = 0, memTraps = false } = {}) {
     const x = this.x;
     const cp = x.wwt_alloc(code.length);
     new Uint8Array(x.memory.buffer).set(code, cp);
     const ep = putAddrs(x, entries);
     const kp = putAddrs(x, known);
-    const flags = (memChecks ? 0 : 1) | (smcChecks ? 0 : 2) | (x64 ? 4 : 0) | (mem64 ? 8 : limitFlags(guestLimit));
+    const flags = (memChecks ? 0 : 1) | (smcChecks ? 0 : 2) | (x64 ? 4 : 0) | (mem64 ? 8 : limitFlags(guestLimit)) | (memTraps ? 16 : 0);
     const res = x.wwt_translate(cp, code.length, BigInt(base), ep, entries.length, kp, known.length, opt, flags);
     x.wwt_free(cp, code.length);
     x.wwt_free(ep, Math.max(entries.length, 1) * 8);
@@ -58,12 +58,12 @@ export class FastTranslator {
   }
 
   /** Translates a whole PE file; `profile` lists extra entry points. */
-  translatePe(file, { profile = [], opt = 1, mem64 = false, guestLimit = 0 } = {}) {
+  translatePe(file, { profile = [], opt = 1, mem64 = false, guestLimit = 0, memTraps = false } = {}) {
     const x = this.x;
     const fp = x.wwt_alloc(file.length);
     new Uint8Array(x.memory.buffer).set(file, fp);
     const pp = putAddrs(x, profile);
-    const res = x.wwt_translate_pe(fp, file.length, pp, profile.length, opt, mem64 ? 8 : limitFlags(guestLimit));
+    const res = x.wwt_translate_pe(fp, file.length, pp, profile.length, opt, (mem64 ? 8 : limitFlags(guestLimit)) | (memTraps ? 16 : 0));
     x.wwt_free(fp, file.length);
     x.wwt_free(pp, Math.max(profile.length, 1) * 8);
     return this.take(res);
@@ -82,9 +82,11 @@ export class FastTranslator {
 
 /**
  * Installs run-time translation on a machine: each miss translates a window
- * of guest memory starting at the address and loads the result.
+ * of guest memory starting at the address and loads the result
+ * (`memTraps`: with bounds traps for memory checks, see `wwt translate
+ * --mem-traps`).
  */
-export function enableFastMode(machine, translator, { window = 0x40000, log } = {}) {
+export function enableFastMode(machine, translator, { window = 0x40000, log, memTraps = false } = {}) {
   // Translations by address and content: code that patches itself (Quake's
   // software renderers rewrite immediates every frame) misses again after
   // each patch, mostly with bytes it had before, and gets the module that
@@ -103,7 +105,7 @@ export function enableFastMode(machine, translator, { window = 0x40000, log } = 
     }
     const t0 = performance.now();
     const known = machine.entriesIn(addr, end);
-    const bytes = translator.translate(code, addr, [addr], { known, x64: machine.x64, mem64: machine.mem64, guestLimit: machine.guestLimit });
+    const bytes = translator.translate(code, addr, [addr], { known, x64: machine.x64, mem64: machine.mem64, guestLimit: machine.guestLimit, memTraps });
     if (!bytes.length) return 0;
     let rec;
     try {

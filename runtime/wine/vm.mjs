@@ -22,6 +22,7 @@ export const PAGE_WRITECOPY = 0x08;
 export const PAGE_EXECUTE = 0x10;
 export const PAGE_EXECUTE_READ = 0x20;
 export const PAGE_EXECUTE_READWRITE = 0x40;
+export const PAGE_EXECUTE_WRITECOPY = 0x80;
 export const PAGE_GUARD = 0x100;
 
 const PAGE = 0x1000;
@@ -37,6 +38,8 @@ export class VirtualMemory {
     this.prot = new Uint16Array(pages);
     this.region = new Int32Array(pages).fill(-1);
     this.regions = []; // id -> {base, size, type, allocProt, name}
+    /** Called with a page range [p0, p1) whose protection changed. */
+    this.onProtect = null;
   }
 
   pageOf(a) {
@@ -104,11 +107,15 @@ export class VirtualMemory {
       this.m.u8.fill(0, p * PAGE, q * PAGE);
       p = q;
     }
+    this.onProtect?.(p0, p1);
     return true;
   }
 
   decommit(addr, size) {
-    for (let p = this.pageOf(addr); p < this.pageOf(addr + size - 1) + 1; p++) this.prot[p] = 0;
+    const p0 = this.pageOf(addr);
+    const p1 = this.pageOf(addr + size - 1) + 1;
+    for (let p = p0; p < p1; p++) this.prot[p] = 0;
+    this.onProtect?.(p0, p1);
   }
 
   release(base) {
@@ -121,6 +128,7 @@ export class VirtualMemory {
       this.prot[p] = 0;
     }
     r.released = true;
+    this.onProtect?.(this.pageOf(r.base), this.pageOf(r.base + r.size));
     return true;
   }
 
@@ -136,6 +144,7 @@ export class VirtualMemory {
     for (let p = p0; p < p1; p++) if (!this.prot[p]) return -1;
     const old = this.prot[p0];
     for (let p = p0; p < p1; p++) this.prot[p] = prot;
+    this.onProtect?.(p0, p1);
     return old;
   }
 

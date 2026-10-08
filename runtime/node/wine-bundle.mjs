@@ -18,6 +18,9 @@
 // WebAssembly memory: every DLL moved below 2 GB and translated for a 32-bit
 // memory, and the lowered Unix side (ARCH=x86_64 MEM32=1).
 //
+// WWT_MEM_TRAPS=1 translates the DLLs with bounds traps instead of memory
+// checks (wwt translate --mem-traps).
+//
 // Wine's DLLs are translated once here (as on CI) and shipped, so browsers
 // compile them with streaming compilation and can cache the compiled code.
 // Most of Wine's DLLs are linked at the same default base (0x10000000), so
@@ -140,6 +143,7 @@ for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS, ...NET_DLL
   // memory reads its limit at run time. The native heap and string
   // functions are i386 code's.
   const flags = [...(TRANSLATE_FLAGS[d] ?? []), ...(mem64 ? ['--mem64'] : ['--guest-limit-mb', '2048'])];
+  if (process.env.WWT_MEM_TRAPS === '1') flags.push('--mem-traps');
   if (withHeap && !x64 && d === 'ntdll') flags.push(NATIVE_HEAP_FLAG);
   if (withStrings && !x64 && NATIVE_STRINGS_DLLS.includes(name)) flags.push(NATIVE_STRINGS_FLAG);
   execFileSync(wwt, ['translate', ...flags, join(out, name), '-o', join(out, `${name}.wasm`)], {

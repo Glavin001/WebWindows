@@ -93,6 +93,15 @@ pull request links it), `Production` for `main`. The site goes up
 prebuilt, with its cross-origin isolation headers, so Vercel builds
 nothing (`vercel.json` turns its Git builds off).
 
+The site's sample list starts with benchmarks the deploy job builds from
+their pinned sources (`tools/site/apps.mjs`; nothing built is committed):
+SQLite's speedtest1, Lua with the suite's workloads, CoreMark and
+apibench, each one click away with its arguments and input files. The
+page translates with bounds traps instead of memory checks where the
+browser allows (`docs/memory-traps.md`); tick "faithful memory checks" to
+compare. For a local site, run `node tools/site/apps.mjs` before
+`tools/site/build.sh`.
+
 The CLI also inspects and translates binaries:
 
 ```sh
@@ -152,6 +161,7 @@ The plan's verification pipeline, as implemented:
 | 4. Real software (start) | The browser front end in headless Chromium: the cache and profile loop, the folder picker, Wine's Minesweeper and Notepad driven with mouse and keyboard, and Direct3D 9 test programs on WebGPU; the same windowed programs headless in Node with screenshots; a Direct3D 9 benchmark | `node tests/web/browser.mjs`, `tests/web/picker.mjs`, `tests/web/gui.mjs`, `tests/wine/gui.mjs`, `tests/web/d3d9bench.mjs` |
 | 5. Own output | Snapshots of IR and WAT for committed binaries | `cargo test -p wwt --test snapshots` |
 | Speed | CoreMark native vs. Emscripten vs. translated, with checksum check; profiles by function | `node tools/bench/coremark.mjs`, see [docs/performance.md](docs/performance.md) |
+| Comparison | SQLite, Lua, CoreMark and Windows API workloads on native, Emscripten, Wine, qemu-i386, Wine-Assembly and ours; first-launch costs | `node tools/bench/suite.mjs`, `tools/bench/firstlaunch.mjs`, see [docs/comparison.md](docs/comparison.md) |
 
 Instruction fixtures (`tests/fixtures/instructions/*.jsonl.gz`) are recorded
 on x86 hardware and replayed anywhere:
@@ -192,7 +202,7 @@ tools/wine-layout   generates Wine's structure layouts for the runtime
 tools/samples       builds the test programs the web page lists (runtime/web/samples.json)
 tools/torture       fetches GCC's torture tests
 tools/bench         CoreMark tiers incl. Emscripten, profiler, per-function comparison, A/B
-tools/site          assembles the static site and deploys it to Vercel
+tools/site          assembles the static site (with benchmarks built from source) and deploys it to Vercel
 tests/              fixtures, test programs, Csmith runtime, browser test
 spikes/             M1 spikes: memory size, Emscripten above the guest limit
 docs/               the plan (plan.md), each milestone's status, performance guide

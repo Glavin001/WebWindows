@@ -22,7 +22,7 @@
 
 import { ProcessExit, hex } from '../runtime.mjs';
 import { mapImage } from '../pe.mjs';
-import { VirtualMemory, MEM_IMAGE, MEM_MAPPED, MEM_PRIVATE, PAGE_READWRITE, PAGE_EXECUTE_READ, PAGE_READONLY } from './vm.mjs';
+import { VirtualMemory, MEM_IMAGE, MEM_MAPPED, MEM_PRIVATE, PAGE_READWRITE, PAGE_EXECUTE_READ, PAGE_READONLY, PAGE_WRITECOPY, PAGE_EXECUTE_WRITECOPY } from './vm.mjs';
 import { SYSCALLS, SYSCALLS64, STATUS, STUB_UNIXLIB } from './syscalls.mjs';
 import { HANDLE_ROUTED, WIN32U_UNIXLIB } from './unix.mjs';
 import { WINED3D_UNIXLIB } from './d3d.mjs';
@@ -38,6 +38,7 @@ import layout from './layout.json' with { type: 'json' };
 import layout64 from './layout64.json' with { type: 'json' };
 import { installAssemblies } from './sxs.mjs';
 import { attachNativeHeap } from './heap.mjs';
+import { CodeWriteWatch } from './codewrite.mjs';
 import { installExceptions } from './exceptions.mjs';
 import { Scheduler, Thread } from './threads.mjs';
 import { startTicker, writeClock } from './ticker.mjs';
@@ -92,6 +93,7 @@ export function parsePe(bytes) {
     entryRva: dv.getUint32(opt + 16, true),
     imageBase: wide ? u64(opt + 24) : dv.getUint32(opt + 28, true),
     sizeOfImage: dv.getUint32(opt + 56, true),
+    sectionAlignment: dv.getUint32(opt + 32, true),
     sizeOfHeaders: dv.getUint32(opt + 60, true),
     checksum: dv.getUint32(opt + 64, true),
     subsystem: dv.getUint16(opt + 68, true),
@@ -117,6 +119,28 @@ export function parsePe(bytes) {
     });
   }
   return info;
+}
+
+/**
+ * Section protections of a mapped image, as Windows (and Wine's own image
+ * mapper) sets them: headers read-only; each section readable, executable
+ * and copy-on-write as its characteristics say; an image whose sections are
+ * not page-aligned is one executable copy-on-write range.
+ */
+function protectImage(vm, base, info) {
+  if (info.sectionAlignment < 0x1000) {
+    vm.protect(base, info.sizeOfImage, PAGE_EXECUTE_WRITECOPY);
+    return;
+  }
+  vm.protect(base, info.sizeOfHeaders || 0x1000, PAGE_READONLY);
+  for (const s of info.sections) {
+    const size = Math.max(s.virtual_size, s.raw_size);
+    if (!size) continue;
+    const c = s.characteristics;
+    const x = c & 0x20000000, w = c & 0x80000000;
+    const prot = x ? (w ? PAGE_EXECUTE_WRITECOPY : PAGE_EXECUTE_READ) : w ? PAGE_WRITECOPY : PAGE_READONLY;
+    vm.protect(base + s.virtual_address, Math.min(size, info.sizeOfImage - s.virtual_address), prot);
+  }
 }
 
 /**
@@ -195,6 +219,7 @@ export class WineHost {
    *        returns the translated module for an image file (`bytes` are
    *        already rebased when the image could not load at its own base)
    * @param {Map<string, Uint8Array>} opts.files  DOS paths (c:/...) -> contents
+   * @param {boolean} [opts.storeMapAlways]  stores always look up the store map (see ./codewrite.mjs)
    * @param {WebAssembly.Module} [opts.nativeHeap]  ntdll's heap as native WebAssembly
    *        (./heap.mjs), for an ntdll translated with --native-heap
    * @param {WebAssembly.Module} [opts.nativeStrings]  string and locale functions as
@@ -220,6 +245,9 @@ export class WineHost {
     this.stderr = opts.stderr ?? (() => {});
     this.trace = opts.trace ?? false;
     this.vm = new VirtualMemory(machine, 0x10000, machine.thunkBase);
+    /** Tells translated code when stores have to watch for code writes
+     * (opts.storeMapAlways: on all the time). */
+    this.codeWrites = opts.storeMapAlways ? null : new CodeWriteWatch(machine, this.vm);
     this.nativeHeap = opts.nativeHeap ? attachNativeHeap(machine, opts.nativeHeap, this.vm) : null;
     if (opts.nativeStrings) attachNativeStrings(machine, opts.nativeStrings);
     this.handles = new Map();
@@ -425,6 +453,7 @@ export class WineHost {
       rebased = true;
     }
     this.vm.commit(base, info.sizeOfImage, PAGE_EXECUTE_READ);
+    protectImage(this.vm, base, info);
     // The translation: module bytes, or an already compiled module (Wine's
     // DLLs are translated ahead of time, at their preferred base, and
     // compiled by the host).
@@ -1072,6 +1101,8 @@ export class WineHost {
     } finally {
       t.nest--;
       m.u8.set(saved, this.cpu);
+      // The saved state's copy of a flag the runtime owns may be stale.
+      m.w32(this.cpu + m.abi.cpu.CODE_WRITABLE, m.codeWritable);
     }
     const r = this.callbackResults.pop();
     if (this.callbackResults.length !== depth || !r) throw new Error(`user callback ${id} returned without NtCallbackReturn`);

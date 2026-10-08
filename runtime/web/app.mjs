@@ -398,6 +398,11 @@ async function run(exeName, exeBytes, files, exePath, times = {}) {
         argv: args ? args.split(/\s+/) : [],
         translatorUrl,
         noCache: $('nocache').checked,
+        // The program is translated with bounds traps instead of memory
+        // checks (wwt translate --mem-traps) where the engine reports where
+        // a trap happened (Chrome, Firefox; not Safari). "faithful memory
+        // checks" (?memtraps=0) turns them off; ?memtraps=1 forces them.
+        memTraps: $('faithful').checked ? false : params.get('memtraps') === '1' ? true : undefined,
         wine,
         bundleUrl,
         bundle64Url,
@@ -433,17 +438,23 @@ $('run').onclick = async () => {
 };
 
 // Wine's own programs from the bundles that carry Wine's Unix side (the
-// 64-bit one for this browser's memory), then the repository's test
-// programs (./samples.json). Every sample runs on Wine.
+// 64-bit one for this browser's memory), the benchmark programs the site
+// was built with (./apps.json, from tools/site/apps.mjs, with the files
+// they read), then the repository's test programs (./samples.json). Every
+// sample runs on Wine.
 const sampleArgs = new Map();
+const sampleFiles = new Map();
 const bundle64ForBrowser = memory64 ? bundle64Url : bundle64m32Url;
 const manifestOf = (url) => fetch(new URL('manifest.json', url)).then((r) => (r.ok ? r.json() : null)).catch(() => null);
 Promise.all([
   manifestOf(bundleUrl),
   manifestOf(bundle64ForBrowser),
   fetch(new URL('samples.json', import.meta.url)).then((r) => (r.ok ? r.json() : [])),
+  fetch(new URL('apps.json', import.meta.url))
+    .then((r) => (r.ok ? r.json() : []))
+    .catch(() => []),
 ])
-  .then(([manifest, manifest64, samples]) => {
+  .then(([manifest, manifest64, samples, apps]) => {
     if (!manifest?.programs?.length) return;
     const groups = new Map();
     const group = (label) => {
@@ -459,10 +470,11 @@ Promise.all([
     for (const p of manifest64?.programs ?? []) {
       group("Wine's programs, 64-bit").append(new Option(`${p.split('/').pop()} (64-bit)`, new URL(p, bundle64ForBrowser).href));
     }
-    for (const s of samples) {
+    for (const s of [...apps, ...samples]) {
       const url = new URL(`../../${s.path}`, import.meta.url).href;
       group(s.group).append(new Option(s.label, url));
       if (s.args) sampleArgs.set(url, s.args);
+      if (s.files) sampleFiles.set(url, s.files);
     }
     $('samples').hidden = false;
   })
@@ -473,10 +485,17 @@ $('runsample').onclick = async () => {
   const url = $('sample').value;
   const bytes = await (await fetch(url)).arrayBuffer();
   $('wine').checked = true;
-  run(url.split('/').pop(), bytes, {});
+  // A sample with files runs from C:\app, with them beside it.
+  const files = {};
+  for (const [name, path] of Object.entries(sampleFiles.get(url) ?? {})) {
+    files[name] = await (await fetch(new URL(`../../${path}`, import.meta.url))).arrayBuffer();
+  }
+  const name = url.split('/').pop();
+  run(name, bytes, files, sampleFiles.has(url) ? name : undefined);
 };
 
 // ?exe=<url> runs a program directly (used by tests and demos).
+if (params.get('memtraps') === '0') $('faithful').checked = true;
 if (params.get('exe')) {
   const url = params.get('exe');
   const bytes = await (await fetch(url)).arrayBuffer();

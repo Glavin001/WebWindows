@@ -51,9 +51,17 @@ pub mod cpu {
     /// (milliseconds): translated loops call `preempt` once the tick reaches
     /// it, so a thread that spins without system calls still lets others run.
     pub const PREEMPT_AT: u32 = 368;
+    /// Non-zero while some page with translated code may be written (the
+    /// runtime sets it in every thread's state): stores then go through the
+    /// store map, which notices writes to code. Zero when no such page is
+    /// writable, as for programs whose code is in read-only image sections:
+    /// stores then only need the guest-limit check, which they can share
+    /// with nearby accesses. Runtimes that do not track page protections
+    /// leave it set.
+    pub const CODE_WRITABLE: u32 = 372;
     /// Translated calls currently nested in WebAssembly calls on this
     /// thread: past a limit a call unwinds to the dispatch loop instead.
-    pub const CALL_DEPTH: u32 = 372;
+    pub const CALL_DEPTH: u32 = 376;
     /// Scratch space for the host and kernel.
     pub const SCRATCH: u32 = 384;
     pub const SIZE: u32 = 512;
@@ -180,6 +188,20 @@ pub mod fault {
     pub const GENERAL_PROTECTION: u32 = 0xE057_0005;
 }
 
+/// Flags of an access in `TRAPS_SECTION`. With `OPERAND`, the x86
+/// instruction's memory operand is described, so the runtime can report
+/// the address it accessed (from the registers as last written back):
+/// base and index registers (0 for none, else 1 + the register's number,
+/// eax = 1), log2 of the scale and the segment (0, 1 for fs, 2 for gs).
+pub mod trap {
+    pub const WRITE: u32 = 1;
+    pub const OPERAND: u32 = 2;
+    pub const BASE_SHIFT: u32 = 4;
+    pub const INDEX_SHIFT: u32 = 8;
+    pub const SCALE_SHIFT: u32 = 12;
+    pub const SEG_SHIFT: u32 = 14;
+}
+
 /// Addresses with special meaning to the dispatcher.
 pub mod addr {
     /// Lowest valid guest address; everything below is the null region.
@@ -218,12 +240,16 @@ pub mod store_map {
 /// of reading the `lookup_l1`, `zero_l2` and `store_map` imports; the
 /// runtime checks that its layout matches before loading such a module.
 pub mod native_layout {
+    /// Nothing in the first 64 KB above the guest limit: a store within
+    /// `CHECK_WINDOW` (codegen) of a checked address can land there without
+    /// harming the runtime, so stores share checks the way loads do.
+    pub const GUARD: u32 = 0x1_0000;
     /// First level of the address lookup: one u32 per 4 KB page.
-    pub const LOOKUP_L1: u32 = 0;
+    pub const LOOKUP_L1: u32 = GUARD;
     /// The empty second level.
-    pub const ZERO_L2: u32 = 0x40_0000;
+    pub const ZERO_L2: u32 = GUARD + 0x40_0000;
     /// The store map: one byte per 4 KB page.
-    pub const STORE_MAP: u32 = 0x40_4000;
+    pub const STORE_MAP: u32 = GUARD + 0x40_4000;
 }
 
 /// Names of the module imports every translated module expects.
@@ -261,8 +287,16 @@ pub const FUNCS_SECTION: &str = "wwt.funcs";
 pub const FUNCS64_SECTION: &str = "wwt.funcs64";
 /// Custom section with JSON metadata about the translation.
 pub const META_SECTION: &str = "wwt.meta";
+/// Custom section with, per translated function in table order, the
+/// emulation code generation left in it (`codegen::Residue`), as JSON.
+pub const RESIDUE_SECTION: &str = "wwt.residue";
+/// Fast mode's trapping accesses (`CodegenConfig::mem_traps`): a u32 count,
+/// then per access four u32s: the module offset of its load or store
+/// instruction (the position engines give for a trap there), its x86
+/// address, flags (`trap`) and the x86 memory operand's displacement.
+pub const TRAPS_SECTION: &str = "wwt.traps";
 /// Bumped whenever generated code changes incompatibly, to invalidate caches.
-pub const ABI_VERSION: u32 = 10;
+pub const ABI_VERSION: u32 = 11;
 /// Every translated module exports its lazy-flags evaluator under this
 /// name: `(fk, fr, fa, fb, fc) -> eflags` (the arithmetic flags).
 pub const EFLAGS_EXPORT: &str = "eflags";
@@ -283,6 +317,8 @@ struct AbiJson {
     funcs_section: &'static str,
     funcs64_section: &'static str,
     meta_section: &'static str,
+    traps_section: &'static str,
+    trap: std::collections::BTreeMap<&'static str, u32>,
 }
 
 /// The ABI as JSON for the JavaScript runtime.
@@ -311,7 +347,9 @@ pub fn abi_json() -> String {
         ("MXCSR", MXCSR),
         ("FAULT_CODE", FAULT_CODE),
         ("FAULT_ADDR", FAULT_ADDR),
+        ("RESUME", RESUME),
         ("PREEMPT_AT", PREEMPT_AT),
+        ("CODE_WRITABLE", CODE_WRITABLE),
         ("CALL_DEPTH", CALL_DEPTH),
         ("SCRATCH", SCRATCH),
         ("SIZE", SIZE),
@@ -383,6 +421,17 @@ pub fn abi_json() -> String {
         funcs_section: FUNCS_SECTION,
         funcs64_section: FUNCS64_SECTION,
         meta_section: META_SECTION,
+        traps_section: TRAPS_SECTION,
+        trap: [
+            ("WRITE", trap::WRITE),
+            ("OPERAND", trap::OPERAND),
+            ("BASE_SHIFT", trap::BASE_SHIFT),
+            ("INDEX_SHIFT", trap::INDEX_SHIFT),
+            ("SCALE_SHIFT", trap::SCALE_SHIFT),
+            ("SEG_SHIFT", trap::SEG_SHIFT),
+        ]
+        .into_iter()
+        .collect(),
     })
     .unwrap()
 }

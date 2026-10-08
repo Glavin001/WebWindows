@@ -275,7 +275,10 @@ try {
       for (let i = 0; i < row.length; i += 4) if (red([row[i], row[i + 1], row[i + 2]])) return i / 4;
       return -1;
     };
-    const x0 = await squareX();
+    // From a frame with the square on that row: the first blue one can come
+    // before it.
+    let x0 = -1;
+    await until(async () => (x0 = await squareX()) >= 0, 10000);
     const moved = await until(async () => {
       const x = await squareX();
       return x >= 0 && x0 >= 0 && x !== x0;

@@ -301,7 +301,7 @@ export function installExceptions(h, ntdllExport) {
     }
     return out.join(' ');
   };
-  h.m.onFault = (cpu, code, eip, info) => {
+  h.m.onFault = (cpu, code, eip, info, trap) => {
     if (traced < (h.traceFaults ?? envFaults) && ++traced) {
       const t = h.threads.current;
       h.stderr(
@@ -310,15 +310,40 @@ export function installExceptions(h, ntdllExport) {
         ),
       );
     }
-    return raiseFault(h, cpu, code, eip, info);
+    return raiseFault(h, cpu, code, eip, info, trap);
   };
   // Code runs from committed memory (no-execute protection is not enforced:
   // programs of the era run code from data pages).
   h.m.canExecute = (addr) => addr >= 0x10000 && h.vm.prot[h.vm.pageOf(addr)] !== 0;
 }
 
-/** A fault in translated code: returns where to continue. */
-export function raiseFault(h, cpu, code, eip, info) {
+/**
+ * Where to put the exception frame for a bounds trap (fast mode), when the
+ * stack pointer written back last may be above the faulting function's
+ * newest pushes and locals: below the innermost handler registration on
+ * the stack, if lower, and a further margin for what the function pushed
+ * since (larger frames probe the stack with a call, which writes back).
+ */
+const TRAP_MARGIN = 0x1000;
+function trapEsp(h, cpu) {
+  const m = h.m;
+  let esp = m.reg(cpu, 4) >>> 0;
+  const teb = m.u32[(cpu + m.abi.cpu.FS_BASE) >>> 2];
+  if (teb) {
+    const handler = h.u32(teb); // NtTib.ExceptionList
+    const base = h.u32(teb + 4); // NtTib.StackBase
+    const limit = h.u32(teb + 8); // NtTib.StackLimit
+    if (handler >= limit && handler < base && handler < esp) esp = handler;
+    if (esp - TRAP_MARGIN >= limit) esp -= TRAP_MARGIN;
+  }
+  return esp;
+}
+
+/**
+ * A fault in translated code: returns where to continue. `trap`: a bounds
+ * trap (fast mode), with the registers as last written back.
+ */
+export function raiseFault(h, cpu, code, eip, info, trap = false) {
   const m = h.m;
   const r = faultRecord(m, cpu, code, eip, info);
   if (r.resume !== undefined) return r.resume;
@@ -328,7 +353,7 @@ export function raiseFault(h, cpu, code, eip, info) {
   return dispatch(
     h,
     cpu,
-    m.reg(cpu, 4),
+    trap ? trapEsp(h, cpu) : m.reg(cpu, 4),
     (rec) => writeRec(h, rec, r),
     (ctx) => saveContext(h, cpu, ctx, r.eip ?? eip),
   );

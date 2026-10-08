@@ -1,0 +1,97 @@
+--- barebones/core_portme.c
++++ multiboot/core_portme.c
+@@ -17,6 +17,7 @@
+ */
+ #include "coremark.h"
+ #include "core_portme.h"
++#define CLOCKS_PER_SEC 1000
+ 
+ #if VALIDATION_RUN
+ volatile ee_s32 seed1_volatile = 0x3415;
+@@ -44,8 +45,10 @@
+ CORETIMETYPE
+ barebones_clock()
+ {
+-#error \
+-    "You must implement a method to measure time in barebones_clock()! This function should return current time.\n"
++    /* The TSC in units of 2^20 cycles (the host times the run itself). */
++    unsigned int lo, hi;
++    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
++    return (hi << 12) | (lo >> 20);
+ }
+ /* Define : TIMER_RES_DIVIDER
+         Divider to trade off timer resolution and total time that can be
+@@ -75,6 +78,7 @@
+ void
+ start_time(void)
+ {
++    ee_printf("@@START\n");
+     GETMYTIME(&start_time_val);
+ }
+ /* Function : stop_time
+@@ -88,6 +92,7 @@
+ void
+ stop_time(void)
+ {
++    ee_printf("@@STOP\n");
+     GETMYTIME(&stop_time_val);
+ }
+ /* Function : get_time
+@@ -129,8 +134,7 @@
+ void
+ portable_init(core_portable *p, int *argc, char *argv[])
+ {
+-#error \
+-    "Call board initialization routines in portable init (if needed), in particular initialize UART!\n"
++/* Nothing to initialize: output goes through WriteFile. */
+ 
+     (void)argc; // prevent unused warning
+     (void)argv; // prevent unused warning
+--- barebones/core_portme.h
++++ multiboot/core_portme.h
+@@ -91,7 +91,7 @@
+ typedef unsigned char  ee_u8;
+ typedef unsigned int   ee_u32;
+ typedef ee_u32         ee_ptr_int;
+-typedef size_t         ee_size_t;
++typedef unsigned int   ee_size_t;
+ #define NULL ((void *)0)
+ /* align_mem :
+         This macro is used to align an offset to point to a 32b value. It is
+--- barebones/ee_printf.c
++++ multiboot/ee_printf.c
+@@ -17,6 +17,7 @@
+ #include <coremark.h>
+ #include <stdarg.h>
+ 
++
+ #define ZEROPAD   (1 << 0) /* Pad with zero */
+ #define SIGN      (1 << 1) /* Unsigned/signed long */
+ #define PLUS      (1 << 2) /* Show plus */
+@@ -662,20 +663,12 @@
+ void
+ uart_send_char(char c)
+ {
+-#error "You must implement the method uart_send_char to use this file!\n";
+-    /*	Output of a char to a UART usually follows the following model:
+-            Wait until UART is ready
+-            Write char to UART
+-            Wait until UART is done
+-
+-            Or in code:
+-            while (*UART_CONTROL_ADDRESS != UART_READY);
+-            *UART_DATA_ADDRESS = c;
+-            while (*UART_CONTROL_ADDRESS != UART_READY);
+-
+-            Check the UART sample code on your platform or the board
+-       documentation.
+-    */
++    /* COM1, polled. */
++    unsigned char lsr;
++    do {
++        __asm__ volatile("inb %1, %0" : "=a"(lsr) : "Nd"((unsigned short)0x3fd));
++    } while (!(lsr & 0x20));
++    __asm__ volatile("outb %0, %1" : : "a"(c), "Nd"((unsigned short)0x3f8));
+ }
+ 
+ int

@@ -1,0 +1,35 @@
+diff --git a/package-lock.json b/package-lock.json
+index 41520aa..34a9d61 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -9,8 +9,6 @@
+       "version": "1.0.0",
+       "license": "ISC",
+       "dependencies": {
+-        "@node-3d/glfw": "*",
+-        "@node-3d/webgl": "*",
+         "pngjs": "^7.0.0",
+         "wabt": "^1.0.39"
+       },
+diff --git a/test/run.js b/test/run.js
+index d0be7e5..a58282a 100644
+--- a/test/run.js
++++ b/test/run.js
+@@ -10676,6 +10676,17 @@ if (VERBOSE) {
+     handlerHistDone = true;
+   }
+ 
++  // Measurement patch (WebWindows comparison lane): print the console text.
++  if (process.env.WA_DUMP_CONSOLE) {
++    const cells = new Uint16Array(memory.buffer, 0x079C6000, 0x3000 / 2);
++    let t = '';
++    for (const c of cells) t += c ? String.fromCharCode(c & 0xff) : ' ';
++    const cols = Number(process.env.WA_DUMP_CONSOLE) || 80;
++    const lines = [];
++    for (let i = 0; i < t.length; i += cols) lines.push(t.slice(i, i + cols).trimEnd());
++    while (lines.length && !lines[lines.length - 1]) lines.pop();
++    console.log('=== console ===\n' + lines.join('\n') + '\n=== end console ===');
++  }
+   if (!stopped) {
+     console.log('\n--- Final state ---');
+     console.log(regs());

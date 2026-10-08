@@ -1,0 +1,20 @@
+3c51121 baseline Before this work (main)
+337f124 reducible Reducible loops, store map, fewer checks
+dd8077a narrow Narrower ops, constant guest limit
+e960c00 inline Inlining, constant table addresses
+3acf938 osr Built-in memmove/memset, loop re-entry (OSR)
+6d885ce jumptables Merged jump tables, Wine file system fixes
+e2032ca faultblocks Shared fault blocks, stack-resident values
+13d2a7d callabi Call ABI (flags, callee-saved)
+15e2087 heap Native WebAssembly heap
+8a89a7c discovery Relocation-only discovery
+61ff442 checks Fewer memory checks
+34f6224 thunks Import thunks resolved in lookup
+108351d stubs Direct calls through import stubs
+992c031 rmw Interlocked as plain loads/stores
+7db7aa9 divide 64-bit division as wasm division
+bda13e9 m5 Merge main (M5 threads etc.) + heap fixes
+c08aa28 slice Scheduler slice fix
+2d2e028 strings Native string/locale functions
+3ddb1fe syscalls Syscall dispatch, ticker clock
+dc901af storemap Stores skip the store map unless code is writable

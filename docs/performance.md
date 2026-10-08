@@ -197,6 +197,22 @@ What running real programs found that CoreMark could not:
   into registers across blocks, and a 32 KB window (a load near a checked
   address can only land in the 64 KB null region or the 4 MB lookup table
   above the guest limit): Lua's module has 14% fewer checks, Lua +4%.
+- **Stores looked up the store map every time.** Every store read a byte
+  per page to notice writes to translated code, and could not share a
+  check with nearby accesses (a store just above the guest limit would hit
+  the runtime's lookup tables). But a Windows program can only write its
+  code once the page is writable: a write to a read-only page faults. The
+  runtime now tracks which pages with translated code are writable
+  (`runtime/wine/codewrite.mjs`: image sections get their real
+  protections, `VirtualProtect` and executable allocations are seen) and
+  tells translated code through a flag in each thread's state
+  (`cpu::CODE_WRITABLE`). While no such page exists, which is the usual
+  case, stores skip the store map and share guest-limit checks like loads
+  do, with 64 KB of nothing above the guest limit
+  (`native_layout::GUARD`). Against the lookup on every store
+  (`WWT_STORE_MAP=always`, which keeps it on), Lua is 8% faster and
+  apibench 4%; against the build before the flag existed the gain is
+  smaller (Lua fib 6%, sort 3%, the rest within noise).
 - **Wine's heap** (`RtlAllocateHeap` and friends) was 15–17% of Lua's time:
   handle checks, the LFH front end, critical sections and free lists, all
   as translated x86 with a register write-back at every internal call. It
@@ -424,6 +440,14 @@ Wine tier when they are (`tools/wine/build.sh`).
   the guest limit go down a slow path that does the precise check. So do
   pages with translated code, where the translated code invalidates the
   page's lookup entry itself, with no call to the host.
+* **Memory traps** (`wwt translate --mem-traps`, ABI 9; the default where
+  the engine locates traps: Node, Chrome, Firefox). Checked accesses drop
+  their compare and let the engine's bounds trap catch the null region and
+  addresses above memory; the runtime turns the trap into an access
+  violation at the right instruction, with the registers as last written
+  back. SQLite +23%, Lua +5–18%, CoreMark −3% (pointer chasing, where the
+  address adjustment adds latency a check didn't). Details and every test
+  result: [memory-traps.md](memory-traps.md).
 * **Fewer load checks.** A load within 4 KB of an address that already
   passed a check, from the same unchanged base, skips its check. The only
   difference is that such a load, if it lands within 4 KB of the null
@@ -453,6 +477,14 @@ Wine tier when they are (`tools/wine/build.sh`).
   unchanged. +8% on CoreMark. `wwt translate --no-inline` turns it off.
 
 ### What didn't help (measured with `ab.mjs`)
+
+* Forwarding stack stores to loads (a pass that gave a later load of
+  the same `[esp+k]` slot the stored value, kept exact by clearing at
+  calls, frame-address escapes and the outermost loop headers where
+  re-entry resumes): only 16% of `luaV_execute`'s stack loads qualified,
+  Lua and apibench within noise. Interpreter values that live across the
+  dispatch loop's iterations are the ones worth keeping in locals, and
+  re-entry at that loop's header would have to reload them.
 
 * Simplifying masks by known zero bits (`setg al; movzx eax, al` lifts to
   `((eax & ~0xff) | flag) & 0xff`): cleaner IR, but V8 already folds it
@@ -562,6 +594,16 @@ uses f64, Emscripten uses 128-bit software floating point.
 
 ## 2. Profile both builds by function
 
+For a picture of one benchmark, `wasm-map.mjs` puts Emscripten's module
+and the translated `.exe`'s side by side: treemaps with each function's
+code size as area and its CPU time as color, and a table of the functions
+matched by name (sizes, times and ratios):
+
+```sh
+node tools/bench/wasm-map.mjs lua      # or sqlite, coremark; --no-profile for sizes only
+# target/wasm-map/lua.html (and lua.json)
+```
+
 ```sh
 node tools/bench/profile.mjs                  # Emscripten, then wwt
 node tools/bench/profile.mjs --tier wwt --top 40
@@ -670,6 +712,7 @@ As close to Emscripten as the design allows; 80–90% of Emscripten is a
 realistic stretch goal. What can't be removed entirely, given that we run
 arbitrary x86 code safely:
 
-- guest memory checks (now one compare per load, one table lookup per store);
+- guest memory checks (one compare per checked load and one table lookup
+  per store in faithful mode; an address adjustment with memory traps);
 - the lookup for indirect calls;
 - registers the program can observe at fault points.
