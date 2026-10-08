@@ -117,11 +117,11 @@ MEMORY_SIZE=$((GLOBAL_BASE + EXTRA_SIZE))
 # own entry points (marked EMSCRIPTEN_KEEPALIVE).
 exports=$(grep -ohE '^NTSTATUS WINAPI Nt[A-Za-z]+' "$out/src/dlls/ntdll/unix/sync.c" "$out/src/dlls/ntdll/unix/registry.c" "$out/src/dlls/ntdll/unix/security.c" \
   | awk '{print "_"$3}' | sort -u | tr '\n' ',')_NtClose,_NtDuplicateObject,_malloc,_free,_wasm_win32u_syscall,_wasm_win32u_unix_call
-emcc $(find "$out/obj" -name '*.o') -o "$out/wine_unix.mjs" -O2 --no-entry --pre-js "$here/inproc/pre.js" \
+emcc $(find "$out/obj" -name '*.o') -o "$out/wine_unix.mjs" -O2 --profiling-funcs --no-entry --pre-js "$here/inproc/pre.js" \
   -sUSE_FREETYPE=1 -sMODULARIZE -sEXPORT_ES6 -sEXPORT_NAME=createWineUnix -sENVIRONMENT=web,worker,node \
   -sIMPORTED_MEMORY -sSHARED_MEMORY -sALLOW_MEMORY_GROWTH=0 \
   -sGLOBAL_BASE=$GLOBAL_BASE -sINITIAL_MEMORY=$MEMORY_SIZE -sSTACK_SIZE=4MB \
-  -sEXPORTED_FUNCTIONS="$exports" -sEXPORTED_RUNTIME_METHODS=FS,HEAPU8,UTF8ToString \
+  -sEXPORTED_FUNCTIONS="$exports" -sEXPORTED_RUNTIME_METHODS=FS,HEAPU8,UTF8ToString,stackSave,stackRestore \
   -sERROR_ON_UNDEFINED_SYMBOLS=1 -Wl,--error-limit=0 2> "$out/link.log" || { cat "$out/link.log"; exit 1; }
 # Two definitions of a name with different signatures only warn, and one of
 # them silently wins: never accept that.

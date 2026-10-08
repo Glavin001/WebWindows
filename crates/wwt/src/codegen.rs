@@ -13,8 +13,8 @@ use std::collections::HashMap;
 
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, CustomSection, ElementSection, Elements, EntityType,
-    FunctionSection, GlobalType, ImportSection, Instruction as W, MemArg, MemoryType, Module,
-    NameMap, NameSection, RefType, TableType, TypeSection, ValType,
+    ExportKind, ExportSection, FunctionSection, GlobalType, ImportSection, Instruction as W,
+    MemArg, MemoryType, Module, NameMap, NameSection, RefType, TableType, TypeSection, ValType,
 };
 
 use crate::abi::{self, addr::NULL_LIMIT, cpu, fault, imports, native_layout, store_map};
@@ -59,13 +59,18 @@ impl Default for CodegenConfig {
 const T_FN: u32 = 0;
 const T_FAULT: u32 = 1;
 const T_MATH: u32 = 2;
-const T_FIRST_HELPER: u32 = 3;
+const T_F64_F64: u32 = 3;
+const T_FIRST_HELPER: u32 = 4;
 
 // Imported function indices. Native implementations (`Term::Native`)
 // follow, one import each, in the order of `ModuleGen::natives`.
 const F_FAULT: u32 = 0;
 const F_MATH: u32 = 1;
-const F_FIRST_NATIVE: u32 = 2;
+/// Math.sin and Math.cos themselves, which engines call without going
+/// through JavaScript (the other operations go through `math`).
+const F_SIN: u32 = 2;
+const F_COS: u32 = 3;
+const F_FIRST_NATIVE: u32 = 4;
 
 // Imported global indices.
 const G_TABLE_BASE: u32 = 0;
@@ -189,12 +194,15 @@ impl<'a> ModuleGen<'a> {
         // Types.
         let mut types = TypeSection::new();
         types.ty().function([ValType::I32], [ValType::I32]);
-        types
-            .ty()
-            .function([ValType::I32, ValType::I32, ValType::I32, ValType::I32], []);
+        // fault(cpu, code, eip, info) -> where to continue
+        types.ty().function(
+            [ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+            [ValType::I32],
+        );
         types
             .ty()
             .function([ValType::I32, ValType::F64, ValType::F64], [ValType::F64]);
+        types.ty().function([ValType::F64], [ValType::F64]);
         let mut helper_type_idx = vec![];
         for h in &self.helpers {
             let (params, ret) = h.signature();
@@ -221,6 +229,17 @@ impl<'a> ModuleGen<'a> {
             EntityType::Function(T_FAULT),
         );
         imp.import(imports::MODULE, imports::MATH, EntityType::Function(T_MATH));
+        imp.import(
+            imports::MODULE,
+            imports::SIN,
+            EntityType::Function(T_F64_F64),
+        );
+        imp.import(
+            imports::MODULE,
+            imports::COS,
+            EntityType::Function(T_F64_F64),
+        );
+        // Native implementations follow (F_FIRST_NATIVE on).
         for n in &self.natives {
             imp.import(imports::MODULE, n, EntityType::Function(T_FN));
         }
@@ -287,6 +306,15 @@ impl<'a> ModuleGen<'a> {
                 Elements::Functions(Cow::Borrowed(&idxs)),
             );
         }
+        // The lazy-flags evaluator, for the host to build CONTEXT records.
+        let mut exports = ExportSection::new();
+        exports.export(
+            abi::EFLAGS_EXPORT,
+            ExportKind::Func,
+            self.helper_func_index(Helper::Eflags),
+        );
+        module.section(&exports);
+
         module.section(&elems);
 
         // Code.
@@ -664,7 +692,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(W::Br(self.open_labels + k));
     }
 
-    /// The code of a shared fault block.
+    /// The code of a shared fault block: writes back `mask`, records eip
+    /// and calls the host, which returns where to continue (a Windows
+    /// exception dispatcher, with the guest stack set up for it).
     fn fault_block(&mut self, mask: StateMask, code: u32) {
         self.sync(mask);
         self.emit(W::LocalGet(0));
@@ -675,7 +705,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(W::LocalGet(self.fault_eip));
         self.emit(W::LocalGet(self.tmp_i32b));
         self.emit(W::Call(F_FAULT));
-        self.emit(W::Unreachable);
+        self.emit(W::Return);
     }
 
     // ---- Lookup --------------------------------------------------------------
@@ -1333,8 +1363,17 @@ impl<'g, 'a> FnGen<'g, 'a> {
         }
     }
 
+    /// The access violation code for a read or a write.
+    fn av_code(write: bool) -> u32 {
+        if write {
+            fault::ACCESS_VIOLATION_WRITE
+        } else {
+            fault::ACCESS_VIOLATION
+        }
+    }
+
     /// Emits an address check for `size` bytes at local `addr` + `off`.
-    fn check_addr(&mut self, addr: u32, off: u32, dirty: StateMask, eip: u32) {
+    fn check_addr(&mut self, addr: u32, off: u32, write: bool, dirty: StateMask, eip: u32) {
         self.emit(W::LocalGet(addr));
         if off != 0 {
             self.emit(W::I32Const(off as i32));
@@ -1346,7 +1385,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.guest_check_value();
         self.emit(W::I32GtU);
         self.emit(W::If(BlockType::Empty));
-        self.raise(dirty & FAULT_SYNC, fault::ACCESS_VIOLATION, eip);
+        self.raise(dirty & FAULT_SYNC, Self::av_code(write), eip);
         self.emit(W::End);
     }
 
@@ -1409,7 +1448,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let (mem, smc) = (self.m.cfg.mem_checks, self.m.cfg.smc_checks);
         if !smc {
             if mem {
-                self.check_addr(addr, off, dirty, eip);
+                self.check_addr(addr, off, true, dirty, eip);
             }
             return;
         }
@@ -1423,7 +1462,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.store_map_byte(a);
         self.emit(W::If(BlockType::Empty));
         if mem {
-            self.check_addr(addr, off, dirty, eip);
+            self.check_addr(addr, off, true, dirty, eip);
         }
         self.check_code_write(addr, off);
         self.emit(W::End);
@@ -1471,7 +1510,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             Op::Load { addr, mem } => {
                 let la = self.local_of[*addr as usize];
                 if self.needs_check(mem) && !self.check_covered(*addr, mem.offset) {
-                    self.check_addr(la, mem.offset, dirty, inst.eip);
+                    self.check_addr(la, mem.offset, false, dirty, inst.eip);
                     self.checked(*addr, mem.offset);
                 }
                 let ty = ty.unwrap();
@@ -1531,7 +1570,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             Op::AtomicRmw { op, addr, val, mem } => {
                 let la = self.local_of[*addr as usize];
                 if self.needs_check(mem) || mem.space == Space::Guest && self.m.cfg.mem_checks {
-                    self.check_addr(la, mem.offset, dirty, inst.eip);
+                    self.check_addr(la, mem.offset, true, dirty, inst.eip);
                 }
                 let ty = ty.unwrap_or(Ty::I32);
                 // Misaligned, or no atomics wanted: plain load + op + store.
@@ -1589,7 +1628,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             } => {
                 let la = self.local_of[*addr as usize];
                 if mem.space == Space::Guest && self.m.cfg.mem_checks {
-                    self.check_addr(la, mem.offset, dirty, inst.eip);
+                    self.check_addr(la, mem.offset, true, dirty, inst.eip);
                 }
                 let ty = ty.unwrap_or(Ty::I32);
                 let (tmp, eq, sel) = if ty == Ty::I64 {
@@ -1631,9 +1670,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             Op::MemCopy { dst, src, len } => {
                 if self.m.cfg.mem_checks {
-                    for v in [*dst, *src] {
-                        self.check_range(v, *len, dirty, inst.eip);
-                    }
+                    // The source is read before the destination is written.
+                    self.check_range(*src, *len, false, dirty, inst.eip);
+                    self.check_range(*dst, *len, true, dirty, inst.eip);
                 }
                 self.get(*dst);
                 self.get(*src);
@@ -1648,7 +1687,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             Op::MemFill { dst, val, len } => {
                 if self.m.cfg.mem_checks {
-                    self.check_range(*dst, *len, dirty, inst.eip);
+                    self.check_range(*dst, *len, true, dirty, inst.eip);
                 }
                 self.get(*dst);
                 self.get(*val);
@@ -1664,6 +1703,18 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 }
                 let fi = self.m.helper_func_index(*h);
                 self.emit(W::Call(fi));
+            }
+            Op::Math {
+                op: MathOp::Sin, a, ..
+            } => {
+                self.get(*a);
+                self.emit(W::Call(F_SIN));
+            }
+            Op::Math {
+                op: MathOp::Cos, a, ..
+            } => {
+                self.get(*a);
+                self.emit(W::Call(F_COS));
             }
             Op::Math { op, a, b } => {
                 self.emit(W::I32Const(*op as i32));
@@ -1788,7 +1839,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
     }
 
     /// Checks that [addr, addr+len) lies in the guest region.
-    fn check_range(&mut self, addr: V, len: V, dirty: StateMask, eip: u32) {
+    fn check_range(&mut self, addr: V, len: V, write: bool, dirty: StateMask, eip: u32) {
         // fault if addr < NULL_LIMIT || addr + len > guest_limit || overflow
         self.get(addr);
         self.emit(W::LocalSet(self.tmp_i32b));
@@ -1804,7 +1855,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(W::I32GtU);
         self.emit(W::I32Or);
         self.emit(W::If(BlockType::Empty));
-        self.raise(dirty & FAULT_SYNC, fault::ACCESS_VIOLATION, eip);
+        self.raise(dirty & FAULT_SYNC, Self::av_code(write), eip);
         self.emit(W::End);
     }
 

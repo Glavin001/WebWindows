@@ -1,0 +1,14 @@
+timeBeginPeriod: 0
+Sleep(100) by timeGetTime: 1
+Sleep(100) by the performance counter: 1
+GetTickCount moves: 1
+timeSetEvent: 1
+periodic ticks in 300 ms: 1
+on another thread: 1
+stopped after timeKillEvent: 1
+one-shot event set: 1
+after about 50 ms: 1
+WM_TIMER five times: 1
+waitable timer: 1
+after about 30 ms: 1
+done

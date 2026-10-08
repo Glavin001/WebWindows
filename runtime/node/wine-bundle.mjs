@@ -12,13 +12,15 @@
 // Most of Wine's DLLs are linked at the same default base (0x10000000), so
 // all but one would be relocated at load time and translated again; the
 // bundle gives each its own base first (prelinking), from PRELINK_BASE up.
+// Their debug information is stripped first (most of each file; the browser
+// would download it and map it for nothing).
 
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { parsePe, rebaseImage } from '../wine/host.mjs';
+import { parsePe, peImports as imports, rebaseImage } from '../wine/host.mjs';
 import { NATIVE_HEAP_FLAG } from '../wine/heap.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -31,6 +33,18 @@ const GUI_DLLS = [
   'advapi32', 'sechost', 'user32', 'gdi32', 'win32u', 'imm32', 'combase', 'comctl32', 'coml2', 'cryptbase',
   'ole32', 'rpcrt4', 'uxtheme', 'comdlg32', 'shcore', 'shell32', 'shlwapi', 'comctl32_v6', 'oleaut32',
 ];
+// Sound, DirectDraw, Direct3D and DirectInput (Milestone 5): fetched only
+// for programs that use one of them (wined3d alone is megabytes), see
+// runtime/web/worker.mjs. wined3d draws Direct3D with its WebGPU backend
+// and needs no opengl32.
+const MEDIA_DLLS = [
+  'version', 'winmm', 'msacm32', 'dsound', 'mmdevapi', 'winepulse.drv', 'ddraw', 'wined3d', 'd3d9',
+  'dinput', 'dinput8', 'hid', 'setupapi',
+];
+// Translator flags per DLL. The Direct3D DLLs never write code, so their
+// stores skip the self-modifying-code check (the C runtime's memcpy, which
+// could copy code for a program, keeps it); the same list is in wine.mjs.
+const TRANSLATE_FLAGS = { wined3d: ['--no-smc-checks'], d3d9: ['--no-smc-checks'] };
 const DEFAULT_BASE = 0x10000000;
 const PRELINK_BASE = 0x60000000;
 const PROGRAMS = ['winemine', 'notepad'];
@@ -41,6 +55,20 @@ const wwt = ['target/release/wwt', 'target/debug/wwt']
   .filter((p) => existsSync(p))
   .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
 
+/** The image without its debug sections (binutils' strip, when installed;
+ * loaded sections keep their addresses). */
+function stripped(path) {
+  const tmp = join(out, '.strip.tmp');
+  try {
+    execFileSync('i686-w64-mingw32-strip', ['--strip-debug', '-o', tmp, path], { stdio: 'ignore' });
+    return readFileSync(tmp);
+  } catch {
+    if (!stripped.warned) console.warn('i686-w64-mingw32-strip not found: the bundle keeps debug information');
+    stripped.warned = true;
+    return readFileSync(path);
+  }
+}
+
 const unixDir = join(root, 'target/wine-unix');
 const withUnix = existsSync(join(unixDir, 'wine_unix.mjs'));
 // ntdll's heap as native WebAssembly (crates/wwt-heap), when built: the
@@ -50,15 +78,17 @@ const withHeap = existsSync(heapWasm);
 
 mkdirSync(out, { recursive: true });
 const manifest = { wine: '11.0', dlls: {}, nls: [] };
-const dllPath = (d) => join(wineBuild, 'dlls', d, 'i386-windows', `${d}.dll`);
+const fileName = (d) => (d.includes('.') ? d : `${d}.dll`);
+const dllPath = (d) => join(wineBuild, 'dlls', d, 'i386-windows', fileName(d));
 let nextBase = PRELINK_BASE;
-for (const d of [...DLLS, ...(withUnix ? GUI_DLLS : [])]) {
+for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS] : [])]) {
   const pe = dllPath(d);
+  const name = fileName(d);
   if (!existsSync(pe)) {
     console.error(`missing ${pe}; run tools/wine/build.sh ${d}`);
     process.exit(1);
   }
-  let bytes = readFileSync(pe);
+  let bytes = stripped(pe);
   const info = parsePe(bytes);
   if (info.imageBase === DEFAULT_BASE) {
     const moved = rebaseImage(bytes, info, nextBase);
@@ -67,13 +97,15 @@ for (const d of [...DLLS, ...(withUnix ? GUI_DLLS : [])]) {
       nextBase += (info.sizeOfImage + 0xffff) & ~0xffff;
     }
   }
-  writeFileSync(join(out, `${d}.dll`), bytes);
+  writeFileSync(join(out, name), bytes);
+  const media = MEDIA_DLLS.includes(d);
   // The browser runs Wine with a 2 GB guest (runtime/web/worker.mjs).
-  const heap = withHeap && d === 'ntdll' ? [NATIVE_HEAP_FLAG] : [];
-  execFileSync(wwt, ['translate', join(out, `${d}.dll`), '-o', join(out, `${d}.dll.wasm`), '--guest-limit-mb', '2048', ...heap], {
+  const flags = [...(TRANSLATE_FLAGS[d] ?? []), '--guest-limit-mb', '2048'];
+  if (withHeap && d === 'ntdll') flags.push(NATIVE_HEAP_FLAG);
+  execFileSync(wwt, ['translate', ...flags, join(out, name), '-o', join(out, `${name}.wasm`)], {
     stdio: ['ignore', 'ignore', 'inherit'],
   });
-  manifest.dlls[`${d}.dll`] = { pe: `${d}.dll`, wasm: `${d}.dll.wasm` };
+  manifest.dlls[name] = { pe: name, wasm: `${name}.wasm`, ...(media && { group: 'media' }) };
 }
 if (withHeap) {
   copyFileSync(heapWasm, join(out, 'wwt_heap.wasm'));
@@ -109,7 +141,7 @@ if (withUnix) {
       console.warn(`skipping ${p}: ${exe} not built (tools/wine/build.sh programs/${p})`);
       continue;
     }
-    copyFileSync(exe, join(out, 'programs', `${p}.exe`));
+    writeFileSync(join(out, 'programs', `${p}.exe`), stripped(exe));
     manifest.programs.push(`programs/${p}.exe`);
   }
 }
@@ -126,24 +158,5 @@ if (missing.size) {
   process.exit(1);
 }
 writeFileSync(join(out, 'manifest.json'), JSON.stringify(manifest, null, 2));
+rmSync(join(out, '.strip.tmp'), { force: true });
 console.log(`Wine bundle in ${out}${withUnix ? ' (with the Unix side, for windowed programs)' : ''}`);
-
-/** Names (lowercase) of the DLLs a PE image imports. */
-function imports(bytes) {
-  const info = parsePe(bytes);
-  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const off = (rva) => {
-    const sec = info.sections.find((x) => rva >= x.virtual_address && rva < x.virtual_address + Math.max(x.virtual_size, x.raw_size));
-    return sec ? rva - sec.virtual_address + sec.raw_offset : -1;
-  };
-  const opt = dv.getUint32(0x3c, true) + 24;
-  const names = [];
-  // Data directory 1: import descriptors of 20 bytes, ended by a zero one.
-  for (let d = off(dv.getUint32(opt + 96 + 8, true)); d >= 0 && dv.getUint32(d + 12, true); d += 20) {
-    let p = off(dv.getUint32(d + 12, true));
-    let name = '';
-    while (bytes[p]) name += String.fromCharCode(bytes[p++]);
-    names.push(name.toLowerCase());
-  }
-  return names;
-}

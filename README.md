@@ -39,7 +39,8 @@ node runtime/node/wine.mjs tests/programs/hello.exe
 # DLLs, fonts and programs, then a program with a screenshot of its screen:
 tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost user32 gdi32 \
   win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 rpcrt4 uxtheme \
-  comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts
+  comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts \
+  wined3d d3d9      # Direct3D 9, with wined3d's WebGPU backend
 sh native/wine-unix/build.sh
 node runtime/node/wine.mjs --screenshot mine.png --run-for 5000 \
   --input "500:click 60,120" /opt/wine-build/programs/winemine/i386-windows/winemine.exe
@@ -115,7 +116,7 @@ The plan's verification pipeline, as implemented:
 | 1. Instructions | Every legacy instruction form valid in 32-bit user mode (integer, flag-fusion pairs, x87, SSE/SSE2/MMX), random inputs, recorded on a real x86 CPU by `tools/oracle` | `cargo test -p wwt-testkit` |
 | 2. Programs | Hand-written C programs, Csmith programs and GCC's torture tests built with MinGW vs. a native `gcc -m32` build, on the shims or (`--wine`) on translated Wine | `node tests/programs/check.mjs [--csmith N] [--torture DIR] [--wine]` |
 | 3. Wine's own tests | Every unit of Wine's `kernel32`, `user32` and `gdi32` conformance tests on translated Wine, against recorded baselines | `node tests/wine/winetest.mjs --baseline tests/wine/baseline/user32_test.json .../user32_test.exe` |
-| 4. Real software (start) | The browser front end in headless Chromium: the cache and profile loop, the folder picker, and Wine's Minesweeper and Notepad driven with mouse and keyboard; the same windowed programs headless in Node with screenshots | `node tests/web/browser.mjs`, `tests/web/picker.mjs`, `tests/web/gui.mjs`, `tests/wine/gui.mjs` |
+| 4. Real software (start) | The browser front end in headless Chromium: the cache and profile loop, the folder picker, Wine's Minesweeper and Notepad driven with mouse and keyboard, and Direct3D 9 test programs on WebGPU; the same windowed programs headless in Node with screenshots; a Direct3D 9 benchmark | `node tests/web/browser.mjs`, `tests/web/picker.mjs`, `tests/web/gui.mjs`, `tests/wine/gui.mjs`, `tests/web/d3d9bench.mjs` |
 | 5. Own output | Snapshots of IR and WAT for committed binaries | `cargo test -p wwt --test snapshots` |
 | Speed | CoreMark native vs. Emscripten vs. translated, with checksum check; profiles by function | `node tools/bench/coremark.mjs`, see [docs/performance.md](docs/performance.md) |
 
@@ -140,15 +141,37 @@ crates/wwt-cli      `wwt` command-line tool
 crates/wwt-wasm     translator compiled to WebAssembly (fast mode, browser)
 crates/wwt-heap     ntdll's heap as native WebAssembly, for translated Wine
 crates/wwt-testkit  instruction generator, oracle driver, wasmtime runner
+crates/d3dgpu-*     Direct3D 9/10/11 on WebGPU core: protocol, shader translators
+                    (SM1-3, DXBC SM4/5), emulation library, render core (wgpu),
+                    scenes, web build
 runtime/            JavaScript runtime (Node and browser hosts)
+runtime/d3dgpu/     d3dgpu demo page, render and producer workers, test runner
 native/wine-unix    Wine's Unix side (wineserver, win32u, display driver) for Emscripten
+native/wined3d-wgpu wined3d's WebGPU backend (patched into Wine's source by tools/wine/build.sh)
 tools/oracle        native x86 oracle for instruction tests
 tools/wine          builds Wine's i386 PE DLLs, programs, tests and fonts
 tools/wine-layout   generates Wine's structure layouts for the runtime
+tools/samples       builds the test programs the web page lists (runtime/web/samples.json)
 tools/torture       fetches GCC's torture tests
 tools/bench         CoreMark tiers incl. Emscripten, profiler, per-function comparison, A/B
 tools/site          assembles the static site and deploys it to Vercel
 tests/              fixtures, test programs, Csmith runtime, browser test
 spikes/             M1 spikes: memory size, Emscripten above the guest limit
 docs/               the plan (plan.md), each milestone's status, performance guide
+```
+
+## Direct3D on WebGPU
+
+The `d3dgpu-*` crates are the reusable core for running Direct3D 9, 10 and
+11 games on WebGPU. wined3d's `adapter_wgpu` backend (`native/wined3d-wgpu`)
+drives it through a command stream: Direct3D 9 programs on translated Wine
+draw through it in the browser. See [docs/d3d-webgpu.md](docs/d3d-webgpu.md).
+
+```sh
+cargo test -p d3dgpu-core                     # 54 scenes (D3D9 and D3D11) on native wgpu
+cargo test -p d3dgpu-dxbc                     # DXBC translator (tools/dxbc/ has the corpora)
+runtime/d3dgpu/build.sh                       # wasm + bindings (fetches wasm-bindgen-cli)
+node tests/web/d3dgpu.mjs                     # the same scenes in headless Chromium
+node runtime/web/serve.mjs 8080               # http://localhost:8080/runtime/d3dgpu/
+                                              # (also /runtime/d3dgpu/ on the deployed site)
 ```

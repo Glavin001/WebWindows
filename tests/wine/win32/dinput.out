@@ -1,0 +1,12 @@
+DirectInputCreate: 00000000
+EnumDevices joysticks: 00000000
+a keyboard: 1
+keyboard device: 00000000
+SetDataFormat: 00000000
+SetCooperativeLevel: 00000000
+Acquire: 00000000
+GetDeviceState: 00000000, no key down: 1
+mouse device: 00000000
+Acquire: 00000000
+GetDeviceState: 00000000
+done

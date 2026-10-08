@@ -1,0 +1,12 @@
+DirectDrawCreateEx: 00000000
+SetCooperativeLevel: 00000000
+primary surface: 00000000
+CreateClipper: 00000000
+SetClipper: 00000000
+primary is RGB: 1
+color-keyed Blt: 00000000
+background: 0000ff, sprite: ff0000, through the hole: 0000ff
+GetDC fill: 00ff00
+Blt to the primary surface: 00000000
+window pixel is blue: 1
+done

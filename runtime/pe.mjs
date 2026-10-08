@@ -11,7 +11,9 @@ export function mapImage(machine, exeBytes, image) {
   u8.fill(0, base, base + image.size_of_image);
   u8.set(bytes.subarray(0, Math.min(image.size_of_headers, bytes.length)), base);
   for (const s of image.sections) {
-    const mem = s.virtual_size || s.raw_size;
+    // As Windows maps it: the file's data up to the virtual size rounded
+    // to the page (programs patched after linking keep data in that slack).
+    const mem = Math.min(((s.virtual_size || s.raw_size) + 0xfff) & ~0xfff, image.size_of_image - s.virtual_address);
     const n = Math.min(s.raw_size, mem, Math.max(0, bytes.length - s.raw_offset));
     if (n > 0) u8.set(bytes.subarray(s.raw_offset, s.raw_offset + n), base + s.virtual_address);
   }

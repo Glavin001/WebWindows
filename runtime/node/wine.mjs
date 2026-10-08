@@ -5,10 +5,13 @@
 //
 // GUI programs draw on a virtual 800x600 screen (runtime/wine/display.mjs):
 //   --screenshot F    save it as a PNG when the program goes idle or exits
+//   --folder          the program's directory as C:\app (games with data files)
+//   --audio-out F     save what the program played as a WAV file (48 kHz stereo)
 //   --run-for MS      ... or after this long
 //   --input SCRIPT    scripted input, timed from the first frame:
 //                     "500:click 20,80; 900:text Hi; 1200:key Enter"
-//                     (click/rclick/move X,Y; key CODE as in KeyboardEvent.code;
+//                     (click/rclick/move X,Y; key CODE as in KeyboardEvent.code,
+//                     keydown/keyup CODE to hold it;
 //                     text types letters, digits and spaces)
 //   --file HOST[=DOS] put a host file in the guest's file system (default
 //                     C:\<name>), e.g. a script or document the program reads
@@ -26,6 +29,7 @@ import { Machine, GuestFault, hex } from '../runtime.mjs';
 import { WineHost } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
+import { D3DRecorder } from '../wine/d3d.mjs';
 import { windowsKey, KEYEVENTF_KEYUP } from '../web/keys.mjs';
 
 /** Thrown out of a wait to stop a GUI program that went idle (--screenshot). */
@@ -61,9 +65,11 @@ function translate(path, bytes) {
   // Keyed by the image and the translator build, so a rebuilt translator
   // never serves stale translations.
   const t = statSync(wwt());
+  // Per-DLL translator flags, as in wine-bundle.mjs (TRANSLATE_FLAGS), and
   // WWT_TRANSLATE_FLAGS: extra `wwt translate` options, for A/B tests
-  // (tools/bench/ab.mjs --wine); part of the cache key.
-  const extra = (process.env.WWT_TRANSLATE_FLAGS ?? '').split(/\s+/).filter(Boolean);
+  // (tools/bench/ab.mjs --wine). All are part of the cache key.
+  const flags = { 'wined3d.dll': ['--no-smc-checks'], 'd3d9.dll': ['--no-smc-checks'] }[path.split('\\').pop().toLowerCase()] ?? [];
+  const extra = [...flags, ...(process.env.WWT_TRANSLATE_FLAGS ?? '').split(/\s+/).filter(Boolean)];
   if (nativeHeap && path.toLowerCase().endsWith('\\ntdll.dll')) extra.push(NATIVE_HEAP_FLAG);
   const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}:${extra.join(' ')}`).digest('hex').slice(0, 16);
   const out = join(cacheDir, `${path.split('\\').pop()}-${hash}.wasm`);
@@ -85,9 +91,13 @@ const args = process.argv.slice(2);
 let trace = false;
 let unixTrace = false;
 let screenshot = null;
+let audioOut = null;
+let folder = false;
 let runFor = Infinity;
 let script = [];
 const extraFiles = [];
+// --d3d-record FILE: wined3d's WebGPU command stream, recorded (no GPU in Node).
+let d3dRecord = null;
 // Wine's Unix side compiled with Emscripten (native/wine-unix): on when built,
 // unless --no-unix.
 const unixDir = join(root, 'target/wine-unix');
@@ -101,13 +111,17 @@ while (args[0]?.startsWith('--')) {
   // GUI programs: when the program waits with nothing left to wake it (no
   // timer, no input), save the screen as a PNG and stop.
   else if (a === '--screenshot') screenshot = args.shift();
+  else if (a === '--audio-out') audioOut = args.shift();
+  // The program's whole directory as C:\app, as the page's folder picker
+  // gives it (games with their data files).
+  else if (a === '--folder') folder = true;
   // ... or once it has run this long (programs with timers never go idle).
   else if (a === '--run-for') runFor = Number(args.shift());
   else if (a === '--input') script = parseInput(args.shift());
   else if (a === '--file') {
     const [host, dos] = args.shift().split('=');
     extraFiles.push([host, (dos ?? `C:\\${basename(host)}`).toLowerCase()]);
-  }
+  } else if (a === '--d3d-record') d3dRecord = args.shift();
 }
 
 /** "ms:action args; ..." -> [{at, push(display)}], in time order. */
@@ -132,10 +146,12 @@ function parseInput(text) {
         d.mouse(...xy(), down);
         d.mouse(...xy(), up);
       };
-    } else if (action === 'key') {
+    } else if (action === 'key' || action === 'keydown' || action === 'keyup') {
+      // keydown/keyup: held keys, for games that read the key state each frame.
       const k = windowsKey(arg);
       if (!k) throw new Error(`--input: unknown key ${arg}`);
-      push = (d) => tap(d, k);
+      if (action === 'key') push = (d) => tap(d, k);
+      else push = (d) => d.key(k.vk, k.scan, k.flags | (action === 'keyup' ? KEYEVENTF_KEYUP : 0));
     } else if (action === 'text') {
       push = (d) => {
         for (const c of arg) {
@@ -155,7 +171,7 @@ function parseInput(text) {
 }
 const exe = args.shift();
 if (!exe) {
-  console.error('usage: wine.mjs [--trace] [--trace-unix CHANNELS] [--no-unix] [--screenshot F [--run-for MS]] program.exe [args...]');
+  console.error('usage: wine.mjs [--trace] [--trace-unix CHANNELS] [--no-unix] [--folder] [--audio-out F.wav] [--screenshot F [--run-for MS]] program.exe [args...]');
   process.exit(2);
 }
 
@@ -171,7 +187,18 @@ for (const f of readdirSync(join(wineSrc, 'nls'))) {
   if (f.endsWith('.nls')) files.set(`${sys32}\\${f.toLowerCase()}`, readFileSync(join(wineSrc, 'nls', f)));
 }
 files.set('c:\\windows\\globalization\\sorting\\sortdefault.nls', files.get(`${sys32}\\sortdefault.nls`));
-const exeDos = `c:\\${basename(exe).toLowerCase()}`;
+const exeWin = folder ? `C:\\app\\${basename(exe)}` : `C:\\${basename(exe)}`;
+const exeDos = exeWin.toLowerCase();
+if (folder) {
+  const walk = (dir, rel) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const r = rel ? `${rel}\\${e.name}` : e.name;
+      if (e.isDirectory()) walk(join(dir, e.name), r);
+      else if (e.isFile()) files.set(`c:\\app\\${r.toLowerCase()}`, readFileSync(join(dir, e.name)));
+    }
+  };
+  walk(dirname(resolve(exe)), '');
+}
 files.set(exeDos, readFileSync(exe));
 for (const [host, dos] of extraFiles) files.set(dos, readFileSync(host));
 
@@ -250,11 +277,45 @@ if (existsSync(tw)) {
     log: trace ? (s) => stderr(`[fast] ${s}\n`) : undefined,
   });
 }
+const d3d = d3dRecord ? new D3DRecorder() : null;
+const saveRecording = () => {
+  if (!d3d) return;
+  writeFileSync(d3dRecord, d3d.bytes());
+  stderr(`recorded ${d3d.batches.length} Direct3D batches in ${d3dRecord}\n`);
+};
+/** What the program plays, kept for --audio-out (float stereo at 48 kHz). */
+const audioCapture = {
+  rate: 48000,
+  chunks: [],
+  write(src) {
+    this.chunks.push(src);
+  },
+  wav() {
+    const n = this.chunks.reduce((a, c) => a + c.length, 0);
+    const out = Buffer.alloc(44 + n * 2);
+    out.write('RIFF', 0);
+    out.writeUInt32LE(36 + n * 2, 4);
+    out.write('WAVEfmt ', 8);
+    out.writeUInt32LE(16, 16);
+    out.writeUInt16LE(1, 20);
+    out.writeUInt16LE(2, 22);
+    out.writeUInt32LE(this.rate, 24);
+    out.writeUInt32LE(this.rate * 4, 28);
+    out.writeUInt16LE(4, 32);
+    out.writeUInt16LE(16, 34);
+    out.write('data', 36);
+    out.writeUInt32LE(n * 2, 40);
+    let at = 44;
+    for (const c of this.chunks) for (const v of c) out.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(v * 32767))), (at += 2) - 2);
+    return out;
+  },
+};
 const host = new WineHost(machine, {
   translate,
+  d3d,
   files,
-  argv: [`C:\\${basename(exe)}`, ...args],
-  exePath: `C:\\${basename(exe)}`,
+  argv: [exeWin, ...args],
+  exePath: exeWin,
   stdout: (b) => stdout(b),
   stderr: (b) => stderr(b),
   trace,
@@ -262,12 +323,20 @@ const host = new WineHost(machine, {
   debug: process.env.WINEDEBUG ?? '',
   nativeHeap,
   aliasThunks: process.env.WWT_THUNK_ALIAS !== '0',
+  audioSink: audioOut ? audioCapture : null,
 });
 host.boot(`${sys32}\\ntdll.dll`, exeDos);
+// A program that never waits (a game's busy frame loop) still stops on time.
+if (screenshot) host.threads.onSlice = () => {
+  if (performance.now() - started > runFor) throw new ProgramIdle();
+};
+await host.startClock();
 const r = host.run();
+if (audioOut) writeFileSync(audioOut, audioCapture.wav());
 if (host.unimplemented.size) {
   stderr(`unimplemented syscalls: ${[...host.unimplemented.keys()].join(', ')}\n`);
 }
+saveRecording();
 if (r.error instanceof ProgramIdle || r.error?.cause instanceof ProgramIdle) {
   writeFileSync(screenshot, await display.png());
   stderr(`idle; screenshot in ${screenshot}\n`);
