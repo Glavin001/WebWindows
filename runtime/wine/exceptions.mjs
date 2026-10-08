@@ -286,9 +286,10 @@ function writeRec(h, at, r) {
 /** Installs fault handling for translated code on a Wine host. */
 export function installExceptions(h, ntdllExport) {
   h.kiUserExceptionDispatcher = ntdllExport('KiUserExceptionDispatcher');
-  // WWT_TRACE_FAULTS=N: the first N faults (default 10) on stderr, where
-  // they happened and the frames above, before the program's handlers run.
-  const traceFaults = Number(globalThis.process?.env?.WWT_TRACE_FAULTS ?? 0);
+  // WWT_TRACE_FAULTS=N (or the host's traceFaults): the first N faults on
+  // stderr, where they happened and the frames above, before the program's
+  // handlers run.
+  const envFaults = Number(globalThis.process?.env?.WWT_TRACE_FAULTS ?? 0);
   let traced = 0;
   // The thread's SEH frames (TEB ExceptionList), each with its handler.
   const sehChain = (cpu) => {
@@ -301,7 +302,7 @@ export function installExceptions(h, ntdllExport) {
     return out.join(' ');
   };
   h.m.onFault = (cpu, code, eip, info) => {
-    if (traceFaults && traced++ < traceFaults) {
+    if (traced < (h.traceFaults ?? envFaults) && ++traced) {
       const t = h.threads.current;
       h.stderr(
         new TextEncoder().encode(

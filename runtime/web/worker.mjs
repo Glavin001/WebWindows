@@ -259,11 +259,37 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
     // Likewise the native string functions.
     nativeStrings: manifest.strings ? compileNativeStrings(await bytesOf(manifest.strings)) : undefined,
   });
+  // The first faults go to stderr with where they happened, so the page's
+  // record of the run shows a crash.
+  host.traceFaults = 20;
+  // The program's own files that it writes in C:\app (a game's log.txt), to
+  // the page as they change (at most every 2 s, and at the end): the page
+  // keeps them with its record of the run, which outlives a hang or crash.
+  // The worker runs the program without returning to its event loop, so
+  // the writes themselves send them.
+  const changed = new Set();
+  let sentAt = 0;
+  const sendFiles = () => {
+    const out = {};
+    for (const path of changed) {
+      const bytes = files.get(path);
+      if (bytes && bytes.length <= 1 << 20) out[path] = new TextDecoder('latin1').decode(bytes.subarray(Math.max(0, bytes.length - (256 << 10))));
+    }
+    changed.clear();
+    sentAt = performance.now();
+    if (Object.keys(out).length) postMessage({ type: 'files', files: out });
+  };
+  host.onFileWrite = (path) => {
+    if (!path?.startsWith('c:\\app\\')) return;
+    changed.add(path);
+    if (performance.now() - sentAt > 2000) sendFiles();
+  };
   host.boot(`${sys32}\\ntdll.dll`, exeDos);
   await host.startClock();
   log(`Wine process ready in ${(performance.now() - t0).toFixed(0)} ms; running`);
   const tr = performance.now();
   const r = host.run();
+  sendFiles();
   return { ...r, runMs: performance.now() - tr };
 }
 

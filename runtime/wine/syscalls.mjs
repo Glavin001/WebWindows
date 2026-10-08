@@ -118,6 +118,7 @@ function writeFileBytes(h, f, pos, bytes) {
   let data = fileBytes(h, f);
   if (pos + bytes.length > data.length) data = setFileSize(h, f, pos + bytes.length);
   data.set(bytes, pos);
+  h.onFileWrite?.(f.path);
 }
 
 /** Deletes files whose last handle closed with a deletion pending. */

@@ -231,9 +231,75 @@ function placeD3D(w) {
   d3dCanvas.hidden = !w.visible || !w.width || !w.height;
 }
 
+// ---- The record of a run ---------------------------------------------------
+
+// What the program printed, the runtime's log and the files the program
+// wrote in its folder (a game's log.txt), saved in localStorage every two
+// seconds and when the program ends, so it outlives a hang, a crash or a
+// reload. window.webwindows.lastRun() and .previousRun() read it back;
+// .download() saves it as a JSON file.
+const RECORD = 'webwindows.lastRun';
+const PREVIOUS = 'webwindows.previousRun';
+const tail = (text, n) => (text.length > n ? text.slice(-n) : text);
+let record = null;
+let recordTimer = 0;
+function saveRecord() {
+  if (!record) return;
+  record.saved = new Date().toISOString();
+  record.status = $('status').textContent;
+  record.out = tail(out.textContent, 192 << 10);
+  record.log = tail(logEl.textContent, 192 << 10);
+  // The six files written last, each up to its last 128 KB.
+  const files = Object.entries(record.files).slice(-6).map(([k, v]) => [k, tail(v, 128 << 10)]);
+  for (const kept of [files, []]) {
+    try {
+      localStorage.setItem(RECORD, JSON.stringify({ ...record, files: Object.fromEntries(kept) }));
+      return;
+    } catch {}
+  }
+}
+function startRecord(exe) {
+  try {
+    const last = localStorage.getItem(RECORD);
+    if (last) localStorage.setItem(PREVIOUS, last);
+  } catch {}
+  record = { exe, started: new Date().toISOString(), files: {} };
+  clearInterval(recordTimer);
+  recordTimer = setInterval(saveRecord, 2000);
+}
+function endRecord(exit) {
+  if (!record) return;
+  record.exit = exit;
+  saveRecord();
+  clearInterval(recordTimer);
+}
+addEventListener('pagehide', saveRecord);
+const readRecord = (key) => {
+  try {
+    return JSON.parse(localStorage.getItem(key));
+  } catch {
+    return null;
+  }
+};
+window.webwindows = {
+  lastRun: () => (saveRecord(), readRecord(RECORD)),
+  previousRun: () => readRecord(PREVIOUS),
+  download(which = 'lastRun') {
+    const r = which === 'previousRun' ? readRecord(PREVIOUS) : window.webwindows.lastRun();
+    if (!r) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(r, null, 1)], { type: 'application/json' }));
+    a.download = `webwindows-${r.exe}-${r.started.replace(/[:.]/g, '-')}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  },
+};
+
 // ---- Running ---------------------------------------------------------------
 
 async function run(exeName, exeBytes, files, exePath) {
+  saveRecord();
+  startRecord(exePath ?? exeName);
   out.textContent = '';
   logEl.textContent = '';
   $('status').textContent = `running ${exeName}…`;
@@ -266,6 +332,7 @@ async function run(exeName, exeBytes, files, exePath) {
       const m = e.data;
       if (m.type === 'stdout' || m.type === 'stderr') out.textContent += dec.decode(m.bytes);
       else if (m.type === 'log') logEl.textContent += m.text + '\n';
+      else if (m.type === 'files') Object.assign(record.files, m.files);
       else if (m.type === 'd3d-window') placeD3D(m);
       else if (m.type === 'clip') setClip(m.rect);
       else if (m.type === 'screen') {
@@ -281,8 +348,14 @@ async function run(exeName, exeBytes, files, exePath) {
         worker.terminate();
         if (d3dCanvas) d3dCanvas.hidden = true;
         window.lastExit = m;
+        endRecord({ code: m.code, runMs: m.runMs });
         resolve(m);
       }
+    };
+    // The worker itself failed (an error out of the runtime, or out of memory).
+    worker.onerror = (e) => {
+      out.textContent += `\n*** worker error: ${e.message ?? e}\n`;
+      saveRecord();
     };
     const args = $('args').value.trim();
     worker.postMessage(
