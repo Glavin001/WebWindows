@@ -146,7 +146,8 @@ const LARGE_HDR: u32 = 0x18;
 
 const REGION: u32 = 0x10000;
 const FIRST_GROW: u32 = 0x10_0000;
-const MAX_GROW: u32 = 0x100_0000;
+/// Segments double up to just under 16 MB, as on Windows (0xfd0000).
+const MAX_GROW: u32 = 0xfd_0000;
 /// No request this large can succeed in a 32-bit guest.
 const MAX_REQUEST: u32 = 0x7ff0_0000;
 
@@ -568,8 +569,10 @@ fn realloc(h: u32, flags: u32, p: u32, n: u32) -> (u32, u32) {
     } else {
         n <= capacity(hdr, ui)
     };
-    let snug = c == LARGE || c == EXACT || 2 * (n.max(8) + HDR + 4) > class_size(c);
-    if fits && (snug || flags & HEAP_REALLOC_IN_PLACE_ONLY != 0) {
+    // A block that fits stays where it is, however much smaller it gets:
+    // Windows (and Wine) shrink in place, and programs that ignore what
+    // a shrinking HeapReAlloc returns keep working.
+    if fits {
         st(hdr, n);
         let keep = bits & (STATE_MASK | USER_INFO);
         st8(hdr + 7, keep | eff >> 5 & USER_MASK);

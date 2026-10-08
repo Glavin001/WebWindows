@@ -196,13 +196,13 @@ fn realloc_moves_and_keeps_contents() {
     assert_eq!(realloc_(h, HEAP_REALLOC_IN_PLACE_ONLY, q, 50000), 0);
     assert_eq!(last_error(), 8);
     assert_eq!(validate(h, q), 1);
-    // Shrinking far moves the block to a smaller class...
+    // Shrinking stays in place, however far, as on Windows.
     let r = realloc_(h, 0, q, 10);
-    assert_ne!(r, q);
+    assert_eq!(r, q);
+    assert_eq!(size_(h, r), 10);
     for i in 0..10 {
         assert_eq!(ld8(r + i), i);
     }
-    // ... unless it must stay.
     let s = alloc_(h, 0, 5000);
     assert_eq!(realloc_(h, HEAP_REALLOC_IN_PLACE_ONLY, s, 10), s);
     assert_eq!(size_(h, s), 10);
