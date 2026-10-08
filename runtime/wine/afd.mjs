@@ -41,6 +41,7 @@ const IOCTL = {
   SENDMSG: afd(206),
   FIONBIO: afd(209),
   FIONREAD: afd(211),
+  GET_INTERFACE_LIST: afd(213),
   GETPEERNAME: afd(216),
   GET_INFO: afd(218),
   GET_SO_ERROR: afd(222),
@@ -250,6 +251,17 @@ export function afdIoctl(h, s, a, iosb) {
       const r = h.threads.block('select', h.sys.ret, h.sys.esp, check, deadline, STATUS_TIMEOUT);
       if (r.status === STATUS_TIMEOUT) return written([]);
       return r;
+    }
+    case IOCTL.GET_INTERFACE_LIST: {
+      // SIO_GET_INTERFACE_LIST: the loopback interface, as INTERFACE_INFO
+      // {iiFlags; address, broadcast, netmask as 24-byte sockaddr_gen}.
+      if (outlen < 76) return done(STATUS_BUFFER_OVERFLOW);
+      h.m.u8.fill(0, outp, outp + 76);
+      h.w32(outp, 0x1 | 0x2 | 0x4); // IFF_UP | IFF_BROADCAST | IFF_LOOPBACK
+      writeAddr(h, outp + 4, [127, 0, 0, 1], 0);
+      writeAddr(h, outp + 28, [127, 255, 255, 255], 0);
+      writeAddr(h, outp + 52, [255, 0, 0, 0], 0);
+      return done(STATUS_SUCCESS, 76);
     }
     case IOCTL.EVENT_SELECT:
       s.eventSelect = { event: h.u32(inp), mask: h.u32(inp + 4) };
