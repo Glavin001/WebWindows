@@ -468,6 +468,14 @@ Wine tier when they are (`tools/wine/build.sh`).
 
 ### What didn't help (measured with `ab.mjs`)
 
+* Forwarding stack stores to loads (a pass that gave a later load of
+  the same `[esp+k]` slot the stored value, kept exact by clearing at
+  calls, frame-address escapes and the outermost loop headers where
+  re-entry resumes): only 16% of `luaV_execute`'s stack loads qualified,
+  Lua and apibench within noise. Interpreter values that live across the
+  dispatch loop's iterations are the ones worth keeping in locals, and
+  re-entry at that loop's header would have to reload them.
+
 * Simplifying masks by known zero bits (`setg al; movzx eax, al` lifts to
   `((eax & ~0xff) | flag) & 0xff`): cleaner IR, but V8 already folds it
   (CoreMark, Lua, apibench all within noise).
