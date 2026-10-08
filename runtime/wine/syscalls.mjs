@@ -964,4 +964,29 @@ export const SYSCALLS64 = {
     if (a(0) === 0xfffffffe) return continueContext(this, cpu, a(1));
     return STATUS.NOT_IMPLEMENTED;
   },
+  NtTerminateThread(a) {
+    throw new ProcessExit(a(1));
+  },
+
+  // One thread on x86-64 until the scheduler's system calls
+  // (./thread-syscalls.mjs) serve it: a wait on an unsignaled object would
+  // never end, so waits report success.
+  NtWaitForSingleObject() {
+    return STATUS.SUCCESS;
+  },
+  NtWaitForMultipleObjects() {
+    return STATUS.SUCCESS;
+  },
+  NtWaitForKeyedEvent() {
+    return STATUS.SUCCESS;
+  },
+  NtReleaseKeyedEvent() {
+    return STATUS.SUCCESS;
+  },
+  NtDelayExecution() {
+    return STATUS.SUCCESS;
+  },
+  NtYieldExecution() {
+    return STATUS.SUCCESS;
+  },
 };
