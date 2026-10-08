@@ -4,7 +4,7 @@
 // 32-bit argument, and returns an NTSTATUS (or {jump} to resume elsewhere).
 
 import { ProcessExit, hex } from '../runtime.mjs';
-import { parsePe, GL_UNIXLIB } from './host.mjs';
+import { parsePe, GL_UNIXLIB, WS2_32_UNIXLIB } from './host.mjs';
 import { WIN32U_UNIXLIB } from './unix.mjs';
 import { WINED3D_UNIXLIB } from './d3d.mjs';
 import { AUDIO_UNIXLIB } from './audio.mjs';
@@ -201,6 +201,11 @@ export const SYSCALLS = {
       // The audio driver mmdevapi loads (./audio.mjs).
       if (this.audio && img && /\\winepulse\.drv$/i.test(img.path)) {
         this.w32(buf, AUDIO_UNIXLIB);
+        this.w32(buf + 4, 0);
+        return STATUS.SUCCESS;
+      }
+      if (img && /\\ws2_32\.dll$/i.test(img.path)) {
+        this.w32(buf, WS2_32_UNIXLIB);
         this.w32(buf + 4, 0);
         return STATUS.SUCCESS;
       }
@@ -641,13 +646,25 @@ export const SYSCALLS = {
     if (!dir || dir.type !== 'file') return STATUS.INVALID_HANDLE;
     if (!dir.dir) return STATUS.INVALID_PARAMETER;
     // FILE_INFORMATION_CLASS -> offset of FileName (and of FileId, if any).
-    const LAYOUT = { 1: [64], 2: [68], 3: [94], 12: [12], 37: [104, 96], 38: [80, 72] };
+    // 60 and 63 are the FileIdExtd... classes (a 128-bit FileId) Wine 11's
+    // FindFirstFileEx asks for.
+    const LAYOUT = { 1: [64], 2: [68], 3: [94], 12: [12], 37: [104, 96], 38: [80, 72], 60: [88, 72], 63: [114, 72] };
     const layout = LAYOUT[cls];
     if (!layout) return STATUS.INVALID_INFO_CLASS;
     // The listing is taken on the first call (or a restart), with its mask.
     if (restart || !dir.listing) {
       const mask = pmask ? this.ustr(pmask) : '*';
-      const re = new RegExp(`^${mask.toLowerCase().replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')}$`);
+      // NT masks: * and ?, and the DOS wildcards kernelbase turns *.* and
+      // friends into: < (any run, up to the last dot), > (any character, or
+      // none at a dot or the end) and " (a dot, or the end).
+      const pattern = mask
+        .toLowerCase()
+        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+        .replace(/[*<]/g, '.*')
+        .replace(/\?/g, '.')
+        .replace(/>/g, '.?')
+        .replace(/"/g, '(?:\\.|$)');
+      const re = new RegExp(`^${pattern}$`);
       const prefix = dir.path + '\\';
       const names = new Map(/^[a-z]:$/.test(dir.path) ? [] : [['.', true], ['..', true]]);
       for (const k of this.files.keys()) {

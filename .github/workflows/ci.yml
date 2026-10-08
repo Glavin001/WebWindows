@@ -114,7 +114,8 @@ jobs:
           sh tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost \
             user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 \
             rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts \
-            hid version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d d3d9 dinput dinput8 setupapi \
+            hid version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d d3d9 d3dcompiler_47 dinput dinput8 setupapi \
+            ws2_32 wsock32 iphlpapi dnsapi nsi \
             kernel32/tests user32/tests gdi32/tests
       - uses: mymindstorm/setup-emsdk@v14
       - name: Build
