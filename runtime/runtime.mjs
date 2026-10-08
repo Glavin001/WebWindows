@@ -13,6 +13,8 @@
 export const PAGE = 0x1000;
 const L1_ENTRIES = 1 << 20; // one entry per 4 KB page of the 4 GB space
 const L2_BYTES = PAGE * 4; // one u32 per byte address in a page
+const STORE_CODE = 1; // store map bits (wwt::abi::store_map)
+const STORE_EDGE = 2;
 
 export class GuestFault extends Error {
   constructor(code, eip, info, message) {
@@ -91,6 +93,10 @@ export class Machine {
     this.modules = [];
     this.funcCount = 0;
     this.entries = new Set();
+    // Native implementations of guest functions, by name: translated
+    // modules import them in place of the x86 code (see wwt::builtin, e.g.
+    // ntdll's heap from runtime/wine/heap.mjs).
+    this.natives = {};
   }
 
   async init() {
@@ -111,11 +117,18 @@ export class Machine {
     };
     this.l1 = take(L1_ENTRIES * 4, PAGE);
     this.zeroL2 = take(L2_BYTES, PAGE);
-    this.codeBitmap = take(L1_ENTRIES / 8, PAGE);
+    // Store map (see wwt::abi::store_map): one byte per page; non-zero sends
+    // stores down the slow path. The null region, the last guest page (an
+    // access there can straddle the guest limit) and everything above the
+    // guest limit are EDGE; pages with translated code are CODE, and stores
+    // there invalidate them in translated code itself (no call to the host).
+    this.storeMap = take(L1_ENTRIES, PAGE);
     this.cpuArea = take(this.abi.cpu.SIZE * 128, PAGE);
     this.nativeNext = p;
     this.nativeEnd = this.guestLimit + this.nativeSize;
     this.u32.fill(this.zeroL2, this.l1 >>> 2, (this.l1 >>> 2) + L1_ENTRIES);
+    this.u8.fill(STORE_EDGE, this.storeMap, this.storeMap + (this.abi.null_limit >>> 12));
+    this.u8.fill(STORE_EDGE, this.storeMap + (this.guestLimit >>> 12) - 1, this.storeMap + L1_ENTRIES);
     this.cpuSlots = 0;
 
     const env = {
@@ -206,17 +219,36 @@ export class Machine {
     if (meta && meta.abi_version !== undefined && meta.abi_version !== this.abi.version) {
       throw new Error(`${name}: ABI version ${meta.abi_version}, runtime expects ${this.abi.version}`);
     }
+    // Translated with the guest limit as a constant in its memory checks.
+    // Such a module also uses the native tables' addresses as constants
+    // (wwt::abi::native_layout).
+    const layout = this.abi.native_layout;
+    if (
+      meta?.guest_limit !== undefined &&
+      (this.l1 !== this.guestLimit + layout.LOOKUP_L1 ||
+        this.zeroL2 !== this.guestLimit + layout.ZERO_L2 ||
+        this.storeMap !== this.guestLimit + layout.STORE_MAP)
+    ) {
+      throw new Error(`${name}: native region layout differs from wwt::abi::native_layout`);
+    }
+    if (meta && meta.guest_limit !== undefined && meta.guest_limit !== this.guestLimit) {
+      throw new Error(
+        `${name}: translated for a guest limit of ${meta.guest_limit >>> 20} MB, this machine has ` +
+          `${this.guestLimit >>> 20} MB (translate with --guest-limit-mb ${this.guestLimit >>> 20})`,
+      );
+    }
     const base = this.table.length;
     this.table.grow(addrs.length);
     const env = {
+      ...this.natives,
       memory: this.memory,
       table: this.table,
       table_base: base,
       lookup_l1: this.l1,
       guest_limit: this.guestLimit - 0x10000 - 16,
-      code_bitmap: this.codeBitmap,
+      store_map: this.storeMap,
+      zero_l2: this.zeroL2,
       fault: (cpu, code, eip, info) => this.fault(cpu, code, eip, info),
-      code_write: (cpu, addr) => this.codeWrite(cpu, addr),
       math: hostMath,
       // The builtins themselves, so engines call them directly.
       sin: Math.sin,
@@ -252,7 +284,7 @@ export class Machine {
       l2 = this.nativeAlloc(L2_BYTES, PAGE);
       this.u8.fill(0, l2, l2 + L2_BYTES);
       this.u32[(this.l1 >>> 2) + page] = l2;
-      this.u8[this.codeBitmap + (page >>> 3)] |= 1 << (page & 7);
+      this.u8[this.storeMap + page] |= STORE_CODE;
     }
     this.u32[(l2 >>> 2) + (addr & 0xfff)] = index;
   }
@@ -266,14 +298,6 @@ export class Machine {
   resumeAt(cpu, eip) {
     this.u32[((cpu >>> 0) + this.abi.cpu.EIP) >>> 2] = eip >>> 0;
     return 1;
-  }
-
-  /** A store hit a page with translated code: drop the page's translations. */
-  codeWrite(cpu, addr) {
-    const page = addr >>> 12;
-    this.log(`code write at ${hex(addr)}: invalidating page ${hex(page << 12)}`);
-    this.u32[(this.l1 >>> 2) + page] = this.zeroL2;
-    this.u8[this.codeBitmap + (page >>> 3)] &= ~(1 << (page & 7));
   }
 
   miss(cpu, addr) {

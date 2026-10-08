@@ -5,7 +5,7 @@ use wasmtime::{
     Caller, Config, Engine, Extern, Func, Global, GlobalType, Instance, MemoryType, Module,
     Mutability, Ref, RefType, SharedMemory, Store, Table, TableType, Val, ValType,
 };
-use wwt::abi::{cpu, fault, flags as fl};
+use wwt::abi::{addr::NULL_LIMIT, cpu, fault, flags as fl, store_map};
 
 use crate::case::{hex, mem_diff, Case, Outcome};
 use crate::layout::*;
@@ -108,7 +108,6 @@ impl Executor {
                 Err(anyhow!("guest fault"))
             },
         );
-        let code_write = Func::wrap(&mut store, |_cpu: i32, _addr: i32| {});
         let math = Func::wrap(&mut store, |op: i32, a: f64, b: f64| -> f64 {
             host_math(op as u32, a, b)
         });
@@ -125,6 +124,13 @@ impl Executor {
         for p in 0..(1u32 << 20) {
             w32(&memory, L1 + p * 4, ZERO_L2);
         }
+        // Stores to the null region and from the last guest page up take
+        // the precise check.
+        let edge = |p: u32| !(NULL_LIMIT >> 12..(NATIVE_BASE >> 12) - 1).contains(&p);
+        let map: Vec<u8> = (0..1u32 << 20)
+            .map(|p| if edge(p) { store_map::EDGE } else { 0 })
+            .collect();
+        write_bytes(&memory, STORE_MAP, &map);
         let imports: Vec<Extern> = module
             .imports()
             .map(|imp| -> Result<Extern> {
@@ -134,9 +140,9 @@ impl Executor {
                     "table_base" => g(&mut store, 1)?.into(),
                     "lookup_l1" => g(&mut store, L1)?.into(),
                     "guest_limit" => g(&mut store, NATIVE_BASE - 0x10000 - 16)?.into(),
-                    "code_bitmap" => g(&mut store, CODE_BITMAP)?.into(),
+                    "store_map" => g(&mut store, STORE_MAP)?.into(),
+                    "zero_l2" => g(&mut store, ZERO_L2)?.into(),
                     "fault" => fault_fn.into(),
-                    "code_write" => code_write.into(),
                     "math" => math.into(),
                     "sin" => sin.into(),
                     "cos" => cos.into(),
