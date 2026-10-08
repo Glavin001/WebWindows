@@ -69,6 +69,10 @@ pub enum Builtin {
     RtlFillMemory,
     /// `void RtlZeroMemory(void *dst, SIZE_T n)`, stdcall.
     RtlZeroMemory,
+    /// libgcc's 64-bit division helpers, cdecl, two 64-bit arguments,
+    /// result in edx:eax: `__divdi3`, `__moddi3`, `__udivdi3`, `__umoddi3`.
+    /// 32-bit x86 has no 64-bit division; WebAssembly does.
+    Divide { signed: bool, rem: bool },
 }
 
 impl Builtin {
@@ -80,6 +84,25 @@ impl Builtin {
             "RtlMoveMemory" => Builtin::RtlMoveMemory,
             "RtlFillMemory" => Builtin::RtlFillMemory,
             "RtlZeroMemory" => Builtin::RtlZeroMemory,
+            // Compiler runtime helpers, by their symbol names (in the
+            // program's own symbol table, so with a leading underscore):
+            // the names are reserved for exactly these functions.
+            "___divdi3" => Builtin::Divide {
+                signed: true,
+                rem: false,
+            },
+            "___moddi3" => Builtin::Divide {
+                signed: true,
+                rem: true,
+            },
+            "___udivdi3" => Builtin::Divide {
+                signed: false,
+                rem: false,
+            },
+            "___umoddi3" => Builtin::Divide {
+                signed: false,
+                rem: true,
+            },
             _ => return None,
         })
     }
@@ -90,6 +113,7 @@ impl Builtin {
             Builtin::MemMove | Builtin::MemSet => (3, false),
             Builtin::RtlMoveMemory | Builtin::RtlFillMemory => (3, true),
             Builtin::RtlZeroMemory => (2, true),
+            Builtin::Divide { .. } => (4, false),
         }
     }
 }
@@ -106,6 +130,9 @@ fn stack(offset: u32) -> Mem {
 
 /// The IR of `b` as a function at `entry`.
 pub fn body(entry: u32, b: Builtin) -> Function {
+    if let Builtin::Divide { signed, rem } = b {
+        return divide_body(entry, signed, rem);
+    }
     let mut f = Function::new(entry);
     let b0 = f.new_block(entry);
     let copy = f.new_block(entry);
@@ -127,6 +154,7 @@ pub fn body(entry: u32, b: Builtin) -> Function {
     let (dst, len) = match b {
         Builtin::MemMove | Builtin::MemSet | Builtin::RtlMoveMemory => (args[0], args[2]),
         Builtin::RtlFillMemory | Builtin::RtlZeroMemory => (args[0], args[1]),
+        Builtin::Divide { .. } => unreachable!(),
     };
     // A zero length touches no memory, whatever the pointers are.
     let z = f.new_vreg(Ty::I32);
@@ -156,6 +184,7 @@ pub fn body(entry: u32, b: Builtin) -> Function {
             val: args[2],
             len,
         },
+        Builtin::Divide { .. } => unreachable!(),
         Builtin::RtlZeroMemory => {
             let zero = f.new_vreg(Ty::I32);
             f.blocks[copy as usize].insts.push(Inst {
@@ -214,6 +243,127 @@ pub fn body(entry: u32, b: Builtin) -> Function {
         eip: entry,
     });
     blk.term = Term::Ret(ra);
+    f
+}
+
+/// `__divdi3` and friends: a = [esp+4], b = [esp+12] (64 bits each),
+/// edx:eax = a / b or a % b, return to [esp]. A zero divisor raises the
+/// divide error the helpers' `div` would; the signed quotient of the most
+/// negative number by -1 wraps, as the helpers compute it (WebAssembly
+/// would trap).
+fn divide_body(entry: u32, signed: bool, rem: bool) -> Function {
+    let mut f = Function::new(entry);
+    let b0 = f.new_block(entry);
+    let fault = f.new_block(entry);
+    let calc = f.new_block(entry);
+    let done = f.new_block(entry);
+    let push = |f: &mut Function, b: BlockId, ty: Ty, op: Op| {
+        let v = f.new_vreg(ty);
+        f.blocks[b as usize].insts.push(Inst {
+            dst: Some(v),
+            op,
+            eip: entry,
+        });
+        v
+    };
+    let wide = |offset| Mem {
+        size: 8,
+        ..stack(offset)
+    };
+    let a = push(
+        &mut f,
+        b0,
+        Ty::I64,
+        Op::Load {
+            addr: ESP,
+            mem: wide(4),
+        },
+    );
+    let b = push(
+        &mut f,
+        b0,
+        Ty::I64,
+        Op::Load {
+            addr: ESP,
+            mem: wide(12),
+        },
+    );
+    let zero = push(&mut f, b0, Ty::I64, Op::Const(0));
+    let is_zero = push(&mut f, b0, Ty::I32, Op::Bin(BinOp::I64Eq, b, zero));
+    f.blocks[b0 as usize].term = Term::Branch {
+        cond: is_zero,
+        t: fault,
+        f: calc,
+    };
+    f.blocks[fault as usize].term = Term::Fault {
+        code: crate::abi::fault::INTEGER_DIVIDE_BY_ZERO,
+        eip: entry,
+    };
+    let r = match (signed, rem) {
+        (false, false) => push(&mut f, calc, Ty::I64, Op::Bin(BinOp::I64DivU, a, b)),
+        (false, true) => push(&mut f, calc, Ty::I64, Op::Bin(BinOp::I64RemU, a, b)),
+        // i64.rem_s gives 0 for the most negative number % -1, as wanted.
+        (true, true) => push(&mut f, calc, Ty::I64, Op::Bin(BinOp::I64RemS, a, b)),
+        (true, false) => {
+            // a / -1 is -a (wrapping); i64.div_s would trap on the most
+            // negative number.
+            let minus_one = push(&mut f, calc, Ty::I64, Op::Const(u64::MAX));
+            let neg = push(&mut f, calc, Ty::I32, Op::Bin(BinOp::I64Eq, b, minus_one));
+            let one = push(&mut f, calc, Ty::I64, Op::Const(1));
+            let safe_b = push(
+                &mut f,
+                calc,
+                Ty::I64,
+                Op::Select {
+                    cond: neg,
+                    t: one,
+                    f: b,
+                },
+            );
+            let q = push(&mut f, calc, Ty::I64, Op::Bin(BinOp::I64DivS, a, safe_b));
+            let negated = push(&mut f, calc, Ty::I64, Op::Bin(BinOp::I64Sub, zero, a));
+            push(
+                &mut f,
+                calc,
+                Ty::I64,
+                Op::Select {
+                    cond: neg,
+                    t: negated,
+                    f: q,
+                },
+            )
+        }
+    };
+    let lo = push(&mut f, calc, Ty::I32, Op::Un(UnOp::I32WrapI64, r));
+    let k32 = push(&mut f, calc, Ty::I64, Op::Const(32));
+    let hi64 = push(&mut f, calc, Ty::I64, Op::Bin(BinOp::I64ShrU, r, k32));
+    let hi = push(&mut f, calc, Ty::I32, Op::Un(UnOp::I32WrapI64, hi64));
+    for (reg, v) in [(EAX, lo), (EDX, hi)] {
+        f.blocks[calc as usize].insts.push(Inst {
+            dst: Some(reg),
+            op: Op::Copy(v),
+            eip: entry,
+        });
+    }
+    f.blocks[calc as usize].term = Term::Jump(done);
+    // cdecl: pop the return address only.
+    let ra = push(
+        &mut f,
+        done,
+        Ty::I32,
+        Op::Load {
+            addr: ESP,
+            mem: stack(0),
+        },
+    );
+    let four = push(&mut f, done, Ty::I32, Op::Const(4));
+    let sp = push(&mut f, done, Ty::I32, Op::Bin(BinOp::I32Add, ESP, four));
+    f.blocks[done as usize].insts.push(Inst {
+        dst: Some(ESP),
+        op: Op::Copy(sp),
+        eip: entry,
+    });
+    f.blocks[done as usize].term = Term::Ret(ra);
     f
 }
 
