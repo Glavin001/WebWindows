@@ -165,8 +165,12 @@ try {
   // vertex and pixel shaders (and their constants), and a fixed-function
   // quad. These checks read the screen, so Present reads frames back and
   // draws them into the window (d3dpresent=gdi): headless Chromium cannot
-  // show the WebGPU canvas the page otherwise presents to.
-  if (await page.evaluate(() => !!navigator.gpu)) {
+  // show the WebGPU canvas the page otherwise presents to. These and the
+  // DirectDraw program below are 32-bit programs, which the 32-bit run
+  // checks (x86-64 Wine has no Direct3D or sound bridge yet).
+  if (x64) {
+    console.log('skipping d3d9 and ddsound: 32-bit programs (the run without --arch x64 checks them)');
+  } else if (await page.evaluate(() => !!navigator.gpu)) {
     await open(page, 'd3d9tri.exe', '/tests/programs/gui/d3d9tri.exe', '&d3dpresent=gdi');
     const near = (c) => ([r, g, b]) => Math.abs(r - c[0]) < 24 && Math.abs(g - c[1]) < 24 && Math.abs(b - c[2]) < 24;
     // Window at (40,30); its client area starts at (44,53).
@@ -230,7 +234,7 @@ try {
   console.log((await page.textContent('#log')).trim());
 
   // DirectDraw and DirectSound: a red square moving on blue, and a tone.
-  if (!site) {
+  if (!site && !x64) {
     mkdirSync(join(root, 'target/web'), { recursive: true });
     execFileSync('i686-w64-mingw32-gcc', ['-O2', '-mwindows', '-o', join(root, 'target/web/ddsound.exe'),
       join(repo, 'tests/web/ddsound.c'), '-lddraw', '-ldsound', '-ldxguid', '-lgdi32', '-luser32', '-lwinmm']);
