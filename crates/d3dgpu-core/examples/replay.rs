@@ -7,7 +7,8 @@
 //! cargo run --release -p d3dgpu-core --example replay -- FILE [OUT_DIR]
 //! (DUMP=1 also prints the commands; PRESENTS=N also saves every Nth
 //! presented frame as present-NNNNN.png, as Node has no canvas to show them,
-//! and then saves the recorded readbacks only with READS=1)
+//! and then saves the recorded readbacks only with READS=1; READ_EVERY=N
+//! saves every Nth readback, BATCHES=N stops after N batches)
 
 use std::io::Write;
 
@@ -48,10 +49,14 @@ fn main() {
     // Room for presented frames too (the recorded readbacks stay in the first SHARED_BYTES).
     let mut shared = vec![0u8; SHARED_BYTES.max(32 << 20)];
     let save_reads = std::env::var("PRESENTS").is_err() || std::env::var_os("READS").is_some();
+    // READ_EVERY=N saves only every Nth readback; BATCHES=N stops after N batches.
+    let read_every: usize = std::env::var("READ_EVERY").ok().and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
+    let max_batches: usize = std::env::var("BATCHES").ok().and_then(|v| v.parse().ok()).unwrap_or(usize::MAX);
+    let mut reads_seen = 0usize;
     let (mut p, mut batches, mut frames) = (4, 0, 0);
     let every_present: usize = std::env::var("PRESENTS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     let (mut sizes, mut presents) = (std::collections::HashMap::new(), 0usize);
-    while p + 4 <= data.len() {
+    while p + 4 <= data.len() && batches < max_batches {
         let len = u32::from_le_bytes(data[p..p + 4].try_into().unwrap()) as usize;
         let original = &data[p + 4..p + 4 + len];
         p += 4 + len;
@@ -116,6 +121,10 @@ fn main() {
         if save_reads && !reads.is_empty() {
             core.wait(&mut shared);
             for (w, h, offset, pitch) in reads {
+                reads_seen += 1;
+                if (reads_seen - 1) % read_every != 0 {
+                    continue;
+                }
                 frames += 1;
                 let file = out.join(format!("read-{frames:04}.png"));
                 write_png(&file, w, h, &shared[offset..], pitch);
