@@ -206,7 +206,7 @@ const WORKLOADS = {
     },
   },
   lua: {
-    args: (tier) => [tier === 'native' || tier === 'emcc' ? join(workloads, 'bench.lua') : 'C:\\bench.lua', '4'],
+    args: (tier) => [tier === 'native' || tier === 'emcc' || tier === 'qemu' ? join(workloads, 'bench.lua') : 'C:\\bench.lua', '4'],
     files: [[join(workloads, 'bench.lua'), 'C:\\bench.lua']],
     parse: (text) => columns(text),
   },
