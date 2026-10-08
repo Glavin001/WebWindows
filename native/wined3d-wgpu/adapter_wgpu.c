@@ -144,6 +144,8 @@ struct wined3d_device_wgpu
         uint32_t ss_known[20];
         uint32_t tex[20];
         uint32_t tex_known;
+        uint32_t ttff[4];
+        uint32_t ttff_known;
         uint32_t target[5][3]; /* render targets 0-3, then depth/stencil */
         uint32_t target_known;
         uint32_t viewport[6];
@@ -1759,6 +1761,24 @@ static void wgpu_apply_render_states(struct wined3d_device_wgpu *device, struct 
     if (ps_consts)
         wgpu_set_render_state(device, WINED3D_RS_ALPHAREF, lrintf(ps_consts->alpha_test_ref * 255.0f));
     wgpu_set_render_state(device, WINED3D_RS_SRGBWRITEENABLE, state->extra_ps_args.srgb_write);
+    /* Pixel shaders 1.1-1.3 divide texture coordinates by their last
+     * component when the stage's D3DTTFF_PROJECTED is set (Far Cry's
+     * shader model 1 water and shadows). */
+    for (i = 0; i < ARRAY_SIZE(device->sent.ttff); ++i)
+    {
+        struct d3dgpu_cmd_set_texture_stage_state *cmd;
+        uint32_t flags = state->extra_ps_args.texture_transform_flags[i];
+
+        if ((device->sent.ttff_known & (1u << i)) && device->sent.ttff[i] == flags)
+            continue;
+        if (!(cmd = wgpu_cmd(device, D3DGPU_OP_SET_TEXTURE_STAGE_STATE, sizeof(*cmd))))
+            break;
+        cmd->stage = i;
+        cmd->state = 24; /* D3DTSS_TEXTURETRANSFORMFLAGS */
+        cmd->value = flags;
+        device->sent.ttff[i] = flags;
+        device->sent.ttff_known |= 1u << i;
+    }
     /* Fog, applied by the core after pixel shaders before 3.0. wined3d's
      * fixed-function vertex shaders output the fog coordinate, which the
      * core turns into the factor with FOGVERTEXMODE's equation; a program's
