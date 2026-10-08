@@ -1292,10 +1292,24 @@ static void shader_wgpu_free(struct wined3d_device *device, struct wined3d_conte
 static void wgpu_vp_apply_draw_state(struct wined3d_context *context, const struct wined3d_state *state) {}
 static void wgpu_vp_disable(const struct wined3d_context *context) {}
 
+/* What ffp_hlsl's vertex shaders implement (as the GLSL pipe reports it):
+ * zero lights would have wined3d refuse every LightEnable, leaving lit
+ * geometry only its ambient and emissive colour. */
 static void wgpu_vp_get_caps(const struct wined3d_adapter *adapter, struct wined3d_vertex_caps *caps)
 {
     memset(caps, 0, sizeof(*caps));
     caps->emulated_flatshading = true;
+    caps->max_active_lights = WINED3D_MAX_ACTIVE_LIGHTS;
+    caps->max_vertex_blend_matrices = MAX_VERTEX_BLENDS;
+    caps->vertex_processing_caps = WINED3DVTXPCAPS_TEXGEN
+            | WINED3DVTXPCAPS_MATERIALSOURCE7
+            | WINED3DVTXPCAPS_VERTEXFOG
+            | WINED3DVTXPCAPS_DIRECTIONALLIGHTS
+            | WINED3DVTXPCAPS_POSITIONALLIGHTS
+            | WINED3DVTXPCAPS_LOCALVIEWER
+            | WINED3DVTXPCAPS_TEXGEN_SPHEREMAP;
+    caps->fvf_caps = WINED3DFVFCAPS_PSIZE | 8; /* 8 texture coordinates. */
+    caps->raster_caps = WINED3DPRASTERCAPS_FOGRANGE;
 }
 
 static unsigned int wgpu_vp_get_emul_mask(const struct wined3d_adapter *adapter)
