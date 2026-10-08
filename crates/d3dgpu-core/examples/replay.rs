@@ -6,11 +6,13 @@
 //! gzip-compressed when the file name ends in .gz.
 //!
 //! cargo run --release -p d3dgpu-core --example replay -- FILE [OUT_DIR]
-//! (DUMP=1 also prints the commands; PRESENTS=N also saves every Nth
+//! (DUMP=1 also prints the commands, from batch FROM, cut to 300 characters
+//! unless DUMP=full; PRESENTS=N also saves every Nth
 //! presented frame as present-NNNNN.png, as Node has no canvas to show them,
 //! and then saves the recorded readbacks only with READS=1; READ_EVERY=N
 //! saves every Nth readback, BATCHES=N stops after N batches, FROM=N draws
-//! nothing before batch N, to get to a late frame quickly)
+//! nothing before batch N, to get to a late frame quickly; RS=STATE:VALUE,...
+//! overrides render states, SHADERS=DIR saves shader bytecode)
 
 use std::io::{BufRead, Read, Write};
 
@@ -60,6 +62,18 @@ fn main() {
     let save_reads = std::env::var("PRESENTS").is_err() || std::env::var_os("READS").is_some();
     // READ_EVERY=N saves only every Nth readback; BATCHES=N stops after N batches.
     let read_every: usize = std::env::var("READ_EVERY").ok().and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
+    // RS=STATE:VALUE,... sets those render states to VALUE whenever the
+    // stream sets them (e.g. RS=28:0 turns fog off), to test a guess.
+    let overrides: Vec<(u32, u32)> = std::env::var("RS")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|p| {
+            let (a, b) = p.split_once(':')?;
+            Some((a.parse().ok()?, b.parse().ok()?))
+        })
+        .collect();
+    let shaders = std::env::var_os("SHADERS").map(std::path::PathBuf::from);
+    let full_dump = std::env::var("DUMP").is_ok_and(|v| v == "full");
     let from: usize = std::env::var("FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     let max_batches: usize = std::env::var("BATCHES").ok().and_then(|v| v.parse().ok()).unwrap_or(usize::MAX);
     let mut reads_seen = 0usize;
@@ -91,13 +105,17 @@ fn main() {
         if batches < from {
             filtered = drop_ops(&filtered, |op| (0x30..=0x35).contains(&op) || op == 0x40 || op == 0x50);
         }
+        if !overrides.is_empty() {
+            override_render_states(&mut filtered, &overrides);
+        }
         let batch = &filtered[..];
         batches += 1;
         // DUMP=1 prints every command.
-        if std::env::var_os("DUMP").is_some() {
+        if batches >= from && std::env::var_os("DUMP").is_some() {
             for c in Reader::new(batch).expect("batch header") {
                 let text = format!("{c:?}");
-                println!("  {}", &text[..text.len().min(300)]);
+                let cut = if full_dump { text.len() } else { text.len().min(300) };
+                println!("  {}", &text[..cut]);
             }
         }
         // Readbacks in this batch, saved once it has run.
@@ -120,6 +138,13 @@ fn main() {
         let mut shown = Vec::new();
         for c in Reader::new(batch).expect("batch header").flatten() {
             match c {
+                // SHADERS=DIR saves each shader's bytecode as DIR/ID.bin
+                // (for the d3dgpu-shader translate example).
+                Command::CreateShader { id, bytecode: d3dgpu_proto::Data::Inline(code), .. } if shaders.is_some() => {
+                    let dir = shaders.as_ref().unwrap();
+                    std::fs::create_dir_all(dir).unwrap();
+                    std::fs::write(dir.join(format!("{}.bin", id.0)), code).unwrap();
+                }
                 Command::CreateTexture { id, desc } => {
                     sizes.insert(id.0, (desc.width, desc.height));
                 }
@@ -140,7 +165,17 @@ fn main() {
                 continue;
             }
             let mut wr = d3dgpu_proto::Writer::new();
-            let region = d3dgpu_proto::TextureRegion { texture, face: 0, level: 0, x: 0, y: 0, z: 0, width: w, height: h, depth: 1 };
+            let region = d3dgpu_proto::TextureRegion {
+                texture,
+                face: 0,
+                level: 0,
+                x: 0,
+                y: 0,
+                z: 0,
+                width: w,
+                height: h,
+                depth: 1,
+            };
             wr.read_texture(&region, 0, pitch, pitch * h, 0);
             if let Err(e) = core.execute(&wr.finish(), &shared) {
                 eprintln!("present {n}: {e:?}");
@@ -189,6 +224,22 @@ fn drop_reads(batch: &[u8], mut keep: impl FnMut(&[u8]) -> bool) -> Vec<u8> {
     let len = out.len() as u32;
     out[8..12].copy_from_slice(&len.to_le_bytes());
     out
+}
+
+/// Rewrites the SetRenderState commands for the states in `overrides`.
+fn override_render_states(batch: &mut [u8], overrides: &[(u32, u32)]) {
+    let mut q = 12;
+    while q + 8 <= batch.len() {
+        let op = u32::from_le_bytes(batch[q..q + 4].try_into().unwrap()) & 0xffff;
+        let size = u32::from_le_bytes(batch[q + 4..q + 8].try_into().unwrap()) as usize;
+        if op == d3dgpu_proto::Op::SetRenderState as u32 && size >= 16 {
+            let state = u32::from_le_bytes(batch[q + 8..q + 12].try_into().unwrap());
+            if let Some(&(_, v)) = overrides.iter().find(|&&(s, _)| s == state) {
+                batch[q + 12..q + 16].copy_from_slice(&v.to_le_bytes());
+            }
+        }
+        q += size;
+    }
 }
 
 /// The batch without the commands whose opcode `drop` picks.
