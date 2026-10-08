@@ -16,6 +16,15 @@
 //
 // Wine's PE DLLs come from WINE_BUILD (default /opt/wine-build) and its NLS
 // files from WINE_SRC; translations are cached in target/wine-cache.
+//
+// When a run goes idle (with --screenshot), each thread's wait and EBP
+// backtrace are printed. Diagnostics in the environment:
+//   WWT_SYSCALL_COUNTS=1   the most frequent system calls, at idle
+//   WWT_TRACE_CALLS=A,B    the first calls of these system calls, with
+//                          arguments and status (WWT_TRACE_LIMIT, default 40)
+//   WWT_FAST_LOG=1         fast mode's run-time translations
+//   WWT_THREAD_DUMP=MS     the scheduler's thread states after MS, and when
+//                          nothing can run
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -251,7 +260,7 @@ if (useUnix) {
 const tw = join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm');
 if (existsSync(tw)) {
   enableFastMode(machine, await FastTranslator.load(readFileSync(tw)), {
-    log: trace ? (s) => stderr(`[fast] ${s}\n`) : undefined,
+    log: trace || process.env.WWT_FAST_LOG ? (s) => stderr(`[fast] ${s}\n`) : undefined,
   });
 }
 const d3d = d3dRecord ? new D3DRecorder() : null;
@@ -315,6 +324,14 @@ saveRecording();
 if (r.error instanceof ProgramIdle || r.error?.cause instanceof ProgramIdle) {
   writeFileSync(screenshot, await display.png());
   stderr(`idle; screenshot in ${screenshot}\n`);
+  if (process.env.WWT_SYSCALL_COUNTS) stderr(`  system calls: ${[...host.counts].sort((x, y) => y[1] - x[1]).slice(0, 20).map(([n, c]) => `${n} ${c}`).join(', ')}\n`);
+  // What each thread was waiting in, to tell a game waiting for input from
+  // one stuck waiting for itself.
+  for (const t of host.threads.threads) {
+    if (t.state === 'dead') continue;
+    const at = t.pending?.ret ? ` from ${host.describeAddress?.(t.pending.ret) ?? hex(t.pending.ret)}` : '';
+    stderr(`  thread ${hex(t.tid)}: ${t.state}${t.suspend ? ` (suspended ${t.suspend})` : ""}${t.nest ? ` (nest ${t.nest})` : ""}${t.pending ? ` in ${t.pending.name}${at}` : ''}; frames ${host.backtrace(t).join(' < ')}\n`);
+  }
   process.exit(0);
 }
 if (r.error) {

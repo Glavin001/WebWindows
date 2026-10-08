@@ -20,6 +20,10 @@ import { WINED3D_UNIXLIB } from './d3d.mjs';
 
 /** opengl32's Unix side: a stub without OpenGL (see unixCall). */
 export const GL_UNIXLIB = 0x4000;
+/** System calls that signal objects other threads may be waiting on. */
+const SIGNALLING = new Set(['NtSetEvent', 'NtPulseEvent', 'NtSetEventBoostPriority', 'NtReleaseSemaphore', 'NtReleaseMutant']);
+/** The handle the host gives ws2_32.dll: name lookups only (enum ws_unix_funcs). */
+export const WS2_32_UNIXLIB = 0x6000;
 
 import layout from './layout.json' with { type: 'json' };
 import { installAssemblies } from './sxs.mjs';
@@ -187,6 +191,12 @@ export class WineHost {
     this.unix?.attach(this);
     /** wined3d's WebGPU bridge (./d3d.mjs), or null: Direct3D without 3D */
     this.d3d = opts.d3d ?? null;
+    // Translated loops preempt against the ticker's tick count (set before
+    // any module is instantiated: it is an import).
+    machine.tickAddr = USER_SHARED_DATA;
+    // WWT_TRACE_CALLS=NtA,NtB: logs the first calls of these system calls.
+    const tc = globalThis.process?.env?.WWT_TRACE_CALLS;
+    this.traceCalls = tc ? new Set(tc.split(',')) : null;
     /** Results of NtCallbackReturn, one per user callback in progress. */
     this.callbackResults = [];
     this.images = new Map(); // base -> {path, info}
@@ -401,6 +411,9 @@ export class WineHost {
     this.ex = ex;
     this.stackReserve = exe.info.stackReserve;
     this.threads = new Scheduler(this);
+    this.m.onPreempt = (cpu, eip) => this.threads.preempt(cpu, eip);
+    // Fast mode translates within the executable section around a miss.
+    this.m.codeEnd = (addr) => this.codeEnd(addr);
     // The main thread: its TEB, CPU state and initial context. Wine's Unix
     // side registers the process with its first thread.
     const main = this.newThread(exe.base + exe.info.entryRva, this.peb, exe.info.stackReserve);
@@ -474,6 +487,42 @@ export class WineHost {
     if (stack) this.vm.release(stack);
     this.vm.release(t.teb);
     this.m.freeCpu(t.cpu);
+  }
+
+  /** End of the executable section of a loaded image that contains `addr` (undefined outside one). */
+  codeEnd(addr) {
+    for (const [base, img] of this.images) {
+      if (addr < base || addr >= base + img.size) continue;
+      for (const sec of img.info.sections) {
+        const lo = base + sec.virtual_address;
+        const hi = lo + Math.max(sec.virtual_size, sec.raw_size);
+        if (addr >= lo && addr < hi && sec.characteristics & 0x20000000) return hi; // IMAGE_SCN_MEM_EXECUTE
+      }
+      return undefined;
+    }
+    return undefined;
+  }
+
+  /** `module+offset` for a guest address, for diagnostics. */
+  describeAddress(addr) {
+    addr >>>= 0;
+    for (const [base, img] of this.images) {
+      if (addr >= base && addr < base + img.size) return `${img.path.split('\\').pop()}+${hex(addr - base)}`;
+    }
+    return hex(addr);
+  }
+
+  /** Return addresses up a thread's EBP chain (frame-pointer code only). */
+  backtrace(t, depth = 8) {
+    const out = [];
+    let ebp = this.m.reg(t.cpu, 5) >>> 0;
+    for (let i = 0; i < depth && ebp > 0x10000 && ebp < 0x80000000; i++) {
+      out.push(this.describeAddress(this.u32(ebp + 4)));
+      const next = this.u32(ebp) >>> 0;
+      if (next <= ebp) break;
+      ebp = next;
+    }
+    return out;
   }
 
   /** Starts the clock in KUSER_SHARED_DATA (call before run). */
@@ -695,6 +744,8 @@ export class WineHost {
       } finally {
         t.nest--;
       }
+      // Waits an object satisfies complete when it is signalled.
+      if (SIGNALLING.has(name) && !status) this.threads.signalled();
     } else if (!impl) {
       if (!this.unimplemented.has(name)) this.log(`UNIMPLEMENTED ${name}`);
       this.unimplemented.set(name, (this.unimplemented.get(name) ?? 0) + 1);
@@ -714,7 +765,10 @@ export class WineHost {
       status = status.status;
     }
     t.inCall = outer;
-    if (this.trace) this.log(`${name}(${[0, 1, 2, 3].map((i) => hex(a(i))).join(', ')}) = ${hex(status >>> 0)}`);
+    if (this.trace || this.traceCalls?.has(name)) {
+      const n = (this.traceCount = (this.traceCount ?? 0) + 1);
+      if (this.trace || n <= Number(process.env.WWT_TRACE_LIMIT ?? 40)) this.stderr(new TextEncoder().encode(`[call] ${name}(${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => hex(a(i))).join(", ")}) = ${hex(status >>> 0)} [thread ${hex(t.tid)}]\n`));
+    }
     m.setReg(cpu, EAX, status >>> 0);
     m.setReg(cpu, ESP, esp + 4);
     // Time slices end at system calls.
@@ -819,6 +873,8 @@ export class WineHost {
         if (status.yield) return this.threads.yieldAddr;
         status = status.status;
       }
+    } else if (handle === WS2_32_UNIXLIB) {
+      status = this.winsockCall(code, args);
     } else if (handle === GL_UNIXLIB) {
       // opengl32 without OpenGL: it attaches (wined3d imports it), and
       // every GL call fails.
@@ -833,6 +889,28 @@ export class WineHost {
     m.setReg(cpu, EAX, status >>> 0);
     m.setReg(cpu, ESP, esp + 20);
     return ret;
+  }
+
+  /**
+   * ws2_32's Unix side: its name lookups (dlls/ws2_32/unixlib.c), which
+   * return Winsock error codes. There is no network: the machine is named
+   * and every lookup fails, so games fall back to their local (loopback)
+   * play. Sockets themselves go through ntdll's AFD device, which does not
+   * exist, so creating one fails.
+   */
+  winsockCall(code, args) {
+    const WSAEFAULT = 10014;
+    const WSAHOST_NOT_FOUND = 11001;
+    if (code === 3) {
+      // gethostname({char *name, unsigned size})
+      const name = 'webwindows';
+      const buf = this.u32(args);
+      if (this.u32(args + 4) <= name.length) return WSAEFAULT;
+      for (let i = 0; i < name.length; i++) this.m.u8[buf + i] = name.charCodeAt(i);
+      this.m.u8[buf + name.length] = 0;
+      return 0;
+    }
+    return WSAHOST_NOT_FOUND;
   }
 
   ntdllUnixCall(code, args) {

@@ -115,6 +115,7 @@ export class Scheduler {
     this.switchTo(t);
     t.state = 'running';
     t.sliceStart = performance.now();
+    this.armSlice(t);
     try {
       const eip = this.m.run(t.cpu, t.resume);
       if (eip === this.stopAddr) throw new Error(`thread ${t.tid} returned from its start routine`);
@@ -147,6 +148,7 @@ export class Scheduler {
 
   /** Checks blocked threads; returns whether one became ready. */
   poll() {
+    this.lastPoll = performance.now();
     this.serverTimers();
     let woke = false;
     const now = performance.now();
@@ -167,6 +169,29 @@ export class Scheduler {
       }
     }
     return woke;
+  }
+
+  /**
+   * After an object was signalled (an event set, a semaphore or mutex
+   * released): completes every wait it satisfies now, as Windows does
+   * inside SetEvent. Waits are otherwise checked only when the scheduler
+   * gets to them, and a waiter would miss a manual-reset event that is set
+   * and reset again before then (condition variables built on events do
+   * exactly that: the first waiter to wake resets it for the others).
+   */
+  signalled() {
+    this.poll();
+    for (const t of this.threads) {
+      const w = t.nestedWait;
+      if (t === this.current || t.state !== 'waiting' || !w || w.status !== undefined) continue;
+      const prev = this.current;
+      this.switchTo(t);
+      try {
+        w.status = this.probe(w.check);
+      } finally {
+        if (prev) this.switchTo(prev);
+      }
+    }
   }
 
   pick(except) {
@@ -216,6 +241,9 @@ export class Scheduler {
       this.maybeDump();
       // The embedder's check between slices (wine.mjs: --run-for).
       this.onSlice?.();
+      // Waits satisfied meanwhile complete at least once a slice, even
+      // while other threads keep the scheduler busy.
+      if (performance.now() - (this.lastPoll ?? 0) >= SLICE_MS) this.poll();
       const t = this.pick(null);
       if (t) {
         this.runThread(t);
@@ -282,14 +310,22 @@ export class Scheduler {
       t.state = 'blocked';
       return { yield: true };
     }
-    // Nested: run other threads until the condition holds.
-    for (;;) {
-      const until = Math.min(deadline, wakeAt?.() ?? Infinity);
-      const left = until === Infinity ? -1 : Math.max(0, Math.ceil(until - performance.now()));
-      this.waitNested(left);
-      status = this.probe(check);
-      if (status !== undefined) return { status };
-      if (performance.now() >= deadline) return { status: timeoutStatus };
+    // Nested: run other threads until the condition holds (or a signal
+    // satisfied it meanwhile: signalled() records that in nestedWait).
+    const w = { check, status: undefined };
+    const outer = t.nestedWait;
+    t.nestedWait = w;
+    try {
+      for (;;) {
+        const until = Math.min(deadline, wakeAt?.() ?? Infinity);
+        const left = until === Infinity ? -1 : Math.max(0, Math.ceil(until - performance.now()));
+        this.waitNested(left);
+        status = w.status ?? this.probe(check);
+        if (status !== undefined) return { status };
+        if (performance.now() >= deadline) return { status: timeoutStatus };
+      }
+    } finally {
+      t.nestedWait = outer;
     }
   }
 
@@ -357,9 +393,48 @@ export class Scheduler {
       }
     }
     if (!due) return false;
-    if (this.threads.some((o) => o !== t && this.runnable(o))) return true;
+    // The embedder's check between slices (wine.mjs: --run-for), also for a
+    // thread that keeps running.
+    this.onSlice?.();
+    // Blocked threads whose wait is satisfied join the turn order now:
+    // with other threads always ready, nothing else would complete their
+    // waits (two threads spinning on a set event would starve the ones
+    // woken to reset it).
     this.poll();
     return this.threads.some((o) => o !== t && this.runnable(o));
+  }
+
+  /**
+   * Sets the deadline translated loops check (cpu.PREEMPT_AT, against the
+   * tick count the ticker keeps in KUSER_SHARED_DATA): the end of the slice.
+   */
+  armSlice(t) {
+    const tick = this.m.u32[this.m.tickAddr >>> 2];
+    this.m.u32[(t.cpu + this.m.abi.cpu.PREEMPT_AT) >>> 2] = (tick + SLICE_MS) >>> 0;
+  }
+
+  /**
+   * A translated loop reached its slice deadline (Machine.onPreempt): a
+   * thread that spins without system calls (waiting for another thread to
+   * set a flag) lets the others run. It yields as at a system call and
+   * resumes at the loop header later (its state is written back; fast mode
+   * translates the header as an entry). Only a thread running at its base
+   * can: one under a callback or a nested wait keeps running, as running
+   * others on top of it could bury it under a wait that never ends.
+   */
+  preempt(cpu, eip) {
+    this.onSlice?.();
+    const t = this.current;
+    if (t && t.cpu === cpu && this.canYield()) {
+      this.poll();
+      if (this.threads.some((o) => o !== t && this.runnable(o))) {
+        t.resume = eip;
+        t.state = 'ready';
+        return true;
+      }
+    }
+    if (t) this.armSlice(t);
+    return false;
   }
 
   /** Lets others run: the current thread continues at `ret` later. */
