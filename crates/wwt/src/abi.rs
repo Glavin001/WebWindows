@@ -185,6 +185,20 @@ pub mod fault {
     pub const GENERAL_PROTECTION: u32 = 0xE057_0005;
 }
 
+/// Flags of an access in `TRAPS_SECTION`. With `OPERAND`, the x86
+/// instruction's memory operand is described, so the runtime can report
+/// the address it accessed (from the registers as last written back):
+/// base and index registers (0 for none, else 1 + the register's number,
+/// eax = 1), log2 of the scale and the segment (0, 1 for fs, 2 for gs).
+pub mod trap {
+    pub const WRITE: u32 = 1;
+    pub const OPERAND: u32 = 2;
+    pub const BASE_SHIFT: u32 = 4;
+    pub const INDEX_SHIFT: u32 = 8;
+    pub const SCALE_SHIFT: u32 = 12;
+    pub const SEG_SHIFT: u32 = 14;
+}
+
 /// Addresses with special meaning to the dispatcher.
 pub mod addr {
     /// Lowest valid guest address; everything below is the null region.
@@ -273,8 +287,13 @@ pub const META_SECTION: &str = "wwt.meta";
 /// Custom section with, per translated function in table order, the
 /// emulation code generation left in it (`codegen::Residue`), as JSON.
 pub const RESIDUE_SECTION: &str = "wwt.residue";
+/// Fast mode's trapping accesses (`CodegenConfig::mem_traps`): a u32 count,
+/// then per access four u32s: the module offset of its load or store
+/// instruction (the position engines give for a trap there), its x86
+/// address, flags (`trap`) and the x86 memory operand's displacement.
+pub const TRAPS_SECTION: &str = "wwt.traps";
 /// Bumped whenever generated code changes incompatibly, to invalidate caches.
-pub const ABI_VERSION: u32 = 8;
+pub const ABI_VERSION: u32 = 9;
 /// Every translated module exports its lazy-flags evaluator under this
 /// name: `(fk, fr, fa, fb, fc) -> eflags` (the arithmetic flags).
 pub const EFLAGS_EXPORT: &str = "eflags";
@@ -295,6 +314,8 @@ struct AbiJson {
     funcs_section: &'static str,
     funcs64_section: &'static str,
     meta_section: &'static str,
+    traps_section: &'static str,
+    trap: std::collections::BTreeMap<&'static str, u32>,
 }
 
 /// The ABI as JSON for the JavaScript runtime.
@@ -396,6 +417,17 @@ pub fn abi_json() -> String {
         funcs_section: FUNCS_SECTION,
         funcs64_section: FUNCS64_SECTION,
         meta_section: META_SECTION,
+        traps_section: TRAPS_SECTION,
+        trap: [
+            ("WRITE", trap::WRITE),
+            ("OPERAND", trap::OPERAND),
+            ("BASE_SHIFT", trap::BASE_SHIFT),
+            ("INDEX_SHIFT", trap::INDEX_SHIFT),
+            ("SCALE_SHIFT", trap::SCALE_SHIFT),
+            ("SEG_SHIFT", trap::SEG_SHIFT),
+        ]
+        .into_iter()
+        .collect(),
     })
     .unwrap()
 }

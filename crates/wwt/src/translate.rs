@@ -542,7 +542,8 @@ pub fn translate_discovered(
     // only forwards its exports).
     let gen = ModuleGen::new(&cfg.codegen, &funcs)
         .with_code64(cfg.mode() == Mode::X64 && cfg.codegen.mem64)
-        .with_names(names);
+        .with_names(names)
+        .with_code(src);
     let wasm = gen.build(&funcs, &meta_json);
     report.wasm_bytes = wasm.len();
     Ok(Translation {

@@ -27,6 +27,11 @@ struct TranslateOpts {
     /// Disable null-region and guest-limit checks.
     #[arg(long)]
     no_mem_checks: bool,
+    /// Fast mode: plain loads and stores rely on the engine's bounds trap
+    /// instead of explicit checks. Faults report the right instruction but
+    /// the registers as last written back.
+    #[arg(long)]
+    mem_traps: bool,
     /// Disable self-modifying code checks.
     #[arg(long)]
     no_smc_checks: bool,
@@ -88,6 +93,7 @@ impl TranslateOpts {
         c.opt_level = self.opt;
         c.lift.mem_checks = !self.no_mem_checks;
         c.codegen.mem_checks = !self.no_mem_checks;
+        c.codegen.mem_traps = self.mem_traps;
         c.lift.smc_checks = !self.no_smc_checks;
         c.codegen.smc_checks = !self.no_smc_checks;
         c.lift.strict_ordering = self.strict_ordering;

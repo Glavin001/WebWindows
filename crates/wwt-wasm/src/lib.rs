@@ -19,11 +19,13 @@ use wwt::discover::FlatCode;
 
 /// Bit 0: disable memory checks; bit 1: disable code-write checks; bit 2:
 /// the code is x86-64 (for `wwt_translate`; PE files carry their own mode);
-/// bit 3: target a 64-bit (memory64) memory.
+/// bit 3: target a 64-bit (memory64) memory; bit 4: fast mode (see
+/// `CodegenConfig::mem_traps`).
 const FLAG_NO_MEM_CHECKS: u32 = 1;
 const FLAG_NO_SMC_CHECKS: u32 = 2;
 const FLAG_X64: u32 = 4;
 const FLAG_MEM64: u32 = 8;
+const FLAG_MEM_TRAPS: u32 = 16;
 
 fn apply_flags(cfg: wwt::Config, flags: u32) -> wwt::Config {
     let mut cfg = cfg;
@@ -31,6 +33,7 @@ fn apply_flags(cfg: wwt::Config, flags: u32) -> wwt::Config {
     let sc = flags & FLAG_NO_SMC_CHECKS == 0;
     cfg.lift.mem_checks = mc;
     cfg.codegen.mem_checks = mc;
+    cfg.codegen.mem_traps = flags & FLAG_MEM_TRAPS != 0;
     cfg.lift.smc_checks = sc;
     cfg.codegen.smc_checks = sc;
     let mode = if flags & FLAG_X64 != 0 {
