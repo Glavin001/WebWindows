@@ -179,11 +179,23 @@ export class D3DRecorder {
  *   Direct3D window's position ({x, y, width, height, visible})
  */
 export async function startD3D(workerUrl, log = () => {}, present = {}) {
-  if (typeof Worker === 'undefined' || typeof navigator === 'undefined' || !navigator.gpu) return null;
+  if (typeof Worker === 'undefined' || typeof navigator === 'undefined' || !navigator.gpu) {
+    log('d3d: no WebGPU in workers in this browser (navigator.gpu is missing); Direct3D is off');
+    return null;
+  }
   const sab = new SharedArrayBuffer(P.SAB_BYTES);
   const worker = new Worker(workerUrl, { type: 'module' });
   const ready = await new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(null), 20000);
+    const timer = setTimeout(() => {
+      log('d3d: the render worker did not start within 20 s; Direct3D is off');
+      resolve(null);
+    }, 20000);
+    // The worker's script failed to load or threw before it could report.
+    worker.onerror = (e) => {
+      log(`d3d: render worker failed: ${e.message || 'could not load its script'}`);
+      clearTimeout(timer);
+      resolve(null);
+    };
     worker.onmessage = (e) => {
       if (e.data.type === 'ready') {
         clearTimeout(timer);

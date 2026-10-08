@@ -23,6 +23,24 @@ extern "C" {
     /// `performance.now()` (also available in workers).
     #[wasm_bindgen(js_namespace = performance, js_name = now)]
     fn perf_now() -> f64;
+    /// `globalThis.d3dgpuPanic(message)`, where the page or worker defines it.
+    #[wasm_bindgen(js_namespace = globalThis, js_name = d3dgpuPanic, catch)]
+    fn report_panic(message: &str) -> Result<(), JsValue>;
+    #[wasm_bindgen(js_namespace = console, js_name = error)]
+    fn console_error(message: &str);
+}
+
+/// Reports panics: a panic aborts the module, and one inside an async call
+/// (adapter or device setup) would otherwise leave its promise pending with
+/// nothing said, so the message goes to the console and to
+/// `globalThis.d3dgpuPanic` (the render worker forwards it to the page).
+#[wasm_bindgen(start)]
+fn start() {
+    std::panic::set_hook(Box::new(|info| {
+        let message = format!("d3dgpu panicked: {info}");
+        console_error(&message);
+        let _ = report_panic(&message);
+    }));
 }
 
 /// Submissions waiting for the GPU, and how long finished ones took from

@@ -112,6 +112,15 @@ async function loop() {
   }
 }
 
+// Anything that would otherwise end this worker's setup silently (a panic
+// in the core, an uncaught error, a rejected promise) is reported to the
+// Wine worker as fatal, so it stops waiting and Direct3D says why it is off.
+let started = false;
+const fatal = (message) => (started ? log(message) : postMessage({ type: 'error', message, fatal: true }));
+globalThis.d3dgpuPanic = fatal;
+addEventListener('error', (e) => fatal(`error: ${e.message ?? e}`));
+addEventListener('unhandledrejection', (e) => fatal(`unhandled rejection: ${e.reason?.stack ?? e.reason}`));
+
 onmessage = async (e) => {
   if (e.data.type === 'resize') {
     renderer?.resize(e.data.width, e.data.height);
@@ -125,8 +134,12 @@ onmessage = async (e) => {
   const offscreen = !canvas && !!e.data.offscreen;
   port = e.data.port ?? null;
   if (port) port.onmessage = onPortMessage;
+  // Each step is logged, so a browser where one never finishes shows which.
   try {
+    if (!navigator.gpu) throw new Error('no WebGPU in workers in this browser (navigator.gpu is missing)');
+    log('loading the render core');
     await init();
+    log(`requesting a WebGPU adapter and device${canvas ? ' for the canvas' : ''}`);
     try {
       renderer = await Renderer.create(canvas ?? undefined, true);
     } catch (err) {
@@ -138,9 +151,10 @@ onmessage = async (e) => {
     }
     renderer.set_shared_size(P.SHARED_BYTES);
   } catch (err) {
-    postMessage({ type: 'error', message: String(err), fatal: true });
+    fatal(String(err?.message ?? err));
     return;
   }
+  started = true;
   postMessage({ type: 'ready', adapter: renderer.adapter(), present: !!canvas || offscreen });
   pump();
   loop();
