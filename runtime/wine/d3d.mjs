@@ -186,10 +186,17 @@ export async function startD3D(workerUrl, log = () => {}, present = {}) {
   const sab = new SharedArrayBuffer(P.SAB_BYTES);
   const worker = new Worker(workerUrl, { type: 'module' });
   const ready = await new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      log('d3d: the render worker did not start within 20 s; Direct3D is off');
-      resolve(null);
-    }, 20000);
+    // Given up on only after 30 s without progress: loading the core and
+    // setting up WebGPU can take a while on a phone's first visit.
+    let timer;
+    const wait = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        log('d3d: the render worker made no progress for 30 s; Direct3D is off');
+        resolve(null);
+      }, 30000);
+    };
+    wait();
     // The worker's script failed to load or threw before it could report.
     worker.onerror = (e) => {
       log(`d3d: render worker failed: ${e.message || 'could not load its script'}`);
@@ -207,6 +214,8 @@ export async function startD3D(workerUrl, log = () => {}, present = {}) {
         resolve(null);
       } else if (e.data.type === 'log') {
         log(`d3d: ${e.data.text}`);
+      } else if (e.data.type === 'progress') {
+        wait();
       }
     };
     const { canvas, offscreen, port } = present;

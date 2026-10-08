@@ -134,12 +134,14 @@ onmessage = async (e) => {
   const offscreen = !canvas && !!e.data.offscreen;
   port = e.data.port ?? null;
   if (port) port.onmessage = onPortMessage;
-  // Each step is logged, so a browser where one never finishes shows which.
+  // Each step is logged, so a browser where one never finishes shows which,
+  // and reported to the Wine worker as progress, which keeps it waiting.
+  const step = (text) => (log(text), postMessage({ type: 'progress' }));
   try {
     if (!navigator.gpu) throw new Error('no WebGPU in workers in this browser (navigator.gpu is missing)');
-    log('loading the render core');
+    step('loading the render core');
     await init();
-    log(`requesting a WebGPU adapter and device${canvas ? ' for the canvas' : ''}`);
+    step(`requesting a WebGPU adapter and device${canvas ? ' for the canvas' : ''}`);
     try {
       renderer = await Renderer.create(canvas ?? undefined, true);
     } catch (err) {
