@@ -780,7 +780,9 @@ export class WineHost {
       // spin between the cooperative scheduler's switches). With a WebGPU
       // bridge (./d3d.mjs) it renders through that; without one, DirectDraw
       // runs without 3D and presents through GDI.
-      WINE_D3D_CONFIG: this.d3d && !this.x64 ? 'csmt=0' : 'renderer=no3d,csmt=0',
+      WINE_D3D_CONFIG: [this.d3d && !this.x64 ? 'csmt=0' : 'renderer=no3d,csmt=0', GAME_D3D_CONFIG[this.exePath.split('\\').pop().toLowerCase()]]
+        .filter(Boolean)
+        .join(','),
       ...this.env,
     })
       .map(([k, v]) => `${k}=${v}`)
@@ -1321,6 +1323,16 @@ function indexDirectories(files) {
   };
   return dirs;
 }
+
+/**
+ * wined3d settings for programs that need them, as Wine's AppDefaults
+ * registry keys give them. Far Cry compiles shader model 2 pixel shaders by
+ * running fxc.exe, and a page runs one process: held to shader model 1, it
+ * uses the compiled shaders it ships.
+ */
+const GAME_D3D_CONFIG = {
+  'farcry.exe': 'MaxShaderModelPS=1,MaxShaderModelVS=1',
+};
 
 /** Records the case of each name in a DOS path in `map` (lower-case path -> name). */
 export function recordCase(map, path) {
