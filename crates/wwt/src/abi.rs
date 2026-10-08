@@ -51,6 +51,9 @@ pub mod cpu {
     /// (milliseconds): translated loops call `preempt` once the tick reaches
     /// it, so a thread that spins without system calls still lets others run.
     pub const PREEMPT_AT: u32 = 368;
+    /// Translated calls currently nested in WebAssembly calls on this
+    /// thread: past a limit a call unwinds to the dispatch loop instead.
+    pub const CALL_DEPTH: u32 = 372;
     /// Scratch space for the host and kernel.
     pub const SCRATCH: u32 = 384;
     pub const SIZE: u32 = 512;
@@ -259,7 +262,7 @@ pub const FUNCS64_SECTION: &str = "wwt.funcs64";
 /// Custom section with JSON metadata about the translation.
 pub const META_SECTION: &str = "wwt.meta";
 /// Bumped whenever generated code changes incompatibly, to invalidate caches.
-pub const ABI_VERSION: u32 = 9;
+pub const ABI_VERSION: u32 = 10;
 /// Every translated module exports its lazy-flags evaluator under this
 /// name: `(fk, fr, fa, fb, fc) -> eflags` (the arithmetic flags).
 pub const EFLAGS_EXPORT: &str = "eflags";
@@ -309,6 +312,7 @@ pub fn abi_json() -> String {
         ("FAULT_CODE", FAULT_CODE),
         ("FAULT_ADDR", FAULT_ADDR),
         ("PREEMPT_AT", PREEMPT_AT),
+        ("CALL_DEPTH", CALL_DEPTH),
         ("SCRATCH", SCRATCH),
         ("SIZE", SIZE),
     ]

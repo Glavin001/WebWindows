@@ -943,7 +943,7 @@ export class WineHost {
       } catch (e) {
         // A pointer outside memory: Windows checks the program's pointers
         // and fails the call.
-        if (!(e instanceof RangeError)) throw e;
+        if (!(e instanceof RangeError) || /call stack/.test(e.message)) throw e;
         status = STATUS.ACCESS_VIOLATION;
       }
     }

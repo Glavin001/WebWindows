@@ -562,7 +562,15 @@ export class Machine {
 
   /** Runs guest code at `eip` until it returns to the stop address. */
   run(cpu, eip) {
-    return this.addr(this.kernel.run(this.wide(cpu), this.code(eip)));
+    // Translated calls count their nesting in the CPU state and restore it
+    // as they return; an exception through them (thread exit) does not.
+    const depth = cpu + this.abi.cpu.CALL_DEPTH;
+    const saved = this.r32(depth);
+    try {
+      return this.addr(this.kernel.run(this.wide(cpu), this.code(eip)));
+    } finally {
+      this.w32(depth, saved);
+    }
   }
 
   /**
