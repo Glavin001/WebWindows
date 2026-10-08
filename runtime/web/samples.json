@@ -1,0 +1,15 @@
+[
+  { "group": "Direct3D 9 (WebGPU)", "path": "tests/programs/gui/d3d9bench.exe", "label": "d3d9bench.exe: benchmark (cubes particles seconds materials)", "args": "400 2000 30 1" },
+  { "group": "Direct3D 9 (WebGPU)", "path": "tests/programs/gui/d3d9tri.exe", "label": "d3d9tri.exe: shader triangle and fixed-function quad" },
+  { "group": "DirectX", "path": "tests/programs/samples/ddsound.exe", "label": "ddsound.exe: DirectDraw animation with a DirectSound tone" },
+  { "group": "DirectX", "path": "tests/programs/samples/ddraw.exe", "label": "ddraw.exe: windowed DirectDraw checks" },
+  { "group": "DirectX", "path": "tests/programs/samples/ddraw-fullscreen.exe", "label": "ddraw-fullscreen.exe: exclusive mode, flips, display modes" },
+  { "group": "DirectX", "path": "tests/programs/samples/audio.exe", "label": "audio.exe: waveOut and DirectSound playback" },
+  { "group": "DirectX", "path": "tests/programs/samples/dinput.exe", "label": "dinput.exe: DirectInput keyboard and mouse" },
+  { "group": "Windows basics", "path": "tests/programs/gui/winbasic.exe", "label": "winbasic.exe: create, show and paint a window" },
+  { "group": "Windows basics", "path": "tests/programs/samples/threads.exe", "label": "threads.exe: threads, events, mutexes, TLS" },
+  { "group": "Windows basics", "path": "tests/programs/samples/timers.exe", "label": "timers.exe: clocks, Sleep, multimedia and waitable timers" },
+  { "group": "Windows basics", "path": "tests/programs/samples/seh.exe", "label": "seh.exe: structured exception handling" },
+  { "group": "Windows basics", "path": "tests/programs/samples/unhandled.exe", "label": "unhandled.exe: an unhandled exception (exits with c0000094)" },
+  { "group": "Windows basics", "path": "tests/programs/hello.exe", "label": "hello.exe: console hello world" }
+]

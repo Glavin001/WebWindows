@@ -23,6 +23,19 @@ if [ ! -d "$WINE_SRC" ]; then
   mkdir -p "$(dirname "$WINE_SRC")"
   curl -sSfL "https://dl.winehq.org/wine/source/$VERSION/wine-$VERSION.tar.xz" | tar xJ -C "$(dirname "$WINE_SRC")"
 fi
+# wined3d's WebGPU backend (native/wined3d-wgpu): hooks patched in once, the
+# backend and the d3dgpu protocol header copied next to wined3d's sources.
+root=$(cd "$(dirname "$0")/../.." && pwd)
+wpatch=$root/native/wined3d-wgpu/wined3d-wgpu.patch
+if ! cmp -s "$wpatch" "$WINE_SRC/.wined3d-wgpu.patch"; then
+  # A changed patch replaces the one applied before.
+  [ ! -f "$WINE_SRC/.wined3d-wgpu.patch" ] || patch -d "$WINE_SRC" -p1 -R < "$WINE_SRC/.wined3d-wgpu.patch"
+  patch -d "$WINE_SRC" -p1 < "$wpatch"
+  cp "$wpatch" "$WINE_SRC/.wined3d-wgpu.patch"
+fi
+for f in native/wined3d-wgpu/adapter_wgpu.c native/wined3d-wgpu/wined3d_nogl.c crates/d3dgpu-proto/include/d3dgpu_proto.h; do
+  cmp -s "$root/$f" "$WINE_SRC/dlls/wined3d/$(basename "$f")" || cp "$root/$f" "$WINE_SRC/dlls/wined3d/"
+done
 mkdir -p "$WINE_BUILD"
 cd "$WINE_BUILD"
 if [ ! -f Makefile ]; then

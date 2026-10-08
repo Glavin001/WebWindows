@@ -1,0 +1,8 @@
+[package]
+name = "d3dgpu-proto"
+description = "Command stream protocol between a Direct3D 9 front end (wined3d's adapter_wgpu, or a native d3d9) and the d3dgpu render core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

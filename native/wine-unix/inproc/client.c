@@ -51,7 +51,24 @@ extern int wasm_server_send_request_fd( int *write_end );
 extern void *wasm_server_thread_setup( unsigned int tid, int *wait_fd );
 extern void wasm_server_thread_ended( void *thread );
 
+/* Whether the page queued keyboard or mouse input. */
+EM_JS( int, host_has_input, (void), {
+    return Module.display?.hasInput() ? 1 : 0;
+});
+
 static TEB *current_teb;
+
+/* Input reaches Wine in the waits below. A program that polls for messages
+ * instead (a game's PeekMessage-then-render loop) never waits, but win32u
+ * yields the thread whenever such a poll finds nothing (PeekMessage, and
+ * MsgWaitForMultipleObjects with no timeout, through NtYieldExecution), so
+ * input is delivered there too. This replaces libc's sched_yield, which
+ * nothing else in the module calls. */
+int sched_yield(void)
+{
+    if (host_has_input()) wasm_process_input();
+    return 0;
+}
 
 TEB * WINAPI NtCurrentTeb(void)
 {

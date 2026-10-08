@@ -14,6 +14,7 @@ import { WineHost, peImports } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
 import { InputRing } from '../wine/input-ring.mjs';
+import { startD3D } from '../wine/d3d.mjs';
 import { ringWriter } from '../wine/audio-sink.mjs';
 
 const log = (text) => postMessage({ type: 'log', text });
@@ -57,7 +58,7 @@ async function cacheWrite(dir, name, bytes) {
  * Runs the program on translated Wine (Milestone 2): Wine's DLLs come
  * pre-translated in the bundle; the .exe is translated here and cached.
  */
-async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, key, bundleUrl, display: shared }) {
+async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, key, bundleUrl, display: shared, debug, d3dCanvas, d3dOffscreen, d3dPort }) {
   const base = new URL(bundleUrl, self.location.href);
   const manifest = await (await fetch(new URL('manifest.json', base))).json();
   const t0 = performance.now();
@@ -73,8 +74,24 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
   const files = new Map();
   const compiled = new Map();
   const sys32 = 'c:\\windows\\system32';
-  // The media group (sound, DirectDraw) only for a program that imports
-  // one of its DLLs, itself or through a DLL of its folder.
+  // Direct3D 8/9 programs (imports or LoadLibrary, so by name): they get
+  // wined3d's WebGPU backend. DirectDraw keeps wined3d without 3D.
+  const wantsD3D = /d3d[89]\.dll/i.test(new TextDecoder('latin1').decode(exe));
+  // wined3d's WebGPU backend executes on a render worker of its own, which
+  // presents to the page's canvas over the screen. It starts now, loading
+  // its core and setting up WebGPU while Wine's DLLs load.
+  const d3dStarting =
+    manifest.unix && shared && wantsD3D
+      ? startD3D(new URL('../wine/d3d-worker.mjs', import.meta.url), log, {
+          canvas: d3dCanvas,
+          offscreen: d3dOffscreen,
+          port: d3dPort,
+          onWindow: (w) => postMessage({ type: 'd3d-window', ...w }),
+        })
+      : null;
+  // The media group (sound, DirectDraw, Direct3D) only for a program that
+  // imports one of its DLLs, itself or through a DLL of its folder, or
+  // names Direct3D.
   const media = new Set(Object.entries(manifest.dlls).filter(([, f]) => f.group === 'media').map(([n]) => n.toLowerCase()));
   const wantsMedia = (() => {
     const local = new Map(Object.entries(folder).map(([rel, b]) => [rel.split('/').pop().toLowerCase(), b]));
@@ -92,7 +109,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
       }
       return false;
     };
-    return visit(exe);
+    return wantsD3D || visit(exe);
   })();
   await Promise.all([
     ...Object.entries(manifest.dlls).filter(([, f]) => f.group !== 'media' || wantsMedia).map(async ([name, f]) => {
@@ -180,8 +197,11 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
     });
     log(`loaded Wine's Unix side (wineserver, win32u) in ${(performance.now() - t0).toFixed(0)} ms`);
   }
+  const d3d = layout && d3dStarting ? await d3dStarting : null;
   const host = new WineHost(machine, {
     translate,
+    d3d,
+    debug,
     files,
     argv: [exeWin, ...argv],
     exePath: exeWin,
@@ -199,7 +219,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
 }
 
 onmessage = async (e) => {
-  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, display, audio } = e.data;
+  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, display, audio, debug, d3dCanvas, d3dOffscreen, d3dPort } = e.data;
   const enc = new TextEncoder();
   try {
     const t0 = performance.now();
@@ -209,7 +229,7 @@ onmessage = async (e) => {
     const key = `${await sha256(exe)}-abi${abi.version}`;
     const dir = noCache ? null : await cacheDir();
     if (wine) {
-      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, display: display && { ...display, audio } });
+      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, display: display && { ...display, audio }, debug, d3dCanvas, d3dOffscreen, d3dPort });
       if (r.error) postMessage({ type: 'stderr', bytes: enc.encode(`\n*** ${r.error.message}\n`) });
       postMessage({ type: 'exit', code: r.error ? null : r.exitCode, translated: false, runMs: r.runMs, wine: true });
       return;

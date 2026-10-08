@@ -27,6 +27,7 @@ import { Machine, GuestFault, hex } from '../runtime.mjs';
 import { WineHost } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
+import { D3DRecorder } from '../wine/d3d.mjs';
 import { windowsKey, KEYEVENTF_KEYUP } from '../web/keys.mjs';
 
 /** Thrown out of a wait to stop a GUI program that went idle (--screenshot). */
@@ -52,14 +53,16 @@ function translate(path, bytes) {
   // Keyed by the image and the translator build, so a rebuilt translator
   // never serves stale translations.
   const t = statSync(wwt());
-  const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}`).digest('hex').slice(0, 16);
+  // Per-DLL translator flags, as in wine-bundle.mjs (TRANSLATE_FLAGS).
+  const flags = { 'wined3d.dll': ['--no-smc-checks'], 'd3d9.dll': ['--no-smc-checks'] }[path.split('\\').pop().toLowerCase()] ?? [];
+  const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}:${flags}`).digest('hex').slice(0, 16);
   const out = join(cacheDir, `${path.split('\\').pop()}-${hash}.wasm`);
   if (!existsSync(out)) {
     // Several runners share the cache: write under a per-process name and
     // rename, so a reader never sees a partial file.
     const tmp = join(cacheDir, `${hash}.${process.pid}`);
     writeFileSync(`${tmp}.bin`, bytes);
-    execFileSync(wwt(), ['translate', `${tmp}.bin`, '-o', `${tmp}.wasm`], { stdio: ['ignore', 'ignore', 'inherit'] });
+    execFileSync(wwt(), ['translate', ...flags, `${tmp}.bin`, '-o', `${tmp}.wasm`], { stdio: ['ignore', 'ignore', 'inherit'] });
     renameSync(`${tmp}.wasm`, out);
     rmSync(`${tmp}.bin`);
   }
@@ -74,6 +77,8 @@ let audioOut = null;
 let folder = false;
 let runFor = Infinity;
 let script = [];
+// --d3d-record FILE: wined3d's WebGPU command stream, recorded (no GPU in Node).
+let d3dRecord = null;
 // Wine's Unix side compiled with Emscripten (native/wine-unix): on when built,
 // unless --no-unix.
 const unixDir = join(root, 'target/wine-unix');
@@ -94,6 +99,7 @@ while (args[0]?.startsWith('--')) {
   // ... or once it has run this long (programs with timers never go idle).
   else if (a === '--run-for') runFor = Number(args.shift());
   else if (a === '--input') script = parseInput(args.shift());
+  else if (a === '--d3d-record') d3dRecord = args.shift();
 }
 
 /** "ms:action args; ..." -> [{at, push(display)}], in time order. */
@@ -248,6 +254,12 @@ if (existsSync(tw)) {
     log: trace ? (s) => stderr(`[fast] ${s}\n`) : undefined,
   });
 }
+const d3d = d3dRecord ? new D3DRecorder() : null;
+const saveRecording = () => {
+  if (!d3d) return;
+  writeFileSync(d3dRecord, d3d.bytes());
+  stderr(`recorded ${d3d.batches.length} Direct3D batches in ${d3dRecord}\n`);
+};
 /** What the program plays, kept for --audio-out (float stereo at 48 kHz). */
 const audioCapture = {
   rate: 48000,
@@ -277,6 +289,7 @@ const audioCapture = {
 };
 const host = new WineHost(machine, {
   translate,
+  d3d,
   files,
   argv: [exeWin, ...args],
   exePath: exeWin,
@@ -298,6 +311,7 @@ if (audioOut) writeFileSync(audioOut, audioCapture.wav());
 if (host.unimplemented.size) {
   stderr(`unimplemented syscalls: ${[...host.unimplemented.keys()].join(', ')}\n`);
 }
+saveRecording();
 if (r.error instanceof ProgramIdle || r.error?.cause instanceof ProgramIdle) {
   writeFileSync(screenshot, await display.png());
   stderr(`idle; screenshot in ${screenshot}\n`);

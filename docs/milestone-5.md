@@ -220,11 +220,11 @@ Wine's `ddraw` runs on `wined3d`, which has a renderer without 3D
 (`renderer=no3d`): surfaces live in system memory, blits and color fills
 are done on the CPU, and the primary surface reaches the screen with GDI
 (`BitBlt` into the window, which the browser display driver shows). The
-host selects it (`WINE_D3D_CONFIG=renderer=no3d,csmt=0`); 3D is another
-milestone's work.
+host selects it (`WINE_D3D_CONFIG=renderer=no3d,csmt=0`) when no WebGPU
+bridge is attached; Direct3D 8 and 9 programs get the bridge and render
+through wined3d's WebGPU backend instead ([d3d-webgpu.md](d3d-webgpu.md)).
 
-* `wined3d` imports `opengl32`, whose Unix side the host stubs: it loads,
-  and every OpenGL call fails.
+* This `wined3d` is built without OpenGL and Vulkan, so it imports neither.
 * `csmt=0` keeps `wined3d`'s command stream on the program's thread. With
   its own thread, presents ran late, and that thread spins waiting for work,
   which a cooperative scheduler only stops at the end of a slice.

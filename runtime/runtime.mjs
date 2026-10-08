@@ -218,6 +218,9 @@ export class Machine {
       fault: (cpu, code, eip, info) => this.fault(cpu, code, eip, info),
       code_write: (cpu, addr) => this.codeWrite(cpu, addr),
       math: hostMath,
+      // The builtins themselves, so engines call them directly.
+      sin: Math.sin,
+      cos: Math.cos,
     };
     const finish = (instance) => {
       for (let i = 0; i < addrs.length; i++) {

@@ -17,6 +17,8 @@ const translatorUrl = params.get('translator') ?? new URL('../../target/wasm32-u
 
 const bundleUrl = params.get('bundle') ?? new URL('../../target/wine-bundle/', import.meta.url).href;
 if (params.get('wine')) $('wine').checked = true;
+// ?args=a+b: the program's command line (with ?exe=).
+if (params.get('args')) $('args').value = params.get('args');
 
 if (!crossOriginIsolated) {
   $('status').textContent = 'This page needs cross-origin isolation (COOP/COEP headers) for shared memory; serve it with runtime/web/serve.mjs.';
@@ -131,6 +133,55 @@ for (const type of ['keydown', 'keyup']) {
   });
 }
 
+// Direct3D frames: a canvas over the screen that the program's render
+// worker presents to, moved over the Direct3D window as it reports where
+// that is. ?d3dpresent=gdi keeps the frames in the screen instead (read
+// back and drawn with GDI), to compare; ?d3dpresent=offscreen presents to
+// a buffer only window.d3dSnapshot() reads, for headless tests.
+let d3dCanvas = null;
+let d3dPort = null;
+function newD3DCanvas() {
+  d3dCanvas?.remove();
+  d3dCanvas = null;
+  d3dPort?.close();
+  d3dPort = null;
+  const mode = params.get('d3dpresent');
+  if (mode === 'gdi' || !HTMLCanvasElement.prototype.transferControlToOffscreen) return null;
+  // The render worker's messages, and window.d3dSnapshot() for tests: the
+  // next presented frame as {width, height, pixels} (RGBA).
+  const channel = new MessageChannel();
+  d3dPort = channel.port1;
+  const snapshots = [];
+  d3dPort.onmessage = (e) => {
+    if (e.data.type === 'log') logEl.textContent += `d3d: ${e.data.text}\n`;
+    else if (e.data.type === 'frame') snapshots.shift()?.(e.data);
+  };
+  const port = d3dPort;
+  // ?d3dstats=1: the render worker reports how busy it is, once a second.
+  if (params.get('d3dstats')) port.postMessage({ type: 'stats' });
+  window.d3dSnapshot = () => new Promise((resolve) => (snapshots.push(resolve), port.postMessage({ type: 'snapshot' })));
+  if (mode === 'offscreen') return { offscreen: true, port: channel.port2 };
+  d3dCanvas = document.createElement('canvas');
+  d3dCanvas.className = 'd3d';
+  d3dCanvas.hidden = true;
+  d3dCanvas.width = 640;
+  d3dCanvas.height = 480;
+  $('screenbox').append(d3dCanvas);
+  return { canvas: d3dCanvas.transferControlToOffscreen(), port: channel.port2 };
+}
+function placeD3D(w) {
+  window.d3dWindow = w;
+  if (!d3dCanvas || !screen) return;
+  const pct = (v, total) => `${(v / total) * 100}%`;
+  Object.assign(d3dCanvas.style, {
+    left: pct(w.x, screen.width),
+    top: pct(w.y, screen.height),
+    width: pct(w.width, screen.width),
+    height: pct(w.height, screen.height),
+  });
+  d3dCanvas.hidden = !w.visible || !w.width || !w.height;
+}
+
 // ---- Running ---------------------------------------------------------------
 
 async function run(exeName, exeBytes, files, exePath) {
@@ -159,11 +210,13 @@ async function run(exeName, exeBytes, files, exePath) {
   }
   shown = -1;
   canvas.hidden = true;
+  const d3dOffscreen = screen ? newD3DCanvas() : null;
   return new Promise((resolve) => {
     worker.onmessage = (e) => {
       const m = e.data;
       if (m.type === 'stdout' || m.type === 'stderr') out.textContent += dec.decode(m.bytes);
       else if (m.type === 'log') logEl.textContent += m.text + '\n';
+      else if (m.type === 'd3d-window') placeD3D(m);
       else if (m.type === 'screen') {
         canvas.hidden = false;
         canvas.focus();
@@ -173,6 +226,7 @@ async function run(exeName, exeBytes, files, exePath) {
         $('status').textContent = m.code === null ? `${exeName} stopped with an error` : `${exeName} exited with code ${m.code} (${m.runMs?.toFixed(0)} ms)`;
         $('run').disabled = false;
         worker.terminate();
+        if (d3dCanvas) d3dCanvas.hidden = true;
         window.lastExit = m;
         resolve(m);
       }
@@ -189,10 +243,15 @@ async function run(exeName, exeBytes, files, exePath) {
         noCache: $('nocache').checked,
         wine,
         bundleUrl,
+        // ?debug=+d3d: Wine's debug channels (WINEDEBUG), on stderr.
+        debug: params.get('debug') ?? '',
         display: screen && { width: screen.width, height: screen.height, screen: screen.screen, frame: screen.frame, input: screen.input },
         audio,
+        d3dCanvas: d3dOffscreen?.canvas,
+        d3dOffscreen: d3dOffscreen?.offscreen,
+        d3dPort: d3dOffscreen?.port,
       },
-      [exeBytes],
+      [exeBytes, d3dOffscreen?.canvas, d3dOffscreen?.port].filter(Boolean),
     );
   });
 }
@@ -205,15 +264,36 @@ $('run').onclick = async () => {
   run(name.split('/').pop(), exe, files, name);
 };
 
-// Wine's own programs from the bundle (when it carries Wine's Unix side).
-fetch(new URL('manifest.json', bundleUrl))
-  .then((r) => (r.ok ? r.json() : null))
-  .then((manifest) => {
+// Wine's own programs from the bundle (when it carries Wine's Unix side),
+// then the repository's test programs (./samples.json).
+const sampleArgs = new Map();
+Promise.all([
+  fetch(new URL('manifest.json', bundleUrl)).then((r) => (r.ok ? r.json() : null)),
+  fetch(new URL('samples.json', import.meta.url)).then((r) => (r.ok ? r.json() : [])),
+])
+  .then(([manifest, samples]) => {
     if (!manifest?.programs?.length) return;
-    for (const p of manifest.programs) $('sample').add(new Option(p.split('/').pop(), p));
+    const groups = new Map();
+    const group = (label) => {
+      if (!groups.has(label)) {
+        const g = document.createElement('optgroup');
+        g.label = label;
+        $('sample').append(g);
+        groups.set(label, g);
+      }
+      return groups.get(label);
+    };
+    for (const p of manifest.programs) group("Wine's programs").append(new Option(p.split('/').pop(), p));
+    for (const s of samples) {
+      const url = new URL(`../../${s.path}`, import.meta.url).href;
+      group(s.group).append(new Option(s.label, url));
+      if (s.args) sampleArgs.set(url, s.args);
+    }
     $('samples').hidden = false;
   })
   .catch(() => {});
+// A sample's suggested arguments go in the arguments box.
+$('sample').onchange = () => ($('args').value = sampleArgs.get($('sample').value) ?? '');
 $('runsample').onclick = async () => {
   const rel = $('sample').value;
   const bytes = await (await fetch(new URL(rel, bundleUrl))).arrayBuffer();

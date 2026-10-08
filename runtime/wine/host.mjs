@@ -16,6 +16,7 @@ import { mapImage } from '../pe.mjs';
 import { VirtualMemory, MEM_IMAGE, MEM_PRIVATE, PAGE_READWRITE, PAGE_EXECUTE_READ, PAGE_READONLY } from './vm.mjs';
 import { SYSCALLS, STATUS } from './syscalls.mjs';
 import { HANDLE_ROUTED, WIN32U_UNIXLIB } from './unix.mjs';
+import { WINED3D_UNIXLIB } from './d3d.mjs';
 
 /** opengl32's Unix side: a stub without OpenGL (see unixCall). */
 export const GL_UNIXLIB = 0x4000;
@@ -184,6 +185,8 @@ export class WineHost {
     /** The audio driver (./audio.mjs); opts.audioSink receives what plays. */
     this.audio = new BrowserAudio(this, opts.audioSink ?? null);
     this.unix?.attach(this);
+    /** wined3d's WebGPU bridge (./d3d.mjs), or null: Direct3D without 3D */
+    this.d3d = opts.d3d ?? null;
     /** Results of NtCallbackReturn, one per user callback in progress. */
     this.callbackResults = [];
     this.images = new Map(); // base -> {path, info}
@@ -570,10 +573,11 @@ export class WineHost {
       TMP: 'C:\\windows\\temp',
       USERPROFILE: 'C:\\users\\wine',
       WINEDLLPATH: 'C:\\windows\\system32',
-      // DirectDraw without OpenGL underneath: wined3d presents through GDI,
-      // on the program's thread (its command stream thread would spin
-      // between the cooperative scheduler's switches).
-      WINE_D3D_CONFIG: 'renderer=no3d,csmt=0',
+      // wined3d on the program's thread (its command stream thread would
+      // spin between the cooperative scheduler's switches). With a WebGPU
+      // bridge (./d3d.mjs) it renders through that; without one, DirectDraw
+      // runs without 3D and presents through GDI.
+      WINE_D3D_CONFIG: this.d3d ? 'csmt=0' : 'renderer=no3d,csmt=0',
       ...this.env,
     })
       .map(([k, v]) => `${k}=${v}`)
@@ -805,6 +809,8 @@ export class WineHost {
       } finally {
         t.nest--;
       }
+    } else if (handle === WINED3D_UNIXLIB) {
+      status = this.d3d ? this.d3d.unixCall(m, code, args) : 0xc00000bb; // STATUS_NOT_SUPPORTED
     } else if (handle === AUDIO_UNIXLIB && this.audio) {
       // The audio driver's timer and main loops block in the scheduler.
       this.sys = { name: 'audio', ret, esp, espAfter: esp + 20 };

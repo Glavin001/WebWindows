@@ -2,7 +2,8 @@
 // Windowed Wine programs in headless Chromium (Milestone 4): runs Wine's
 // Minesweeper and Notepad from the Wine bundle through the web front end,
 // checks the canvas shows them, then clicks and types on the canvas and
-// checks the programs respond. Then (Milestone 5) a DirectDraw and
+// checks the programs respond (after checking the page lists every sample
+// program, runtime/web/samples.json). Then (Milestone 5) a DirectDraw and
 // DirectSound program built here with MinGW (tests/web/ddsound.c): its
 // animation on the canvas, its tone in the page's audio ring. Screens are
 // saved in target/gui.
@@ -16,7 +17,7 @@
 
 import { execFileSync, spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -73,8 +74,8 @@ async function click(page, x, y) {
   await page.mouse.click(box.x + (x * box.width) / 800, box.y + (y * box.height) / 600);
 }
 
-async function open(page, program, path = `/target/wine-bundle/programs/${program}`) {
-  await page.goto(`${base}/runtime/web/?exe=${path}&wine=1`);
+async function open(page, program, path = `/target/wine-bundle/programs/${program}`, query = '') {
+  await page.goto(`${base}/runtime/web/?exe=${path}&wine=1${query}`);
   await page.waitForFunction(() => window.screenShown || window.lastExit, null, { timeout: 240000 });
   const exit = await page.evaluate(() => window.lastExit);
   if (exit) throw new Error(`${program} exited: ${await page.textContent('#out')}`);
@@ -87,11 +88,25 @@ const save = async (page, name) => {
 
 // Through the environment's HTTPS proxy, when there is one.
 const proxy = site && process.env.HTTPS_PROXY ? { server: process.env.HTTPS_PROXY } : undefined;
-const browser = await chromium.launch({ proxy });
+// WebGPU for Direct3D (wined3d's WebGPU backend); headless Chromium needs the flag.
+const browser = await chromium.launch({ proxy, args: ['--enable-unsafe-webgpu'] });
 try {
   const page = await browser.newPage({ viewport: { width: 1000, height: 1100 }, ignoreHTTPSErrors: !!proxy });
   if (site?.searchParams.has('_vercel_share')) await page.goto(site.href);
   page.on('pageerror', (e) => console.error('page error:', e.message));
+
+  // The sample list: Wine's programs and every test program in
+  // runtime/web/samples.json, each one served (the site carries them all).
+  await page.goto(`${base}/runtime/web/`);
+  await page.waitForSelector('#samples:not([hidden])', { timeout: 60000 });
+  const listed = await page.$$eval('#sample option', (os) => os.map((o) => o.value));
+  const samples = JSON.parse(readFileSync(join(repo, 'runtime/web/samples.json'), 'utf8'));
+  const missing = [];
+  for (const s of samples) {
+    const url = listed.find((v) => v.endsWith(`/${s.path}`));
+    if (!url || !(await page.evaluate((u) => fetch(u, { method: 'HEAD' }).then((r) => r.ok), url))) missing.push(s.path);
+  }
+  check('samples: every program listed and served', !missing.length && listed.length > samples.length, missing.length ? `missing ${missing.join(', ')}` : `${listed.length} programs`);
 
   // Minesweeper: LEDs, smiley and the board; a click reveals a square.
   await open(page, 'winemine.exe');
@@ -123,6 +138,73 @@ try {
   const typed = await until(async () => (await count(page, edit, dark)) > ink + 150, 30000);
   check('notepad: typed text appears', typed, `${ink} -> ${await count(page, edit, dark)} dark pixels`);
   await save(page, 'browser-notepad-typed.png');
+
+  // Direct3D 9: wined3d's WebGPU backend renders a clear, a triangle with
+  // vertex and pixel shaders (and their constants), and a fixed-function
+  // quad. These checks read the screen, so Present reads frames back and
+  // draws them into the window (d3dpresent=gdi): headless Chromium cannot
+  // show the WebGPU canvas the page otherwise presents to.
+  if (await page.evaluate(() => !!navigator.gpu)) {
+    await open(page, 'd3d9tri.exe', '/tests/programs/gui/d3d9tri.exe', '&d3dpresent=gdi');
+    const near = (c) => ([r, g, b]) => Math.abs(r - c[0]) < 24 && Math.abs(g - c[1]) < 24 && Math.abs(b - c[2]) < 24;
+    // Window at (40,30); its client area starts at (44,53).
+    const quad = [56, 65, 102, 111];
+    const drawn = await until(async () => (await count(page, quad, near([255, 255, 0]))) > 1500, 180000);
+    check('d3d9: fixed-function quad (yellow)', drawn, `${await count(page, quad, near([255, 255, 0]))} yellow pixels`);
+    check('d3d9: clear colour', (await count(page, [300, 60, 360, 80], near([0, 0, 128]))) > 1000);
+    // The triangle's lower left corner is red, its top green at half
+    // intensity (pixel shader constant), and it is shifted right by a
+    // quarter of the width (vertex shader constant).
+    check('d3d9: shader triangle', (await count(page, [130, 250, 170, 262], ([r, g, b]) => r > 150 && b < 120)) > 100 &&
+      (await count(page, [240, 90, 252, 100], ([r, g, b]) => g > 60 && g < 160 && r < 60)) > 10);
+    check('d3d9: every call succeeded', /Present: 0/.test(await page.textContent('#out')), (await page.textContent('#out')).match(/[A-Za-z ()]+: 0x?[0-9a-f]+/g)?.slice(-3).join(', '));
+    await save(page, 'browser-d3d9tri.png');
+
+    // The benchmark (tests/web/d3d9bench.mjs runs it at full size): textured
+    // cubes from static buffers, particles through a dynamic vertex buffer,
+    // frames as fast as they come, for 3 seconds.
+    await open(page, 'd3d9bench.exe', '/tests/programs/gui/d3d9bench.exe', '&args=60+500+3&d3dpresent=gdi');
+    const out = async () => (await page.textContent('#out')) ?? '';
+    await until(async () => / fps: /.test(await out()), 180000);
+    // Window at (10,10), client area 640x480 from (14,33); cubes and
+    // particles over a dark blue background.
+    const lit = await count(page, [14, 33, 654, 513], ([r, g, b]) => r + g + b > 300);
+    check('d3d9bench: frames drawn', lit > 5000, `${lit} lit pixels`);
+    await until(() => page.evaluate(() => !!window.lastExit), 60000);
+    const summary = (await out()).match(/summary: .*/)?.[0];
+    check('d3d9bench: ran and exited', !!summary && (await page.evaluate(() => window.lastExit?.code)) === 0, summary);
+
+    // Presenting on the GPU (no readback), to an offscreen buffer the page
+    // can read (headless Chromium cannot show the canvas it uses
+    // otherwise); and the window moves when its caption is dragged, though
+    // the program polls for messages instead of waiting for them.
+    await open(page, 'd3d9bench.exe', '/tests/programs/gui/d3d9bench.exe', '&args=60+500+60&d3dpresent=offscreen');
+    await until(() => page.evaluate(() => !!window.d3dWindow), 180000);
+    const frame = await page.evaluate(async () => {
+      const { width, height, pixels } = await window.d3dSnapshot();
+      let lit = 0;
+      for (let i = 0; i < (pixels?.length ?? 0); i += 4) if (pixels[i] + pixels[i + 1] + pixels[i + 2] > 300) lit++;
+      return { width, height, lit };
+    });
+    check('d3d9bench: GPU present', frame.width === 640 && frame.height === 480 && frame.lit > 5000, JSON.stringify(frame));
+    const before = await page.evaluate(() => window.d3dWindow);
+    const box = await page.locator('#screen').boundingBox();
+    const sx = (x) => box.x + (x * box.width) / 800;
+    const sy = (y) => box.y + (y * box.height) / 600;
+    await page.mouse.move(sx(200), sy(20));
+    await page.mouse.down();
+    for (let i = 1; i <= 10; i++) {
+      await page.mouse.move(sx(200 + i * 10), sy(20 + i * 6));
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    await page.mouse.up();
+    const moved = await until(() => page.evaluate((x) => window.d3dWindow.x !== x, before.x), 20000);
+    const after = await page.evaluate(() => window.d3dWindow);
+    check('d3d9bench: window drags while rendering', moved && after.x - before.x === 100 && after.y - before.y === 60,
+      `${before.x},${before.y} -> ${after.x},${after.y}`);
+  } else {
+    console.log('skipping d3d9: no WebGPU in this browser');
+  }
   console.log((await page.textContent('#log')).trim());
 
   // DirectDraw and DirectSound: a red square moving on blue, and a tone.

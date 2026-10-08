@@ -41,13 +41,18 @@ const T_FN: u32 = 0;
 const T_FAULT: u32 = 1;
 const T_CODE_WRITE: u32 = 2;
 const T_MATH: u32 = 3;
-const T_FIRST_HELPER: u32 = 4;
+const T_F64_F64: u32 = 4;
+const T_FIRST_HELPER: u32 = 5;
 
 // Imported function indices.
 const F_FAULT: u32 = 0;
 const F_CODE_WRITE: u32 = 1;
 const F_MATH: u32 = 2;
-const NUM_FUNC_IMPORTS: u32 = 3;
+/// Math.sin and Math.cos themselves, which engines call without going
+/// through JavaScript (the other operations go through `math`).
+const F_SIN: u32 = 3;
+const F_COS: u32 = 4;
+const NUM_FUNC_IMPORTS: u32 = 5;
 
 // Imported global indices.
 const G_TABLE_BASE: u32 = 0;
@@ -131,7 +136,18 @@ impl<'a> ModuleGen<'a> {
     }
 
     /// Generates the module bytes.
-    pub fn build(mut self, funcs: &[Function], meta_json: &str) -> Vec<u8> {
+    pub fn build(self, funcs: &[Function], meta_json: &str) -> Vec<u8> {
+        self.build_named(funcs, meta_json, &std::collections::BTreeMap::new())
+    }
+
+    /// [`ModuleGen::build`], with a name section for the functions whose
+    /// entries `names` has (address -> symbol).
+    pub fn build_named(
+        mut self,
+        funcs: &[Function],
+        meta_json: &str,
+        names: &std::collections::BTreeMap<u32, String>,
+    ) -> Vec<u8> {
         let mut module = Module::new();
 
         // Types.
@@ -146,6 +162,7 @@ impl<'a> ModuleGen<'a> {
         types
             .ty()
             .function([ValType::I32, ValType::F64, ValType::F64], [ValType::F64]);
+        types.ty().function([ValType::F64], [ValType::F64]);
         let mut helper_type_idx = vec![];
         for h in &self.helpers {
             let (params, ret) = h.signature();
@@ -177,6 +194,16 @@ impl<'a> ModuleGen<'a> {
             EntityType::Function(T_CODE_WRITE),
         );
         imp.import(imports::MODULE, imports::MATH, EntityType::Function(T_MATH));
+        imp.import(
+            imports::MODULE,
+            imports::SIN,
+            EntityType::Function(T_F64_F64),
+        );
+        imp.import(
+            imports::MODULE,
+            imports::COS,
+            EntityType::Function(T_F64_F64),
+        );
         imp.import(
             imports::MODULE,
             imports::MEMORY,
@@ -274,6 +301,17 @@ impl<'a> ModuleGen<'a> {
             name: Cow::Borrowed(abi::META_SECTION),
             data: Cow::Borrowed(meta_json.as_bytes()),
         });
+        if funcs.iter().any(|f| names.contains_key(&f.entry)) {
+            let mut map = wasm_encoder::NameMap::new();
+            for (i, f) in funcs.iter().enumerate() {
+                if let Some(n) = names.get(&f.entry) {
+                    map.append(self.translated_func_index(i as u32), n);
+                }
+            }
+            let mut sec = wasm_encoder::NameSection::new();
+            sec.functions(&map);
+            module.section(&sec);
+        }
         module.finish()
     }
 
@@ -1219,6 +1257,18 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 }
                 let fi = self.m.helper_func_index(*h);
                 self.emit(W::Call(fi));
+            }
+            Op::Math {
+                op: MathOp::Sin, a, ..
+            } => {
+                self.get(*a);
+                self.emit(W::Call(F_SIN));
+            }
+            Op::Math {
+                op: MathOp::Cos, a, ..
+            } => {
+                self.get(*a);
+                self.emit(W::Call(F_COS));
             }
             Op::Math { op, a, b } => {
                 self.emit(W::I32Const(*op as i32));
