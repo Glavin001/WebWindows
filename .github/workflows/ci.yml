@@ -136,10 +136,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # The linux job's cache: it builds the same debug translator.
+      # The linux job's cache: it builds the same translators.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: linux
@@ -148,8 +150,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686
+      # The translator, and the one compiled to WebAssembly that translates
+      # what was not translated ahead of time (run.mjs).
       - name: Build
-        run: cargo build -p wwt-cli
+        run: |
+          cargo build -p wwt-cli
+          cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
       - name: GCC torture (layer 2)
         run: |
           sh tools/torture/fetch.sh
