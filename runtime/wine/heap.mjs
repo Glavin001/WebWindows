@@ -72,8 +72,11 @@ function leb(v) {
   return out;
 }
 
-/** The module with its memory import made shared, 1 to 65536 pages. */
-function shareMemoryImport(b) {
+/**
+ * The module with its memory import made shared, 1 to 65536 pages (Rust
+ * modules linked against a plain imported memory, for the machine's).
+ */
+export function shareMemoryImport(b) {
   let p = 8;
   while (p < b.length) {
     const id = b[p];
@@ -103,12 +106,12 @@ function shareMemoryImport(b) {
           q = readLeb(b, q + 2)[1];
           if (flags & 1) q = readLeb(b, q)[1];
         } else if (kind === 3) q += 2;
-        else throw new Error(`wwt_heap: unexpected import kind ${kind}`);
+        else throw new Error(`native module: unexpected import kind ${kind}`);
       }
       out.push(...b.subarray(from, end));
       return new Uint8Array([...b.subarray(0, p), 2, ...leb(out.length), ...out, ...b.subarray(end)]);
     }
     p = end;
   }
-  throw new Error('wwt_heap: no memory import');
+  throw new Error('native module: no memory import');
 }

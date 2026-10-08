@@ -32,6 +32,7 @@ import { windowsKey, KEYEVENTF_KEYUP } from '../web/keys.mjs';
 class ProgramIdle extends Error {}
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
 import { NATIVE_HEAP_FLAG, compileNativeHeap } from '../wine/heap.mjs';
+import { NATIVE_STRINGS_DLLS, NATIVE_STRINGS_FLAG, compileNativeStrings } from '../wine/strings.mjs';
 import { stdout, stderr } from './output.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -46,6 +47,12 @@ const GUEST_LIMIT = 0x8000_0000;
 const heapWasm = join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_heap.wasm');
 const nativeHeap =
   process.env.WWT_NATIVE_HEAP !== '0' && existsSync(heapWasm) ? compileNativeHeap(readFileSync(heapWasm)) : null;
+// String and locale functions as native WebAssembly (crates/wwt-strings),
+// when built: the DLLs that have them are then translated with
+// --native-strings. WWT_NATIVE_STRINGS=0 keeps Wine's.
+const stringsWasm = join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_strings.wasm');
+const nativeStrings =
+  process.env.WWT_NATIVE_STRINGS !== '0' && existsSync(stringsWasm) ? compileNativeStrings(readFileSync(stringsWasm)) : null;
 
 function wwt() {
   if (process.env.WWT) return process.env.WWT;
@@ -65,6 +72,7 @@ function translate(path, bytes) {
   // (tools/bench/ab.mjs --wine); part of the cache key.
   const extra = (process.env.WWT_TRANSLATE_FLAGS ?? '').split(/\s+/).filter(Boolean);
   if (nativeHeap && path.toLowerCase().endsWith('\\ntdll.dll')) extra.push(NATIVE_HEAP_FLAG);
+  if (nativeStrings && NATIVE_STRINGS_DLLS.includes(path.split('\\').pop().toLowerCase())) extra.push(NATIVE_STRINGS_FLAG);
   const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}:${extra.join(' ')}`).digest('hex').slice(0, 16);
   const out = join(cacheDir, `${path.split('\\').pop()}-${hash}.wasm`);
   if (!existsSync(out)) {
@@ -260,7 +268,10 @@ const host = new WineHost(machine, {
   trace,
   unix,
   debug: process.env.WINEDEBUG ?? '',
+  // WWT_LOCALE: the user's default locale, an LCID (e.g. 0x40e for hu-HU).
+  ...(process.env.WWT_LOCALE && { locale: Number(process.env.WWT_LOCALE) }),
   nativeHeap,
+  nativeStrings,
 });
 host.boot(`${sys32}\\ntdll.dll`, exeDos);
 const r = host.run();

@@ -15,6 +15,7 @@ import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
 import { InputRing } from '../wine/input-ring.mjs';
 import { compileNativeHeap } from '../wine/heap.mjs';
+import { compileNativeStrings } from '../wine/strings.mjs';
 
 const log = (text) => postMessage({ type: 'log', text });
 
@@ -173,6 +174,8 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
     unix,
     // The bundle's ntdll uses the native heap when the bundle has it.
     nativeHeap: manifest.heap ? compileNativeHeap(await bytesOf(manifest.heap)) : undefined,
+    // Likewise the native string functions.
+    nativeStrings: manifest.strings ? compileNativeStrings(await bytesOf(manifest.strings)) : undefined,
   });
   host.boot(`${sys32}\\ntdll.dll`, exeDos);
   log(`Wine process ready in ${(performance.now() - t0).toFixed(0)} ms; running`);
