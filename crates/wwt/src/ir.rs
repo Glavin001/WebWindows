@@ -788,6 +788,19 @@ pub enum Term {
     /// the registers, pops the return address) and returns the next address
     /// (see `crate::builtin`).
     Native(&'static str),
+    /// Try a native implementation before the translated code: call the
+    /// host's import of this name with the CPU state written back, followed
+    /// by `args` (constants the translator resolved, such as the addresses
+    /// of data the implementation reads). It either does the whole x86
+    /// function, like [`Term::Native`], and returns the next address, which
+    /// leaves the function; or it declines by returning 0 without changing
+    /// any state, and the function continues at `fallback`, its translated
+    /// body (see `crate::builtin::NATIVE_TRY`).
+    NativeTry {
+        name: &'static str,
+        args: Vec<u32>,
+        fallback: BlockId,
+    },
     /// Placeholder during construction.
     None,
 }
@@ -810,6 +823,7 @@ impl Term {
                 v
             }
             Term::Call { cont, .. } => vec![*cont],
+            Term::NativeTry { fallback, .. } => vec![*fallback],
             _ => vec![],
         }
     }
@@ -820,6 +834,7 @@ impl Term {
             Term::Branch { t, f, .. } => vec![t, f],
             Term::Switch { targets, .. } => targets.iter_mut().collect(),
             Term::Call { cont, .. } => vec![cont],
+            Term::NativeTry { fallback, .. } => vec![fallback],
             _ => vec![],
         }
     }
@@ -866,6 +881,7 @@ impl Term {
                 | Term::Fault { .. }
                 | Term::Switch { .. }
                 | Term::Native(_)
+                | Term::NativeTry { .. }
         )
     }
 
@@ -1225,6 +1241,11 @@ impl fmt::Display for Function {
                 Term::JmpInd(v) => format!("jmp {}", VName(*v)),
                 Term::Fault { code, eip } => format!("fault {code:#x} at {eip:#x}"),
                 Term::Native(n) => format!("native {n}"),
+                Term::NativeTry {
+                    name,
+                    args,
+                    fallback,
+                } => format!("native {name}{args:x?} or b{fallback}"),
                 Term::None => "<none>".into(),
             };
             writeln!(f, "    {t}")?;

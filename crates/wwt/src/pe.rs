@@ -417,9 +417,33 @@ impl PeFile {
 
     /// Names for code addresses (virtual addresses): the COFF symbol table
     /// when the file still has one (MinGW keeps it unless stripped), then
-    /// named exports. Used only for diagnostics, so a malformed table just
-    /// yields fewer names.
+    /// named exports. A malformed table just yields fewer names.
     pub fn code_names(&self) -> Vec<(u32, String)> {
+        let mut out: Vec<(u32, String)> = self
+            .coff_symbols()
+            .into_iter()
+            .filter(|s| s.2)
+            .map(|(va, name, _)| (va, name))
+            .collect();
+        for e in &self.exports {
+            if let (Some(n), ExportTarget::Rva(rva)) = (&e.name, &e.target) {
+                out.push((self.image_base.wrapping_add(*rva), n.clone()));
+            }
+        }
+        out
+    }
+
+    /// The address of a COFF symbol (external or static, in any section).
+    pub fn symbol(&self, name: &str) -> Option<u32> {
+        self.coff_symbols()
+            .into_iter()
+            .find(|s| s.1 == name)
+            .map(|s| s.0)
+    }
+
+    /// External and static symbols of the COFF symbol table: virtual
+    /// address, name, and whether their section is executable.
+    fn coff_symbols(&self) -> Vec<(u32, String, bool)> {
         let mut out = vec![];
         let d = &self.data;
         let coff = match rd_u32(d, 0x3c) {
@@ -440,16 +464,12 @@ impl PeFile {
             let class = ent[16];
             let aux = ent[17] as usize;
             i += 1 + aux;
-            // External or static symbols in an executable section.
             if section <= 0 || !(class == 2 || class == 3) {
                 continue;
             }
             let Some(sec) = self.sections.get(section as usize - 1) else {
                 continue;
             };
-            if !sec.is_executable() {
-                continue;
-            }
             let name = if ent[0..4] == [0, 0, 0, 0] {
                 let off = u32::from_le_bytes([ent[4], ent[5], ent[6], ent[7]]) as usize;
                 let start = strtab + off;
@@ -468,12 +488,7 @@ impl PeFile {
                 .image_base
                 .wrapping_add(sec.virtual_address)
                 .wrapping_add(value);
-            out.push((va, name));
-        }
-        for e in &self.exports {
-            if let (Some(n), ExportTarget::Rva(rva)) = (&e.name, &e.target) {
-                out.push((self.image_base.wrapping_add(*rva), n.clone()));
-            }
+            out.push((va, name, sec.is_executable()));
         }
         out
     }

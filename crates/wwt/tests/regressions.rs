@@ -56,3 +56,29 @@ fn far_pointer_operands_are_unsupported() {
             .expect("valid module");
     }
 }
+
+/// A native implementation tried first (`Term::NativeTry`): the module
+/// imports it with its constant arguments, and keeps the translated body.
+#[test]
+fn native_try() {
+    let cfg = wwt::Config::default();
+    // mov eax, [esp+4]; ret
+    let (f, _) = translate_snippet(&[0x8b, 0x44, 0x24, 0x04, 0xc3], 0x401000, &cfg);
+    let body = f.blocks.len();
+    let f = wwt::builtin::with_native_try(f, "native_fn", vec![0x1234, 0x5678]);
+    assert_eq!(f.blocks.len(), body + 1);
+    assert!(matches!(
+        f.blocks[0].term,
+        wwt::ir::Term::NativeTry { fallback, .. } if fallback as usize == body
+    ));
+    let wasm = build_module(&[f], &cfg);
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&wasm)
+        .expect("valid module");
+    let text = wasmprinter::print_bytes(&wasm).unwrap();
+    assert!(
+        text.contains("(import \"env\" \"native_fn\" (func"),
+        "{text}"
+    );
+    assert!(text.contains("i32.const 4660") && text.contains("i32.const 22136"));
+}

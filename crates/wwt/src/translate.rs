@@ -44,6 +44,9 @@ pub struct Config {
     /// Replace ntdll's heap functions with the host's native heap
     /// (`builtin::NATIVE_HEAP`); applies to ntdll.dll only.
     pub native_heap: bool,
+    /// Try the host's native string and locale functions before the
+    /// translated ones (`builtin::NATIVE_TRY`); applies to Wine's own DLLs.
+    pub native_strings: bool,
 }
 
 impl Default for Config {
@@ -58,6 +61,7 @@ impl Default for Config {
             c_abi: None,
             prove_flags_abi: false,
             native_heap: false,
+            native_strings: false,
         }
     }
 }
@@ -295,7 +299,46 @@ pub fn translate_pe(pe: &PeFile, cfg: &Config, profile: &[u32]) -> Result<Transl
     let mut d = discover_pe(pe, &img, profile, cfg);
     let meta = image_meta(pe);
     let names: HashMap<u32, String> = pe.code_names().into_iter().collect();
-    translate_discovered(&img, &mut d, cfg, Some(&meta), &names)
+    let tried = if cfg.native_strings && pe.is_wine_builtin() {
+        natives_tried(pe, &img)
+    } else {
+        HashMap::new()
+    };
+    translate_discovered(&img, &mut d, cfg, Some(&meta), &names, &tried)
+}
+
+/// Native implementations to try first, by function entry: those
+/// `builtin::NATIVE_TRY` has for this DLL's exports (or COFF symbols), with
+/// the addresses of the symbols they need (all must be present).
+fn natives_tried(pe: &PeFile, img: &crate::pe::Image) -> HashMap<u32, (&'static str, Vec<u32>)> {
+    let mut out = HashMap::new();
+    let Some(dll) = pe.dll_name.as_deref().map(str::to_ascii_lowercase) else {
+        return out;
+    };
+    for n in crate::builtin::NATIVE_TRY
+        .iter()
+        .filter(|n| n.dlls.contains(&dll.as_str()))
+    {
+        let va = if n.name.starts_with('_') {
+            pe.symbol(n.name)
+        } else {
+            pe.exports
+                .iter()
+                .find_map(|ex| match (&ex.name, &ex.target) {
+                    (Some(name), ExportTarget::Rva(rva)) if name == n.name => {
+                        Some(pe.image_base + rva)
+                    }
+                    _ => None,
+                })
+        };
+        let args: Option<Vec<u32>> = n.symbols.iter().map(|s| pe.symbol(s)).collect();
+        if let (Some(va), Some(args)) = (va, args) {
+            if img.is_code(va) {
+                out.insert(va, (n.import, args));
+            }
+        }
+    }
+    out
 }
 
 /// Fast mode: translates code reachable from `entries` in `src`.
@@ -326,18 +369,20 @@ pub fn translate_region_with_known(
         d.add_function_seed(e, SeedKind::Profile);
     }
     d.explore(src);
-    translate_discovered(src, &mut d, cfg, None, &HashMap::new())
+    translate_discovered(src, &mut d, cfg, None, &HashMap::new(), &HashMap::new())
 }
 
 /// Lifts, optimizes and generates code for every discovered function.
-/// `names` (symbols by address) only label functions in the module's name
-/// section, for profilers and debuggers.
+/// `names` (symbols by address) label functions in the module's name
+/// section, for profilers and debuggers, and select native heap functions;
+/// `tried` gives functions a native implementation to try first.
 pub fn translate_discovered(
     src: &dyn CodeSource,
     d: &mut Discovery,
     cfg: &Config,
     meta: Option<&ImageMeta>,
     names: &HashMap<u32, String>,
+    tried: &HashMap<u32, (&'static str, Vec<u32>)>,
 ) -> Result<Translation> {
     let mut report = Report::default();
     for k in d.seed_kinds.values() {
@@ -380,7 +425,12 @@ pub fn translate_discovered(
                     for e in lifted.extra_entries {
                         d.add_function_seed(e, SeedKind::Call);
                     }
-                    lifted.func
+                    match tried.get(&entry) {
+                        Some((n, args)) => {
+                            crate::builtin::with_native_try(lifted.func, n, args.clone())
+                        }
+                        None => lifted.func,
+                    }
                 }
             };
             funcs.push(f);
