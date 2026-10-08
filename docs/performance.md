@@ -167,6 +167,12 @@ What running real programs found that CoreMark could not:
   as translated x86 with a register write-back at every internal call. It
   is now native WebAssembly (below): `HeapAlloc`/`HeapFree` 5x faster,
   `malloc`/`free` 3x, faster than Wine running natively.
+- **Wine's string comparison** (`CompareStringW`, building sort keys a
+  byte at a time) was half of apibench's strings workload. It, the hot C
+  string functions and the TLS lookups on their paths are now tried as
+  native WebAssembly first, falling back to Wine's translated code for
+  anything they do not handle exactly (below): apibench/strings 2.7x
+  faster.
 
 ### ntdll's heap as native WebAssembly
 
@@ -236,6 +242,106 @@ from Wine's heap:
   the other `kernel32_test` units give the same results.
 - The low-fragmentation heap is reported (`HeapQueryInformation`) after a
   growable heap's 17th new block, approximately when Wine enables it.
+
+### String and locale functions as native WebAssembly
+
+apibench's strings workload ran at 26% of native Wine's speed, and half of
+its time was kernelbase's `CompareStringW` machinery: `compare_string`
+builds sort keys a byte at a time (`append_sortkey`, `append_weights`), each
+byte a translated call with its register traffic. `crates/wwt-strings`
+implements such functions natively, chosen by profile:
+
+| Function | DLLs | Declines (runs Wine's code) when |
+| --- | --- | --- |
+| `CompareStringEx` (so also `CompareStringW`/`A`, `lstrcmp`, `lstrcmpi` for the user's locale) | kernelbase | a named locale; flags it rejects; version/reserved/handle set; NULL strings; keys beyond the scratch memory (strings of ~9,000 characters) |
+| `strlen`, `wcslen`, `memcmp`, `strcmp`, `strchr`, `wcschr`, `memchr`, `strcspn` | ntdll, msvcrt, ucrtbase | a pointer it would read is in the null region or the last 64 KB below the guest limit, or beyond |
+| `TlsGetValue` | kernelbase, kernel32's import stub | an expansion slot (index ≥ 64) |
+| `msvcrt_get_thread_data` (fetched by every locale-aware C runtime call) | msvcrt, ucrtbase | the thread has no data yet |
+
+**Native first, translated body as the fallback.** Unlike the heap, these
+are not replaced: `wwt translate --native-strings` gives each of them
+(`wwt::builtin::NATIVE_TRY`, by export or COFF symbol) a new entry block,
+`Term::NativeTry`, that calls the import with the CPU state written back.
+The import either does the whole x86 function (arguments from the guest
+stack, `eax`, the return address and stdcall arguments popped) and returns
+the next address, which leaves the function, or returns 0 having changed
+nothing, and the function continues in its translated body, which is
+still there, so whatever the native code does not handle exactly runs
+Wine's own code. Such functions are never inlined into callers.
+
+**Faults.** Translated code faults on accesses to the null region and at
+or above the guest limit, nowhere else. The native functions check every
+range they would read and decline instead of reading a byte that could
+fault (scans for a terminator decline when they reach the end of the
+readable range), so a bad pointer faults in the translated body at the
+same instruction and address as before. None of them writes guest memory
+except the TEB's last error, so the store map is not involved.
+
+**Same results.** `compare_string` is ported function by function, down to
+Wine's byte arithmetic and the length limit of each key, and reads the
+tables kernelbase loaded from `sortdefault.nls`: the translator passes the
+addresses of kernelbase's static `sort` and `current_locale_sort` (COFF
+symbols) as constant arguments of the import, and the native code checks
+that the current sort is one of the table's. One Wine quirk is declined
+rather than reproduced: a single character with more than 32 bytes of
+primary weights outgrows Wine's static buffer, which Wine then compares
+stale. `tests/wine/strings.mjs` builds `tests/wine/strings.c` and runs it
+with and without the native functions (`WWT_NATIVE_STRINGS=0`); the
+outputs must be identical: CompareStringEx on 128 hand-picked strings
+(expansions, kana, old Hangul, digits, punctuation, Hebrew/Arabic, PUA,
+surrogates) and thousands of random near-miss pairs under every flag; the
+same with `current_locale_sort` set to each of the 75 sorts in turn (the
+runtime has no registry, so every user locale gets the default sort);
+explicit lengths, long strings, error cases; the C functions of each DLL
+on all byte values and bad pointers; TLS. Then 57 faulting calls, one per
+run, must stop at the same instruction and address. Each check was
+mutation-tested: perturbing the port's compressions, expansions, kana
+weights, digit weights, punctuation positions, reversed diacritics or
+Turkish casing exceptions makes outputs differ.
+
+Interleaved A/B (`ab.mjs --wine`, `wine=WWT_NATIVE_STRINGS=0` against
+`native=`), medians, shared 4-core machine:
+
+| Workload | Wine's code | Native | Speed |
+| --- | --- | --- | --- |
+| apibench/strings (7 rounds) | 3.731 s | 1.379 s | 2.7x |
+| apibench/sync (`TlsGetValue`, 7 rounds) | 0.181 s | 0.157 s | +15% |
+| apibench, all eight (7 rounds) | 5.35 s | 3.00 s | +78% |
+| lua/strings (7 rounds) | 0.985 s | 0.890 s | +11% |
+| lua/tables (7 rounds) | 1.229 s | 1.123 s | +9% |
+| lua, all six (7 rounds) | 9.65 s | 9.36 s | +3% |
+| sqlite/speedtest1 (7 rounds) | 12.90 s | 12.78 s | +1% (noise) |
+
+Native Wine takes 0.82–0.94 s for apibench/strings: translated Wine went
+from 26% to 60–70% of it. In SQLite the C functions' share of the profile
+(`memcmp`, `strcspn`, `strlen`) about halved, to 2.7%, a gain A/B runs
+cannot separate from the noise. Per call
+(`tools/bench/workloads/crtbench.c`, 1M calls each on 8- and 100-byte
+strings, 5 rounds):
+
+| Function | Wine's code | Native | Function | Wine's code | Native |
+| --- | --- | --- | --- | --- | --- |
+| `strlen` | 0.058 s | 0.039 s | `strchr` | 0.083 s | 0.069 s |
+| `wcslen` | 0.060 s | 0.048 s | `wcschr` | 0.070 s | 0.059 s |
+| `memcmp` | 0.041 s | 0.032 s | `memchr` | 0.064 s | 0.046 s |
+| `strcmp` | 0.099 s | 0.072 s | `strcspn` | 0.098 s | 0.096 s |
+| `lstrcmpiW` (250K) | 2.887 s | 0.491 s | `CompareStringA` (250K) | 2.967 s | 0.496 s |
+
+Short C string calls are dominated by the call itself (the program's
+call, msvcrt's import, the native-try entry), so the gains there are
+modest; `strcspn` is about even. Checksums are unchanged (`suite.mjs`),
+and Wine's `kernel32_test` gives the same results with and without, except
+where a test prints uninitialized memory (`version`, `path`: stack contents
+differ when less translated code runs).
+
+`runtime/node/wine.mjs` uses the module whenever it is built
+(`cargo build -p wwt-strings --target wasm32-unknown-unknown --profile
+release-wasm`), translating ntdll, kernel32, kernelbase, msvcrt and
+ucrtbase with `--native-strings`; `WWT_NATIVE_STRINGS=0` keeps Wine's
+code. The Wine bundle ships it for the browser. The module's data and
+stack sit in the guest's null region above the native heap's; its scratch
+memory for sort keys (256 KB) is in the native region above the guest
+limit. `WWT_LOCALE` sets the user's default locale (an LCID) for tests.
 
 
 ## Results

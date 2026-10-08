@@ -55,6 +55,11 @@ struct TranslateOpts {
     /// (`crates/wwt-heap`), which the runtime must then provide.
     #[arg(long)]
     native_heap: bool,
+    /// Try the runtime's native string and locale functions
+    /// (`crates/wwt-strings`) before the translated ones in Wine's DLLs;
+    /// the runtime must then provide them.
+    #[arg(long)]
+    native_strings: bool,
     /// No re-entry at loop headers (see `wwt::osr`).
     #[arg(long)]
     no_osr: bool,
@@ -82,6 +87,7 @@ impl TranslateOpts {
         c.inline = !self.no_inline;
         c.builtins = !self.no_builtins;
         c.native_heap = self.native_heap;
+        c.native_strings = self.native_strings;
         c.codegen.osr = !self.no_osr;
         c.codegen.atomics = self.atomics;
         c.c_abi = match self.c_abi.as_str() {

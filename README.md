@@ -33,6 +33,7 @@ node runtime/node/run.mjs tests/programs/hello.exe
 tools/wine/build.sh
 cargo build --release -p wwt-cli
 cargo build -p wwt-heap --target wasm32-unknown-unknown --profile release-wasm  # ntdll's heap, native
+cargo build -p wwt-strings --target wasm32-unknown-unknown --profile release-wasm  # string functions, native
 node runtime/node/wine.mjs tests/programs/hello.exe
 
 # Windowed programs: Wine's Unix side with Emscripten (emcc on PATH), the
@@ -140,6 +141,7 @@ crates/wwt          translator library
 crates/wwt-cli      `wwt` command-line tool
 crates/wwt-wasm     translator compiled to WebAssembly (fast mode, browser)
 crates/wwt-heap     ntdll's heap as native WebAssembly, for translated Wine
+crates/wwt-strings  hot string, locale and TLS functions as native WebAssembly, for translated Wine
 crates/wwt-testkit  instruction generator, oracle driver, wasmtime runner
 crates/d3dgpu-*     Direct3D 9/10/11 on WebGPU core: protocol, shader translators
                     (SM1-3, DXBC SM4/5), emulation library, render core (wgpu),

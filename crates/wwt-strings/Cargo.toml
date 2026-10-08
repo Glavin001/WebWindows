@@ -1,0 +1,10 @@
+[package]
+name = "wwt-strings"
+description = "Wine's hot string and locale functions (CompareStringEx, C string functions) as native WebAssembly, for translated Wine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]

@@ -30,6 +30,7 @@ import { startTicker, writeClock } from './ticker.mjs';
 import { THREAD_SYSCALLS, WIN32U_WAITS } from './thread-syscalls.mjs';
 import { AUDIO_UNIXLIB, BrowserAudio } from './audio.mjs';
 import { installRegistrations } from './registry-setup.mjs';
+import { attachNativeStrings } from './strings.mjs';
 
 export const L = layout;
 
@@ -167,6 +168,8 @@ export class WineHost {
    * @param {Map<string, Uint8Array>} opts.files  DOS paths (c:/...) -> contents
    * @param {WebAssembly.Module} [opts.nativeHeap]  ntdll's heap as native WebAssembly
    *        (./heap.mjs), for an ntdll translated with --native-heap
+   * @param {WebAssembly.Module} [opts.nativeStrings]  string and locale functions as
+   *        native WebAssembly (./strings.mjs), for DLLs translated with --native-strings
    */
   constructor(machine, opts) {
     this.m = machine;
@@ -180,6 +183,7 @@ export class WineHost {
     this.trace = opts.trace ?? false;
     this.vm = new VirtualMemory(machine, 0x10000, machine.thunkBase);
     this.nativeHeap = opts.nativeHeap ? attachNativeHeap(machine, opts.nativeHeap, this.vm) : null;
+    if (opts.nativeStrings) attachNativeStrings(machine, opts.nativeStrings);
     this.handles = new Map();
     // The host's own handles (files, sections) are numbered apart from the
     // ones wineserver hands out (4, 8, 12, ...) when Wine's Unix side is
@@ -205,6 +209,8 @@ export class WineHost {
     this.env = opts.env ?? {};
     /** Wine's debug channels, as WINEDEBUG sets them ("+actctx,warn+heap") */
     this.debug = opts.debug ?? '';
+    /** The user's default locale (an LCID); the system's is always en-US. */
+    this.userLocale = opts.locale ?? 0x409;
   }
 
   /**

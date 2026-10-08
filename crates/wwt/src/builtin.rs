@@ -14,7 +14,10 @@
 //!
 //! Native built-ins replace a function with an implementation the host
 //! provides (`Term::Native`): ntdll's heap ([`NATIVE_HEAP`], see
-//! `crates/wwt-heap`) when translating with `Config::native_heap`.
+//! `crates/wwt-heap`) when translating with `Config::native_heap`. Others
+//! are tried first and may decline, leaving the call to the translated
+//! body (`Term::NativeTry`): string and locale functions ([`NATIVE_TRY`],
+//! see `crates/wwt-strings`) with `Config::native_strings`.
 
 use crate::ir::*;
 
@@ -53,6 +56,104 @@ pub fn native_body(entry: u32, name: &'static str) -> Function {
     let mut f = Function::new(entry);
     let b = f.new_block(entry);
     f.blocks[b as usize].term = Term::Native(name);
+    f
+}
+
+/// A native implementation tried before a function's translated body. It
+/// declines whatever it does not handle exactly as the x86 code would (bad
+/// pointers, which must fault where the x86 code faults; flags or locales it
+/// does not implement; stores to pages with translated code), and the
+/// translated body runs instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeTry {
+    /// The DLLs (lower case) whose export of this name it implements: Wine
+    /// builds several from one source, with different behavior.
+    pub dlls: &'static [&'static str],
+    /// The export, or the COFF symbol (`_name`) of a function that is not
+    /// exported (found when the translator discovers it as a function).
+    pub name: &'static str,
+    /// The import that implements it.
+    pub import: &'static str,
+    /// COFF symbols of static data it reads, passed as constant arguments;
+    /// without them in the image, the function keeps its translated body.
+    pub symbols: &'static [&'static str],
+}
+
+const CRT: &[&str] = &["ntdll.dll", "msvcrt.dll", "ucrtbase.dll"];
+
+/// A C runtime function: its import is named `crt_<name>` (the module that
+/// implements it has C runtime functions of its own under the plain names).
+macro_rules! crt {
+    ($name:literal) => {
+        NativeTry {
+            dlls: CRT,
+            name: $name,
+            import: concat!("crt_", $name),
+            symbols: &[],
+        }
+    };
+}
+
+/// String and locale functions with native implementations
+/// (`crates/wwt-strings`): kernelbase's `CompareStringEx` with the locale
+/// tables it reads (`sort`, `current_locale_sort` in Wine's `locale.c`);
+/// C string functions that behave the same in ntdll, msvcrt and ucrtbase;
+/// and the thread-local storage lookups on their paths: `TlsGetValue`
+/// (kernel32's import stub too) and the C runtime's per-thread data, which
+/// its locale-aware functions fetch on every call.
+pub const NATIVE_TRY: &[NativeTry] = &[
+    NativeTry {
+        dlls: &["kernelbase.dll"],
+        name: "CompareStringEx",
+        import: "CompareStringEx",
+        symbols: &["_sort", "_current_locale_sort"],
+    },
+    NativeTry {
+        dlls: &["kernel32.dll", "kernelbase.dll"],
+        name: "TlsGetValue",
+        import: "TlsGetValue",
+        symbols: &[],
+    },
+    NativeTry {
+        dlls: &["msvcrt.dll", "ucrtbase.dll"],
+        name: "_msvcrt_get_thread_data",
+        import: "msvcrt_get_thread_data",
+        symbols: &["_msvcrt_tls_index"],
+    },
+    crt!("strlen"),
+    crt!("wcslen"),
+    crt!("memcmp"),
+    crt!("strcmp"),
+    crt!("strchr"),
+    crt!("wcschr"),
+    crt!("memchr"),
+    crt!("strcspn"),
+];
+
+/// `f` with the native implementation `name` tried first: a new entry block
+/// calls it with `args`, and the translated body runs when it declines.
+pub fn with_native_try(mut f: Function, name: &'static str, args: Vec<u32>) -> Function {
+    // Block 0 must stay the entry: move its code to a new block.
+    let body = f.blocks.len() as BlockId;
+    let b0 = f.blocks[0].clone();
+    let addr = b0.addr;
+    f.blocks.push(b0);
+    for b in f.blocks.iter_mut() {
+        for s in b.term.successors_mut() {
+            if *s == 0 {
+                *s = body;
+            }
+        }
+    }
+    f.blocks[0] = Block {
+        addr,
+        insts: vec![],
+        term: Term::NativeTry {
+            name,
+            args,
+            fallback: body,
+        },
+    };
     f
 }
 

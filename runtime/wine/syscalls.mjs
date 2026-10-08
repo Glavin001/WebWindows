@@ -518,7 +518,7 @@ export const SYSCALLS = {
     return STATUS.SUCCESS;
   },
   NtQueryDefaultLocale(a) {
-    this.w32(a(1), 0x409);
+    this.w32(a(1), a(0) ? this.userLocale : 0x409);
     return STATUS.SUCCESS;
   },
 

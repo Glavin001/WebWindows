@@ -62,8 +62,9 @@ const T_MATH: u32 = 2;
 const T_F64_F64: u32 = 3;
 const T_FIRST_HELPER: u32 = 4;
 
-// Imported function indices. Native implementations (`Term::Native`)
-// follow, one import each, in the order of `ModuleGen::natives`.
+// Imported function indices. Native implementations (`Term::Native`,
+// `Term::NativeTry`) follow, one import each, in the order of
+// `ModuleGen::natives`.
 const F_FAULT: u32 = 0;
 const F_MATH: u32 = 1;
 /// Math.sin and Math.cos themselves, which engines call without going
@@ -110,8 +111,10 @@ pub struct ModuleGen<'a> {
     func_index: HashMap<u32, u32>,
     helpers: Vec<Helper>,
     helper_types: Vec<(Vec<Ty>, Ty)>,
-    /// Names of the native implementations the functions leave through.
-    natives: Vec<&'static str>,
+    /// Names of the native implementations the functions leave through or
+    /// try, with the number of constant arguments they take after the CPU
+    /// state.
+    natives: Vec<(&'static str, usize)>,
     /// Symbol names by x86 address, for the name section.
     names: HashMap<u32, String>,
 }
@@ -127,7 +130,12 @@ impl<'a> ModuleGen<'a> {
         let mut natives = vec![];
         for f in funcs {
             for b in &f.blocks {
-                if let Term::Native(n) = b.term {
+                let native = match &b.term {
+                    Term::Native(n) => Some((*n, 0)),
+                    Term::NativeTry { name, args, .. } => Some((*name, args.len())),
+                    _ => None,
+                };
+                if let Some(n) = native {
                     if !natives.contains(&n) {
                         natives.push(n);
                     }
@@ -170,7 +178,7 @@ impl<'a> ModuleGen<'a> {
     }
 
     fn native_func_index(&self, name: &str) -> u32 {
-        F_FIRST_NATIVE + self.natives.iter().position(|n| *n == name).unwrap() as u32
+        F_FIRST_NATIVE + self.natives.iter().position(|n| n.0 == name).unwrap() as u32
     }
 
     fn helper_func_index(&self, h: Helper) -> u32 {
@@ -219,6 +227,26 @@ impl<'a> ModuleGen<'a> {
             };
             helper_type_idx.push(T_FIRST_HELPER + idx as u32);
         }
+        // Natives with constant arguments: (cpu, args...) -> next eip.
+        let mut native_type_idx = vec![];
+        for &(_, nargs) in &self.natives {
+            if nargs == 0 {
+                native_type_idx.push(T_FN);
+                continue;
+            }
+            let key = (vec![Ty::I32; 1 + nargs], Ty::I32);
+            let idx = match self.helper_types.iter().position(|k| *k == key) {
+                Some(i) => i,
+                None => {
+                    types
+                        .ty()
+                        .function(vec![ValType::I32; 1 + nargs], [ValType::I32]);
+                    self.helper_types.push(key);
+                    self.helper_types.len() - 1
+                }
+            };
+            native_type_idx.push(T_FIRST_HELPER + idx as u32);
+        }
         module.section(&types);
 
         // Imports.
@@ -240,8 +268,8 @@ impl<'a> ModuleGen<'a> {
             EntityType::Function(T_F64_F64),
         );
         // Native implementations follow (F_FIRST_NATIVE on).
-        for n in &self.natives {
-            imp.import(imports::MODULE, n, EntityType::Function(T_FN));
+        for (&(n, _), &t) in self.natives.iter().zip(&native_type_idx) {
+            imp.import(imports::MODULE, n, EntityType::Function(t));
         }
         imp.import(
             imports::MODULE,
@@ -1159,6 +1187,27 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.sync(dirty);
                 self.emit(W::LocalGet(0));
                 self.emit(W::ReturnCall(self.m.native_func_index(n)));
+            }
+            Term::NativeTry {
+                name,
+                args,
+                fallback,
+            } => {
+                // Leave with the next address, or continue in the translated
+                // body when the native declined (0): it changed nothing, so
+                // the state in locals is still current.
+                self.sync(dirty);
+                self.emit(W::LocalGet(0));
+                for a in args {
+                    self.emit(W::I32Const(a as i32));
+                }
+                self.emit(W::Call(self.m.native_func_index(name)));
+                self.emit(W::LocalTee(self.tmp_i32));
+                self.emit(W::If(BlockType::Empty));
+                self.emit(W::LocalGet(self.tmp_i32));
+                self.emit(W::Return);
+                self.emit(W::End);
+                self.do_branch(x, fallback);
             }
             Term::None => self.emit(W::Unreachable),
         }
