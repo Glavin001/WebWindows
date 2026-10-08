@@ -440,6 +440,14 @@ Wine tier when they are (`tools/wine/build.sh`).
   the guest limit go down a slow path that does the precise check. So do
   pages with translated code, where the translated code invalidates the
   page's lookup entry itself, with no call to the host.
+* **Memory traps** (`wwt translate --mem-traps`, ABI 9; the default where
+  the engine locates traps: Node, Chrome, Firefox). Checked accesses drop
+  their compare and let the engine's bounds trap catch the null region and
+  addresses above memory; the runtime turns the trap into an access
+  violation at the right instruction, with the registers as last written
+  back. SQLite +23%, Lua +5–18%, CoreMark −3% (pointer chasing, where the
+  address adjustment adds latency a check didn't). Details and every test
+  result: [memory-traps.md](memory-traps.md).
 * **Fewer load checks.** A load within 4 KB of an address that already
   passed a check, from the same unchanged base, skips its check. The only
   difference is that such a load, if it lands within 4 KB of the null
@@ -704,6 +712,7 @@ As close to Emscripten as the design allows; 80–90% of Emscripten is a
 realistic stretch goal. What can't be removed entirely, given that we run
 arbitrary x86 code safely:
 
-- guest memory checks (now one compare per load, one table lookup per store);
+- guest memory checks (one compare per checked load and one table lookup
+  per store in faithful mode; an address adjustment with memory traps);
 - the lookup for indirect calls;
 - registers the program can observe at fault points.

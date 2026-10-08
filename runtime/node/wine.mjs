@@ -25,6 +25,15 @@
 //                     written back to DIR when it exits
 //   --file HOST[=DOS] put a host file in the guest's file system (default
 //                     C:\<name>), e.g. a script or document the program reads
+//   --no-mem-traps    faithful memory checks: every module checks its guest
+//                     accesses, and an access violation reports every register
+//                     exactly. By default (where the engine reports where a
+//                     trap happened, see trapsMappable) the program and Wine's
+//                     DLLs use bounds traps instead (wwt translate --mem-traps):
+//                     faster, but the registers are as last written back.
+//                     WWT_MEM_TRAPS=0 in the environment does the same.
+//   --mem-traps[=M,..] bounds traps for all modules, or only the modules
+//                     named (program.exe, ntdll.dll, ...)
 //
 // Wine's PE DLLs come from WINE_BUILD (default /opt/wine-build) and its NLS
 // files from WINE_SRC; translations are cached in target/wine-cache.
@@ -47,7 +56,7 @@ import { createHash } from 'node:crypto';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { Machine, GuestFault, hex, hasMemory64 } from '../runtime.mjs';
+import { Machine, GuestFault, hex, hasMemory64, trapsMappable } from '../runtime.mjs';
 import { peArch } from '../pe.mjs';
 import { WineHost } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
@@ -107,7 +116,7 @@ function translate(path, bytes) {
   // DLLs stay ahead of time, as the bundle ships them).
   if (process.env.WWT_TRANSLATOR === 'wasm' && !mem64 && /\.exe$/i.test(path) && fastTranslator) {
     const t0 = performance.now();
-    const wasm = fastTranslator.translatePe(bytes, { guestLimit: GUEST_LIMIT });
+    const wasm = fastTranslator.translatePe(bytes, { guestLimit: GUEST_LIMIT, memTraps: trapsFor(path) });
     stderr(`[wasm translator] ${path.split('\\').pop()}: ${wasm.length} bytes in ${(performance.now() - t0).toFixed(0)} ms\n`);
     return wasm;
   }
@@ -124,6 +133,7 @@ function translate(path, bytes) {
     ...flags,
     ...(mem64 ? ['--mem64'] : ['--guest-limit-mb', String(GUEST_LIMIT >>> 20)]),
     ...(process.env.WWT_TRANSLATE_FLAGS ?? '').split(/\s+/).filter(Boolean),
+    ...(trapsFor(path) ? ['--mem-traps'] : []),
   ];
   if (nativeHeap && !x64 && path.toLowerCase().endsWith('\\ntdll.dll')) extra.push(NATIVE_HEAP_FLAG);
   if (nativeStrings && !x64 && NATIVE_STRINGS_DLLS.includes(path.split('\\').pop().toLowerCase())) extra.push(NATIVE_STRINGS_FLAG);
@@ -161,6 +171,10 @@ let d3dRecord = null;
 // unless --no-unix. 64-bit programs use its wasm64 build (ARCH=x86_64).
 let unixDir = join(root, 'target/wine-unix');
 let useUnix = null;
+/** 'all', or the names of the modules translated with bounds traps (see --mem-traps). */
+let memTraps = trapsMappable() && process.env.WWT_MEM_TRAPS !== '0' ? 'all' : null;
+/** Whether the module at `path` (C:\...\name.dll) is translated with traps. */
+const trapsFor = (path) => memTraps === 'all' || !!memTraps?.has(path.split('\\').pop().toLowerCase());
 while (args[0]?.startsWith('--')) {
   const a = args.shift();
   if (a === '--trace') trace = true;
@@ -179,7 +193,11 @@ while (args[0]?.startsWith('--')) {
   else if (a === '--input') script = parseInput(args.shift());
   else if (a === '--dir') appDir = resolve(args.shift());
   else if (a === '--mem32') mem32 = true;
-  else if (a === '--file') {
+  else if (a === '--no-mem-traps') memTraps = null;
+  else if (a === '--mem-traps' || a.startsWith('--mem-traps=')) {
+    const list = a.slice('--mem-traps='.length);
+    memTraps = list ? new Set(list.toLowerCase().split(',')) : 'all';
+  } else if (a === '--file') {
     const [host, dos] = args.shift().split('=');
     extraFiles.push([host, (dos ?? `C:\\${basename(host)}`).toLowerCase()]);
   } else if (a === '--d3d-record') d3dRecord = args.shift();
@@ -378,6 +396,8 @@ if (existsSync(tw)) {
   fastTranslator = await FastTranslator.load(readFileSync(tw));
   enableFastMode(machine, fastTranslator, {
     log: trace || process.env.WWT_FAST_LOG ? (s) => stderr(`[fast] ${s}\n`) : undefined,
+    // Code found at run time is mostly the program's.
+    memTraps: trapsFor(exeWin),
   });
 }
 const d3d = d3dRecord ? new D3DRecorder() : null;

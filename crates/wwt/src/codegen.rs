@@ -21,6 +21,7 @@ use wasm_encoder::{
 };
 
 use crate::abi::{self, addr::NULL_LIMIT, cpu, cpu64, fault, imports, native_layout, store_map};
+use crate::discover::CodeSource;
 use crate::flags::{self, E};
 use crate::ir::*;
 use crate::opt::{self, Analysis, StateMask, ALL_STATE, FAULT_SYNC};
@@ -29,6 +30,11 @@ use crate::reducible;
 #[derive(Debug, Clone)]
 pub struct CodegenConfig {
     pub mem_checks: bool,
+    /// Fast mode: plain guest loads and stores have no explicit check and
+    /// rely on the engine's bounds trap instead (see `Fun::trap_access`).
+    /// The runtime turns the trap into an access violation at the right
+    /// instruction, with the registers as last written back.
+    pub mem_traps: bool,
     pub smc_checks: bool,
     /// Import a 64-bit (memory64) memory. Guest addresses narrower than the
     /// memory are zero-extended; with a 32-bit memory, x86-64 addresses are
@@ -54,6 +60,7 @@ impl Default for CodegenConfig {
     fn default() -> Self {
         CodegenConfig {
             mem_checks: true,
+            mem_traps: false,
             smc_checks: true,
             mem64: false,
             guest_limit: None,
@@ -138,6 +145,9 @@ pub struct ModuleGen<'a> {
     natives: Vec<(&'static str, usize)>,
     /// Symbol names by x86 address, for the name section.
     names: HashMap<u64, String>,
+    /// The x86 code, to describe trapping accesses' memory operands in
+    /// `wwt.traps`.
+    code: Option<&'a dyn CodeSource>,
 }
 
 impl<'a> ModuleGen<'a> {
@@ -182,7 +192,14 @@ impl<'a> ModuleGen<'a> {
             helper_types: vec![],
             natives,
             names: HashMap::new(),
+            code: None,
         }
+    }
+
+    /// The x86 code the functions come from (see `ModuleGen::code`).
+    pub fn with_code(mut self, code: &'a dyn CodeSource) -> Self {
+        self.code = Some(code);
+        self
     }
 
     /// Sets whether code addresses are 64-bit (by default, whether the
@@ -433,11 +450,25 @@ impl<'a> ModuleGen<'a> {
             code.function(&gen_helper(h, eflags));
         }
         let mut residue = Vec::with_capacity(funcs.len());
+        // Trapping accesses, at first by their offset in the code section's
+        // entries.
+        let mut traps = Vec::new();
         for f in funcs {
-            let (body, r) = self.gen_function_counted(f);
+            let (body, r, t) = self.gen_function_full(f);
+            let start = code.byte_len() + leb_len(body.byte_len());
+            traps.extend(t.into_iter().map(|t| TrapSite {
+                at: start as u32 + t.at,
+                ..t
+            }));
             code.function(&body);
             residue.push(r);
         }
+        // The entries start after the section's id, size and count.
+        let count = (self.helpers.len() + funcs.len()) as u32;
+        let entries = module.len()
+            + 1
+            + leb_len(leb_len(count as usize) + code.byte_len())
+            + leb_len(count as usize);
         module.section(&code);
 
         // Names, for profilers and debuggers: `symbol@address` or
@@ -484,6 +515,25 @@ impl<'a> ModuleGen<'a> {
             name: Cow::Borrowed(abi::RESIDUE_SECTION),
             data: Cow::Owned(serde_json::to_vec(&residue).unwrap()),
         });
+        if !traps.is_empty() {
+            let mut data = Vec::with_capacity(4 + traps.len() * 16);
+            data.extend_from_slice(&(traps.len() as u32).to_le_bytes());
+            for t in &traps {
+                let (operand, disp) = match self.code.and_then(|c| mem_operand(c, t.eip)) {
+                    Some((o, d)) => (abi::trap::OPERAND | o, d),
+                    None => (0, 0),
+                };
+                let flags = operand | if t.write { abi::trap::WRITE } else { 0 };
+                data.extend_from_slice(&(entries as u32 + t.at).to_le_bytes());
+                data.extend_from_slice(&(t.eip as u32).to_le_bytes());
+                data.extend_from_slice(&flags.to_le_bytes());
+                data.extend_from_slice(&disp.to_le_bytes());
+            }
+            module.section(&CustomSection {
+                name: Cow::Borrowed(abi::TRAPS_SECTION),
+                data: Cow::Owned(data),
+            });
+        }
         module.finish()
     }
 
@@ -493,6 +543,12 @@ impl<'a> ModuleGen<'a> {
 
     /// The function and the emulation left in it.
     pub fn gen_function_counted(&self, f: &Function) -> (wasm_encoder::Function, Residue) {
+        let (body, r, _) = self.gen_function_full(f);
+        (body, r)
+    }
+
+    /// The function, the emulation left in it and its trapping accesses.
+    fn gen_function_full(&self, f: &Function) -> (wasm_encoder::Function, Residue, Vec<TrapSite>) {
         let fixed;
         // Blocks from here on are made by the passes below, not lifted.
         let lifted = f.blocks.len();
@@ -520,8 +576,51 @@ impl<'a> ModuleGen<'a> {
         g.irreducible = irreducible;
         g.run();
         let r = g.residue;
-        (g.finish(), r)
+        let (body, traps) = g.finish();
+        (body, r, traps)
     }
+}
+
+/// A guest access that relies on the engine's bounds trap (fast mode):
+/// where its load or store instruction starts (from the start of the
+/// function's body, then of the module) and the x86 instruction it belongs
+/// to.
+pub struct TrapSite {
+    pub at: u32,
+    pub eip: u64,
+    pub write: bool,
+}
+
+/// The memory operand of the 32-bit instruction at `eip`, for `wwt.traps`
+/// (see `abi::trap`): its registers, scale and segment, and displacement.
+fn mem_operand(code: &dyn CodeSource, eip: u64) -> Option<(u32, u32)> {
+    use iced_x86::{Decoder, DecoderOptions, OpKind, Register};
+    let i = Decoder::with_ip(32, code.bytes(eip), eip, DecoderOptions::NONE).decode();
+    if i.is_invalid() || !(0..i.op_count()).any(|k| i.op_kind(k) == OpKind::Memory) {
+        return None;
+    }
+    let reg = |r: Register| match r {
+        Register::None => Some(0),
+        // 16-bit addressing wraps at 64 KB: not described.
+        r if r.is_gpr32() => Some(r.number() as u32 + 1),
+        _ => None,
+    };
+    let seg = match i.memory_segment() {
+        Register::FS => 1,
+        Register::GS => 2,
+        _ => 0,
+    };
+    let scale = i.memory_index_scale().trailing_zeros();
+    let packed = reg(i.memory_base())? << abi::trap::BASE_SHIFT
+        | reg(i.memory_index())? << abi::trap::INDEX_SHIFT
+        | scale << abi::trap::SCALE_SHIFT
+        | seg << abi::trap::SEG_SHIFT;
+    Some((packed, i.memory_displacement32()))
+}
+
+/// The length of `n` as an unsigned LEB128.
+fn leb_len(n: usize) -> usize {
+    (usize::BITS - (n | 1).leading_zeros()).div_ceil(7) as usize
 }
 
 // ---- Function generation ------------------------------------------------------
@@ -548,6 +647,9 @@ pub struct Residue {
     pub state_loads: u32,
     /// Guest-limit checks on memory accesses.
     pub checks: u32,
+    /// Accesses relying on the engine's bounds trap instead (fast mode).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub traps: u32,
     /// Store-map lookups (taken while code is writable).
     pub store_maps: u32,
     /// Calls and jumps through the address lookup (indirect, or to code
@@ -557,9 +659,16 @@ pub struct Residue {
     pub calls: u32,
 }
 
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
 struct FnGen<'g, 'a> {
     m: &'g ModuleGen<'a>,
     residue: Residue,
+    /// Trapping accesses (fast mode): the index in `out` of the load or
+    /// store, its x86 address and whether it writes.
+    trap_sites: Vec<(usize, u64, bool)>,
     /// Emitting a fault block: not counted in `residue`.
     in_fault: bool,
     f: &'g Function,
@@ -637,6 +746,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let mut g = FnGen {
             m,
             residue: Residue::default(),
+            trap_sites: Vec::new(),
             in_fault: false,
             f,
             a,
@@ -785,14 +895,20 @@ impl<'g, 'a> FnGen<'g, 'a> {
         }
     }
 
-    fn finish(self) -> wasm_encoder::Function {
+    fn finish(self) -> (wasm_encoder::Function, Vec<TrapSite>) {
         let mut func =
             wasm_encoder::Function::new_with_locals_types(self.local_types.iter().copied());
-        for i in &self.out {
+        let mut traps = Vec::with_capacity(self.trap_sites.len());
+        let mut sites = self.trap_sites.iter().peekable();
+        for (k, i) in self.out.iter().enumerate() {
+            while let Some(&(_, eip, write)) = sites.next_if(|s| s.0 == k) {
+                let at = func.byte_len() as u32;
+                traps.push(TrapSite { at, eip, write });
+            }
             func.instruction(i);
         }
         func.instruction(&W::End);
-        func
+        (func, traps)
     }
 
     fn emit(&mut self, i: W<'static>) {
@@ -1193,6 +1309,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
         // each fault block's code after its block's end.
         let body = std::mem::take(&mut self.out);
         let n = self.fault_blocks.len();
+        for s in &mut self.trap_sites {
+            s.0 += n;
+        }
         self.out = Vec::with_capacity(body.len() + n * 32);
         for _ in 0..n {
             self.out.push(W::Block(BlockType::Empty));
@@ -2067,6 +2186,40 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(W::End);
     }
 
+    /// Whether a guest access goes without an explicit check, relying on
+    /// the engine's bounds trap (`CodegenConfig::mem_traps`). The address
+    /// it uses is `addr + off - NULL_LIMIT`, wrapping as x86's does, plus a
+    /// memarg offset of `NULL_LIMIT`: a valid address lands on itself, and
+    /// one in the null region wraps to 4 GB or more, beyond any 32-bit
+    /// memory. So do addresses above the top of memory; those between the
+    /// guest limit and the top (the native region) do not trap.
+    fn trap_access(&self, v: V, mem: &Mem) -> bool {
+        self.m.cfg.mem_traps
+            && self.m.cfg.mem_checks
+            && mem.space == Space::Guest
+            && !mem.atomic
+            && !self.mem64()
+            && self.f.ty(v) == Ty::I32
+    }
+
+    /// Records the access emitted next, which a nearby trapping access
+    /// covered, as a trap site too: its address is not rotated, so the
+    /// engine traps only above the top of memory (or past 4 GB, where x86
+    /// would wrap), which then still raises an access violation there.
+    fn covered_trap_site(&mut self, v: V, mem: &Mem, eip: u64, write: bool) {
+        if self.trap_access(v, mem) {
+            self.trap_sites.push((self.out.len(), eip, write));
+        }
+    }
+
+    /// Pushes the address of a trapping access (see `trap_access`).
+    fn trap_addr(&mut self, la: u32, off: u32) {
+        self.residue.traps += 1;
+        self.emit(W::LocalGet(la));
+        self.emit(W::I32Const(off.wrapping_sub(NULL_LIMIT) as i32));
+        self.emit(W::I32Add);
+    }
+
     fn needs_check(&self, mem: &Mem) -> bool {
         mem.space == Space::Guest && self.m.cfg.mem_checks
     }
@@ -2106,6 +2259,15 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 self.get(*cond);
                 self.emit(W::Select);
             }
+            Op::Load { addr, mem }
+                if self.trap_access(*addr, mem) && !self.check_covered(*addr, mem.offset) =>
+            {
+                let la = self.addr_local(*addr);
+                self.trap_addr(la, mem.offset);
+                self.trap_sites.push((self.out.len(), inst.eip, false));
+                self.emit(load_instr(ty.unwrap(), &trap_mem(mem), false));
+                self.checked(*addr, mem.offset);
+            }
             Op::Load { addr, mem } => {
                 if self.needs_check(mem) && !self.check_covered(*addr, mem.offset) {
                     self.check_addr(*addr, mem.offset, false, dirty, inst.eip);
@@ -2125,8 +2287,20 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     self.emit(W::End);
                 } else {
                     self.emit(W::LocalGet(la));
+                    self.covered_trap_site(*addr, mem, inst.eip, false);
                     self.emit(load_instr(ty, mem, mem.atomic));
                 }
+            }
+            Op::Store { addr, val, mem }
+                if self.trap_access(*addr, mem) && !self.check_covered(*addr, mem.offset) =>
+            {
+                self.check_store(*addr, mem.offset, true, dirty, inst.eip);
+                let la = self.addr_local(*addr);
+                self.trap_addr(la, mem.offset);
+                self.get(*val);
+                self.trap_sites.push((self.out.len(), inst.eip, true));
+                self.emit(store_instr(self.f.ty(*val), &trap_mem(mem), false));
+                self.checked(*addr, mem.offset);
             }
             Op::Store { addr, val, mem } => {
                 if mem.space == Space::Guest {
@@ -2152,6 +2326,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 } else {
                     self.emit(W::LocalGet(la));
                     self.get(*val);
+                    self.covered_trap_site(*addr, mem, inst.eip, true);
                     self.emit(store_instr(vty, mem, mem.atomic));
                 }
             }
@@ -2542,6 +2717,14 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(W::End);
         self.emit(W::End);
         self.emit(W::End);
+    }
+}
+
+/// `mem` as accessed by a trapping access (see `FnGen::trap_access`).
+fn trap_mem(mem: &Mem) -> Mem {
+    Mem {
+        offset: NULL_LIMIT,
+        ..*mem
     }
 }
 

@@ -32,6 +32,7 @@ them. How the lanes work and how to rerun them: [../../comparison.md](../../comp
 | `firstlaunch.json` | Translation time, output size and compile time per image | `node tools/bench/firstlaunch.mjs --json` |
 | `history.json` | The suite at 20 commits from this day's work, each rebuilt from its commit | `tools/bench/history/run.mjs` (below) |
 | `ablations.json` | The current build with one optimization off at a time | `ABL=1 tools/bench/history/run.mjs` |
+| `memory-traps/` | Faithful memory checks against memory traps: the suite, Wine's conformance tests per unit, programs, Csmith and torture logs (see [memory-traps.md](../../memory-traps.md)) | `node tools/bench/suite.mjs --rounds 3 --pin 2 --tiers native,emcc,wwt-wine,wwt-faithful`; `node tests/wine/winetest.mjs --timeout 120 …` with and without `WWT_MEM_TRAPS=0` |
 
 ## The suite
 

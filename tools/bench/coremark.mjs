@@ -29,15 +29,15 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { COREMARK_FILES, fetchCoremark } from './sources.mjs';
 
-const COMMIT = '1f483d5b8316753a742cbf5590caf5bd0a4e4777';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 // The runtimes translate with the newest of the release and debug builds;
 // benchmarks always use the release one.
 process.env.WWT ??= join(root, 'target/release/wwt');
 const src = join(root, 'target/coremark-src');
 const out = join(root, 'target/bench');
-const FILES = ['core_list_join.c', 'core_main.c', 'core_matrix.c', 'core_state.c', 'core_util.c', 'simple/core_portme.c'];
+const FILES = COREMARK_FILES;
 const CHECK_ITERATIONS = 2000;
 const CHECKSUMS = ['seedcrc', '[0]crclist', '[0]crcmatrix', '[0]crcstate', '[0]crcfinal'];
 
@@ -104,15 +104,7 @@ for (const t of opts.tiers ?? ['native', 'emcc', 'wwt', 'wine']) {
 // ---- Builds ----
 
 function fetchSource() {
-  let head = '';
-  try {
-    head = execFileSync('git', ['-C', src, 'rev-parse', 'HEAD'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
-  } catch {}
-  if (head === COMMIT) return;
-  execFileSync('rm', ['-rf', src]);
-  execFileSync('git', ['init', '-q', src]);
-  execFileSync('git', ['-C', src, 'fetch', '-q', '--depth', '1', 'https://github.com/eembc/coremark', COMMIT], { stdio: 'inherit' });
-  execFileSync('git', ['-C', src, 'checkout', '-q', 'FETCH_HEAD']);
+  fetchCoremark(src);
 }
 
 /** Builds one tier; `iterations` 0 means a calibrated performance run. */

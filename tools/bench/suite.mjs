@@ -15,6 +15,8 @@
 //   emcc       the C source built with Emscripten, in Node: the WebAssembly ceiling
 //   wine       the .exe on Wine running natively (`wine` on PATH): Wine without translation
 //   wwt-wine   the .exe translated, on translated Wine, in Node: what we ship
+//              (bounds traps instead of memory checks, docs/memory-traps.md)
+//   wwt-faithful  wwt-wine with faithful memory checks (wine.mjs --no-mem-traps)
 //   wwt-fast   wwt-wine with the program translated in place by the translator
 //              compiled to WebAssembly, as the page does without an
 //              ahead-of-time translation (WWT_TRANSLATOR=wasm)
@@ -36,11 +38,11 @@
 // warmed by one untimed run first, so these are warm-start numbers.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fetchSource } from './sources.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 // The runtimes translate with the newest of the release and debug builds;
@@ -85,6 +87,7 @@ const available = {
   emcc: !!emcc,
   wine: which('wine'),
   'wwt-wine': which('i686-w64-mingw32-gcc') && existsSync(join(root, 'target/release/wwt')) && existsSync(wineBuild),
+  'wwt-faithful': which('i686-w64-mingw32-gcc') && existsSync(join(root, 'target/release/wwt')) && existsSync(wineBuild),
   qemu: which('gcc') && which('qemu-i386'),
   'wwt-fast': which('i686-w64-mingw32-gcc') && existsSync(join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm')) && existsSync(wineBuild),
   'wine-assembly': !!process.env.WINE_ASSEMBLY && existsSync(join(process.env.WINE_ASSEMBLY, 'test/run.js')) && which('i686-w64-mingw32-gcc'),
@@ -92,39 +95,6 @@ const available = {
 const wineAssembly = process.env.WINE_ASSEMBLY;
 
 // ---- Sources ----
-
-const SOURCES = {
-  sqlite: {
-    url: 'https://www.sqlite.org/2025/sqlite-amalgamation-3500400.zip',
-    sha256: '1d3049dd0f830a025a53105fc79fd2ab9431aea99e137809d064d8ee8356b032',
-    file: 'sqlite.zip',
-    unpack: (f) => execFileSync('unzip', ['-qo', f], { cwd: src }),
-  },
-  speedtest1: {
-    url: 'https://raw.githubusercontent.com/sqlite/sqlite/version-3.50.4/test/speedtest1.c',
-    sha256: 'f495cd1c3f727ebf6270d967b43f11a14304053ae4532d6338dbfea65c1a5a78',
-    file: 'speedtest1.c',
-  },
-  lua: {
-    url: 'https://www.lua.org/ftp/lua-5.4.7.tar.gz',
-    sha256: '9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30',
-    file: 'lua.tar.gz',
-    unpack: (f) => execFileSync('tar', ['xzf', f], { cwd: src }),
-  },
-};
-
-function fetchSource(name) {
-  const s = SOURCES[name];
-  const f = join(src, s.file);
-  mkdirSync(src, { recursive: true });
-  if (!existsSync(f)) execFileSync('curl', ['-sSfL', '-o', f, s.url], { stdio: 'inherit' });
-  const got = createHash('sha256').update(readFileSync(f)).digest('hex');
-  if (got !== s.sha256) throw new Error(`${s.file}: SHA-256 ${got}, expected ${s.sha256}`);
-  if (s.unpack && !s.unpacked) {
-    s.unpack(f);
-    s.unpacked = true;
-  }
-}
 
 // ---- Builds ----
 
@@ -158,8 +128,8 @@ function build(name) {
       break;
     }
     case 'sqlite': {
-      fetchSource('sqlite');
-      fetchSource('speedtest1');
+      fetchSource('sqlite', src);
+      fetchSource('speedtest1', src);
       const s = 'sqlite-amalgamation-3500400';
       make(['speedtest1.c', `${s}/sqlite3.c`], ['-DSQLITE_THREADSAFE=0', '-DSQLITE_OMIT_LOAD_EXTENSION', '-DSQLITE_ENABLE_RTREE', `-I${s}`], src, {
         native: ['-lm'],
@@ -167,7 +137,7 @@ function build(name) {
       break;
     }
     case 'lua': {
-      fetchSource('lua');
+      fetchSource('lua', src);
       const dir = join(src, 'lua-5.4.7/src');
       const sources = readdirSync(dir).filter((f) => f.endsWith('.c') && f !== 'luac.c');
       make(sources, [], dir, { native: ['-lm'], emcc: ['-sNODERAWFS'] });
@@ -260,9 +230,16 @@ function command(tier, files, w, dir) {
       );
     case 'wwt-fast':
     case 'wwt-wine':
+    case 'wwt-faithful':
       return [
         process.execPath,
-        [join(root, 'runtime/node/wine.mjs'), ...(w.files ?? []).flatMap(([h, d]) => ['--file', `${h}=${d}`]), files.exe, ...args],
+        [
+          join(root, 'runtime/node/wine.mjs'),
+          ...(tier === 'wwt-faithful' ? ['--no-mem-traps'] : []),
+          ...(w.files ?? []).flatMap(([h, d]) => ['--file', `${h}=${d}`]),
+          files.exe,
+          ...args,
+        ],
       ];
   }
 }
@@ -295,7 +272,7 @@ const median = (xs) => {
   return s.length ? (s[(s.length - 1) >> 1] + s[s.length >> 1]) / 2 : NaN;
 };
 
-const ALL_TIERS = ['native', 'emcc', 'wine', 'qemu', 'wine-assembly', 'wwt-fast', 'wwt-wine'];
+const ALL_TIERS = ['native', 'emcc', 'wine', 'qemu', 'wine-assembly', 'wwt-fast', 'wwt-wine', 'wwt-faithful'];
 const TIERS = ALL_TIERS.filter((t) => available[t] && (!opts.tiers || opts.tiers.includes(t)));
 for (const t of ALL_TIERS) if (!available[t]) console.error(`skipping tier ${t} (not installed${t === 'wine-assembly' ? ': set WINE_ASSEMBLY' : ''})`);
 
@@ -307,6 +284,7 @@ for (const name of Object.keys(WORKLOADS)) {
   const tiers = TIERS.filter((t) => command(t, files, w, '/tmp'));
   // Warm the translation cache (and the OS caches) with one untimed run.
   if (tiers.includes('wwt-wine')) runOnce('wwt-wine', files, w);
+  if (tiers.includes('wwt-faithful')) runOnce('wwt-faithful', files, w);
   const samples = {};
   for (let r = 0; r < opts.rounds; r++) {
     for (const t of tiers) {

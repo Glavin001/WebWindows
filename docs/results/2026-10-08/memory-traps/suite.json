@@ -1,0 +1,246 @@
+{
+  "date": "2026-10-08T10:24:17.171Z",
+  "node": "v22.22.0",
+  "rounds": 3,
+  "machine": {
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.80GHz",
+    "cpus": 4,
+    "kernel": "6.18.44-fc-v80",
+    "governor": null,
+    "pinned": "2",
+    "node": "v22.22.0",
+    "v8": "12.4.254.21-node.33",
+    "gcc": "gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "mingw": "i686-w64-mingw32-gcc (GCC) 13-win32",
+    "emcc": "emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 6.0.11 (a0014542110d6078c3a1a7941fa1ddb3a2281f16)",
+    "wine": "wine-9.0 (Ubuntu 9.0~repack-4build3)",
+    "qemu": "qemu-i386 version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+    "wwt": "e8b2540"
+  },
+  "results": [
+    {
+      "workload": "coremark",
+      "bench": "coremark",
+      "times": {
+        "native": 1.310639999993258,
+        "emcc": 1.4021700000213762,
+        "wwt-wine": 3.348999999986604,
+        "wwt-traps": 3.5560000001346537
+      },
+      "sums": {
+        "native": "0x5275",
+        "emcc": "0x5275",
+        "wwt-wine": "0x5275",
+        "wwt-traps": "0x5275"
+      }
+    },
+    {
+      "workload": "sqlite",
+      "bench": "speedtest1",
+      "times": {
+        "native": 5.255,
+        "emcc": 6.251,
+        "wwt-wine": 20.443,
+        "wwt-traps": 16.585
+      },
+      "sums": {
+        "native": "16569613 d86ce0349d4b2c433ba4690fc44ec34d6e8b41c468596b00",
+        "emcc": "16569613 d86ce0349d4b2c433ba4690fc44ec34d6e8b41c468596b00",
+        "wwt-wine": "16569613 d86ce0349d4b2c433ba4690fc44ec34d6e8b41c468596b00",
+        "wwt-traps": "16569613 d86ce0349d4b2c433ba4690fc44ec34d6e8b41c468596b00"
+      }
+    },
+    {
+      "workload": "lua",
+      "bench": "fib",
+      "times": {
+        "native": 0.044,
+        "emcc": 0.11,
+        "wwt-wine": 0.567,
+        "wwt-traps": 0.481
+      },
+      "sums": {
+        "native": "514229",
+        "emcc": "514229",
+        "wwt-wine": "514229",
+        "wwt-traps": "514229"
+      }
+    },
+    {
+      "workload": "lua",
+      "bench": "tables",
+      "times": {
+        "native": 0.37,
+        "emcc": 0.73,
+        "wwt-wine": 1.43,
+        "wwt-traps": 1.277
+      },
+      "sums": {
+        "native": "599797760",
+        "emcc": "599797760",
+        "wwt-wine": "599797760",
+        "wwt-traps": "599797760"
+      }
+    },
+    {
+      "workload": "lua",
+      "bench": "strings",
+      "times": {
+        "native": 0.23,
+        "emcc": 0.271,
+        "wwt-wine": 1.055,
+        "wwt-traps": 1.005
+      },
+      "sums": {
+        "native": "2637820",
+        "emcc": "2637820",
+        "wwt-wine": "2637820",
+        "wwt-traps": "2637820"
+      }
+    },
+    {
+      "workload": "lua",
+      "bench": "sort",
+      "times": {
+        "native": 0.585,
+        "emcc": 0.615,
+        "wwt-wine": 1.943,
+        "wwt-traps": 1.656
+      },
+      "sums": {
+        "native": "515542025",
+        "emcc": "515542025",
+        "wwt-wine": "515542025",
+        "wwt-traps": "515542025"
+      }
+    },
+    {
+      "workload": "lua",
+      "bench": "objects",
+      "times": {
+        "native": 0.813,
+        "emcc": 1.345,
+        "wwt-wine": 3.992,
+        "wwt-traps": 3.534
+      },
+      "sums": {
+        "native": "573605079",
+        "emcc": "573605079",
+        "wwt-wine": "573605079",
+        "wwt-traps": "573605079"
+      }
+    },
+    {
+      "workload": "lua",
+      "bench": "float",
+      "times": {
+        "native": 0.421,
+        "emcc": 0.908,
+        "wwt-wine": 1.769,
+        "wwt-traps": 1.553
+      },
+      "sums": {
+        "native": "-1.413882",
+        "emcc": "-1.413882",
+        "wwt-wine": "-1.413882",
+        "wwt-traps": "-1.413882"
+      }
+    },
+    {
+      "workload": "apibench",
+      "bench": "heap",
+      "times": {
+        "wwt-wine": 0.041,
+        "wwt-traps": 0.041
+      },
+      "sums": {
+        "wwt-wine": "50940896",
+        "wwt-traps": "50940896"
+      }
+    },
+    {
+      "workload": "apibench",
+      "bench": "malloc",
+      "times": {
+        "wwt-wine": 0.059,
+        "wwt-traps": 0.063
+      },
+      "sums": {
+        "wwt-wine": "50565304",
+        "wwt-traps": "50565304"
+      }
+    },
+    {
+      "workload": "apibench",
+      "bench": "files",
+      "times": {
+        "wwt-wine": 0.487,
+        "wwt-traps": 0.41
+      },
+      "sums": {
+        "wwt-wine": "26914496",
+        "wwt-traps": "26914496"
+      }
+    },
+    {
+      "workload": "apibench",
+      "bench": "seek",
+      "times": {
+        "wwt-wine": 0.338,
+        "wwt-traps": 0.306
+      },
+      "sums": {
+        "wwt-wine": "33458069",
+        "wwt-traps": "33458069"
+      }
+    },
+    {
+      "workload": "apibench",
+      "bench": "strings",
+      "times": {
+        "wwt-wine": 1.651,
+        "wwt-traps": 1.672
+      },
+      "sums": {
+        "wwt-wine": "37896592",
+        "wwt-traps": "37896592"
+      }
+    },
+    {
+      "workload": "apibench",
+      "bench": "sync",
+      "times": {
+        "wwt-wine": 0.158,
+        "wwt-traps": 0.139
+      },
+      "sums": {
+        "wwt-wine": "3007813",
+        "wwt-traps": "3007813"
+      }
+    },
+    {
+      "workload": "apibench",
+      "bench": "qsort",
+      "times": {
+        "wwt-wine": 1.261,
+        "wwt-traps": 1.205
+      },
+      "sums": {
+        "wwt-wine": "10169",
+        "wwt-traps": "10169"
+      }
+    },
+    {
+      "workload": "apibench",
+      "bench": "registry",
+      "times": {
+        "wwt-wine": 0.423,
+        "wwt-traps": 0.427
+      },
+      "sums": {
+        "wwt-wine": "5093856",
+        "wwt-traps": "5093856"
+      }
+    }
+  ]
+}

@@ -6,7 +6,10 @@
 // Options (before the program): --wasm <file> (translated module; default:
 // translate with `wwt`), --wwt <path> (translator binary), --trace (log API
 // calls), --guest-limit <MB>, --profile <file> (append missed addresses),
-// --no-fast (disable run-time translation of code the translator missed).
+// --no-fast (disable run-time translation of code the translator missed),
+// --no-mem-traps (faithful memory checks; by default, where the engine
+// reports where a trap happened, the program is translated with bounds traps
+// instead: wwt translate --mem-traps, docs/memory-traps.md), --mem-traps.
 // 64-bit programs (detected from the PE header) run on a 64-bit (memory64)
 // WebAssembly memory (Node 22.22 and 24 have it; earlier Node 22 releases
 // need --experimental-wasm-memory64); --mem32 runs them on a 32-bit memory
@@ -19,7 +22,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { Machine, ProcessExit, GuestFault, hex, hasMemory64 } from '../runtime.mjs';
+import { Machine, ProcessExit, GuestFault, hex, hasMemory64, trapsMappable } from '../runtime.mjs';
 import { Process } from '../win32.mjs';
 import { peArch } from '../pe.mjs';
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
@@ -71,13 +74,16 @@ export async function runExe(exePath, argv, opts = {}) {
     );
   }
   const m64 = mem64 ? ['--mem64'] : [];
+  // Bounds traps instead of memory checks (wwt translate --mem-traps), by
+  // default where the engine reports where a trap happened.
+  const memTraps = opts.memTraps ?? trapsMappable();
   // x86-64 code on a 64-bit memory has 64-bit code addresses.
   const code64 = mem64 && arch === 'x64';
   let wasmPath = opts.wasm;
   if (!wasmPath) {
     const dir = mkdtempSync(join(tmpdir(), 'wwt-'));
     wasmPath = join(dir, basename(exePath) + '.wasm');
-    const extra = opts.translateArgs ?? [];
+    const extra = [...(opts.translateArgs ?? []), ...(memTraps ? ['--mem-traps'] : [])];
     // A guest limit known at translation time (a constant in the checks)
     // with a 32-bit memory; a 64-bit one reads it at run time.
     const limitMB = opts.guestLimitMB ?? defaultGuestLimitMB(arch, mem64);
@@ -105,7 +111,7 @@ export async function runExe(exePath, argv, opts = {}) {
     const tw = findTranslatorWasm();
     if (tw) {
       const ft = await FastTranslator.load(readFileSync(tw));
-      enableFastMode(machine, ft, { log: opts.verbose ? (s) => stderr(s + '\n') : undefined });
+      enableFastMode(machine, ft, { log: opts.verbose ? (s) => stderr(s + '\n') : undefined, memTraps });
     }
   }
   const mod = await machine.loadModule(readFileSync(wasmPath), basename(wasmPath));
@@ -148,6 +154,8 @@ async function main() {
     else if (a === '--guest-limit') opts.guestLimitMB = Number(args.shift());
     else if (a === '--mem64') opts.mem64 = true;
     else if (a === '--mem32') opts.mem64 = false;
+    else if (a === '--mem-traps') opts.memTraps = true;
+    else if (a === '--no-mem-traps') opts.memTraps = false;
     else throw new Error(`unknown option ${a}`);
   }
   const exe = args.shift();

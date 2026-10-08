@@ -1,0 +1,9 @@
+== programs traps
+45 runs: 45 pass, 0 fail, 0 skipped, 0 expected failures, 0 build errors
+== csmith traps
+80 runs: 74 pass, 0 fail, 6 skipped, 0 expected failures, 0 build errors
+== programs wine traps
+45 runs: 45 pass, 0 fail, 0 skipped, 0 expected failures, 0 build errors
+== win32 traps
+16/16 Windows test programs passed on translated Wine
+P2-DONE

@@ -7,7 +7,7 @@
 // InputRing of keyboard and mouse events); 'screen' tells the page the
 // first frame is there.
 
-import { Machine, ProcessExit, GuestFault, hasMemory64 } from '../runtime.mjs';
+import { Machine, ProcessExit, GuestFault, hasMemory64, trapsMappable } from '../runtime.mjs';
 import { Process } from '../win32.mjs';
 import { peArch } from '../pe.mjs';
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
@@ -69,7 +69,7 @@ async function cacheWrite(dir, name, bytes) {
  * its 32-bit-memory variant: the same DLLs below 2 GB, translated for a
  * 32-bit memory, and the Unix side lowered to one.
  */
-async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, key, bundleUrl, bundle64Url, bundle64m32Url, memory64, display: shared, debug, d3dCanvas, d3dOffscreen, d3dPort }) {
+async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, key, memTraps, bundleUrl, bundle64Url, bundle64m32Url, memory64, display: shared, debug, d3dCanvas, d3dOffscreen, d3dPort }) {
   const x64 = peArch(exe) === 'x64';
   const mem64 = x64 && memory64;
   const base = new URL(mem64 ? bundle64Url : x64 ? bundle64m32Url : bundleUrl, self.location.href);
@@ -172,7 +172,8 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
   files.set(exeDos, exe);
   const translateTimed = (path, bytes) => {
     const t = performance.now();
-    const w = ft.translatePe(bytes, { mem64, guestLimit: WINE_GUEST_LIMIT });
+    // The program alone with bounds traps (Wine's DLLs come translated in the bundle).
+    const w = ft.translatePe(bytes, { mem64, guestLimit: WINE_GUEST_LIMIT, memTraps: memTraps && path === exeDos });
     log(`translated ${path} in ${(performance.now() - t).toFixed(0)} ms`);
     return w;
   };
@@ -206,7 +207,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
     log,
   });
   await machine.init();
-  enableFastMode(machine, ft, { log });
+  enableFastMode(machine, ft, { log, memTraps });
   let unix = null;
   if (layout) {
     const ring = new InputRing(shared.input);
@@ -268,16 +269,20 @@ onmessage = async (e) => {
   const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, bundle64Url, bundle64m32Url, display, audio, debug, d3dCanvas, d3dOffscreen, d3dPort } = e.data;
   // The page tests for 64-bit WebAssembly memory once (hasMemory64).
   const memory64 = e.data.memory64 ?? hasMemory64();
+  // Bounds traps instead of memory checks where this engine's stack traces
+  // locate a trap (docs/memory-traps.md), unless the page says otherwise.
+  const memTraps = e.data.memTraps ?? trapsMappable();
+  log(`memory checks: ${memTraps ? 'bounds traps' : 'faithful'}`);
   const enc = new TextEncoder();
   try {
     const t0 = performance.now();
     const ft = await FastTranslator.load(await (await fetch(translatorUrl)).arrayBuffer());
     const abi = ft.abi();
     const exe = new Uint8Array(exeBytes);
-    const key = `${await sha256(exe)}-abi${abi.version}-g${guestLimitMB}`;
+    const key = `${await sha256(exe)}-abi${abi.version}-g${guestLimitMB}${memTraps ? '-traps' : ''}`;
     const dir = noCache ? null : await cacheDir();
     if (wine) {
-      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, bundle64Url, bundle64m32Url, memory64, display: display && { ...display, audio }, debug, d3dCanvas, d3dOffscreen, d3dPort });
+      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, memTraps, bundleUrl, bundle64Url, bundle64m32Url, memory64, display: display && { ...display, audio }, debug, d3dCanvas, d3dOffscreen, d3dPort });
       if (r.error) postMessage({ type: 'stderr', bytes: enc.encode(`\n*** ${r.error.message}\n`) });
       postMessage({ type: 'exit', code: r.error ? null : r.exitCode, translated: false, runMs: r.runMs, wine: true });
       return;
@@ -302,7 +307,7 @@ onmessage = async (e) => {
     let translated = false;
     if (!wasm) {
       const t = performance.now();
-      wasm = ft.translatePe(exe, { profile, mem64, guestLimit: limitMB * 1024 * 1024 });
+      wasm = ft.translatePe(exe, { profile, mem64, guestLimit: limitMB * 1024 * 1024, memTraps });
       if (!wasm.length) throw new Error('translation failed');
       translated = true;
       log(`translated ${exeName} in ${(performance.now() - t).toFixed(0)} ms (${(wasm.length / 1024).toFixed(0)} KB${profile.length ? `, ${profile.length} profiled entries` : ''})`);
@@ -314,7 +319,7 @@ onmessage = async (e) => {
     const code64 = arch === 'x64' && mem64;
     const machine = new Machine({ abi, kernel: ft.kernel({ mem64, code64 }), arch, mem64, guestLimit: limitMB * 1024 * 1024, log });
     await machine.init();
-    enableFastMode(machine, ft, { log });
+    enableFastMode(machine, ft, { log, memTraps });
     const mod = await machine.loadModule(wasm, exeName);
     const fileMap = new Map(Object.entries(files).map(([k, v]) => [k.toLowerCase(), new Uint8Array(v)]));
     const proc = new Process(machine, {
