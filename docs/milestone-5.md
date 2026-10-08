@@ -100,7 +100,15 @@ Windows threads run in the one JavaScript thread that runs the program
   yield back to them.
 * Threads switch when one blocks, and at system calls once a thread has run
   for 20 ms while others are ready. Code that spins without system calls,
-  waiting for another thread, is not preempted.
+  waiting for another thread, is preempted too: translated loops compare
+  the tick count with the thread's slice deadline (`cpu.PREEMPT_AT`) at
+  their back edges, and past it the thread yields as at a system call,
+  resuming at the loop header later (fast mode translates the header as an
+  entry). A thread under a callback or a nested wait keeps running instead.
+* A blocked thread's wait completes when the scheduler checks it: at least
+  once a slice, and right after an event is set or a semaphore or mutex
+  released, so a waiter does not miss an event that is set and reset again
+  before its turn (condition variables built on events do that).
 * Programs of the era were written for one processor, so running one
   thread at a time costs them little, and nothing has to be shared between
   workers: the host's state, Wine's Unix side (whose C code is not
