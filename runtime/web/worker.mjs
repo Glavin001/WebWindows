@@ -7,7 +7,7 @@
 // InputRing of keyboard and mouse events); 'screen' tells the page the
 // first frame is there.
 
-import { Machine, ProcessExit, GuestFault, hasMemory64 } from '../runtime.mjs';
+import { Machine, ProcessExit, GuestFault, hasMemory64, trapsMappable } from '../runtime.mjs';
 import { Process } from '../win32.mjs';
 import { peArch } from '../pe.mjs';
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
@@ -266,9 +266,13 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
 }
 
 onmessage = async (e) => {
-  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, memTraps = false, wine, bundleUrl, bundle64Url, bundle64m32Url, display, audio, debug, d3dCanvas, d3dOffscreen, d3dPort } = e.data;
+  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, bundle64Url, bundle64m32Url, display, audio, debug, d3dCanvas, d3dOffscreen, d3dPort } = e.data;
   // The page tests for 64-bit WebAssembly memory once (hasMemory64).
   const memory64 = e.data.memory64 ?? hasMemory64();
+  // Bounds traps instead of memory checks where this engine's stack traces
+  // locate a trap (docs/memory-traps.md), unless the page says otherwise.
+  const memTraps = e.data.memTraps ?? trapsMappable();
+  log(`memory checks: ${memTraps ? 'bounds traps' : 'faithful'}`);
   const enc = new TextEncoder();
   try {
     const t0 = performance.now();

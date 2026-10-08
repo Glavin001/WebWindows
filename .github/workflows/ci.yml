@@ -100,6 +100,8 @@ jobs:
         run: cargo run -p wwt-testkit --bin record -- --check
       - name: Programs (layer 2)
         run: node tests/programs/check.mjs --jobs 4
+      - name: Programs with faithful memory checks (layer 2; the default is bounds traps)
+        run: node tests/programs/check.mjs --no-mem-traps --opt O0,O2 --jobs 4
       - name: Csmith (layer 2)
         run: node tests/programs/check.mjs --csmith 40 --seed ${{ github.run_number }}000 --opt O0,O2 --jobs 4
       - name: Programs, x86-64 on 64-bit memory (layer 2)
@@ -122,6 +124,7 @@ jobs:
           node tests/web/browser.mjs tests/fixtures/binaries/jumps-O2.exe "longjmp returned 50 at depth 25"
           node tests/web/browser.mjs target/programs-x64/jumps-O2.exe "longjmp returned 50 at depth 25"
           node tests/web/nomemory64.mjs
+          node tests/web/traps.mjs
       - name: d3dgpu scenes in the browser (headless Chromium WebGPU)
         run: |
           runtime/d3dgpu/build.sh
@@ -462,6 +465,9 @@ jobs:
       - name: Windows test programs on translated Wine (exceptions, threads, sound, DirectDraw)
         if: matrix.suite == 'programs'
         run: node tests/wine/win32.mjs --jobs 4
+      - name: Exceptions with faithful memory checks (the default is bounds traps)
+        if: matrix.suite == 'programs'
+        run: WWT_MEM_TRAPS=0 node tests/wine/win32.mjs --jobs 4 seh unhandled
       - uses: actions/upload-artifact@v4
         if: always() && matrix.suite == 'programs'
         with:

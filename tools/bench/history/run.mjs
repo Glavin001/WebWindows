@@ -114,6 +114,7 @@ const ABL = [
   ['atomics', 'Atomic RMW (--atomics)', { WWT_TRANSLATE_FLAGS: '--atomics' }],
   ['storemap', 'Store map on every store', { WWT_STORE_MAP: 'always' }],
   ['nochecks', 'No memory checks (unsafe bound)', { WWT_TRANSLATE_FLAGS: '--no-mem-checks' }],
+  ['faithful', 'Faithful memory checks (no bounds traps)', { WWT_MEM_TRAPS: '0' }],
 ];
 if (process.env.ABL) {
   for (const [label, title, env] of ABL) {

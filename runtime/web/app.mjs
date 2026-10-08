@@ -288,9 +288,11 @@ async function run(exeName, exeBytes, files, exePath) {
         argv: args ? args.split(/\s+/) : [],
         translatorUrl,
         noCache: $('nocache').checked,
-        // ?memtraps=1: the program translated with bounds traps instead of
-        // memory checks (wwt translate --mem-traps).
-        memTraps: params.get('memtraps') === '1',
+        // The program is translated with bounds traps instead of memory
+        // checks (wwt translate --mem-traps) where the engine reports where
+        // a trap happened (Chrome, Firefox; not Safari): ?memtraps=0 or 1
+        // overrides.
+        memTraps: params.has('memtraps') ? params.get('memtraps') === '1' : undefined,
         wine,
         bundleUrl,
         bundle64Url,

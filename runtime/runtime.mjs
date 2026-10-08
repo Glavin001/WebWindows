@@ -106,6 +106,30 @@ function newMemory64(pages) {
   }
 }
 
+/**
+ * Whether this engine's stack traces give the module offset of a
+ * WebAssembly trap ("wasm-function[N]:0xOFFSET": V8 and SpiderMonkey, not
+ * JavaScriptCore), which memory traps need to find the faulting x86
+ * instruction (see `Machine.trapSite`). Checked once, on a module that
+ * loads past the end of its memory.
+ */
+let trapsMappableResult;
+export function trapsMappable() {
+  if (trapsMappableResult !== undefined) return trapsMappableResult;
+  // (func (result i32) i32.const 0x20000 i32.load) with a one-page memory.
+  const bytes = new Uint8Array([
+    0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 5, 1, 0x60, 0, 1, 0x7f, 3, 2, 1, 0, 5, 3, 1, 0, 1, 7, 5, 1, 1, 102, 0, 0,
+    10, 11, 1, 9, 0, 0x41, 0x80, 0x80, 0x08, 0x28, 2, 0, 0x0b,
+  ]);
+  try {
+    new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports.f();
+    trapsMappableResult = false;
+  } catch (e) {
+    trapsMappableResult = e instanceof WebAssembly.RuntimeError && /wasm-function\[\d+\]:0x[0-9a-f]+/.test(String(e.stack));
+  }
+  return trapsMappableResult;
+}
+
 /** Whether this engine has 64-bit (memory64) shared WebAssembly memory. */
 export function hasMemory64() {
   try {
