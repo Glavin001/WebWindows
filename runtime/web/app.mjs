@@ -378,6 +378,9 @@ async function run(exeName, exeBytes, files, exePath, times = {}) {
         memory64,
         // ?debug=+d3d: Wine's debug channels (WINEDEBUG), on stderr.
         debug: params.get('debug') ?? '',
+        // ?unixtrace=win,key: the channels of Wine's Unix side (win32u,
+        // wineserver, the display driver "browser"; "all" for every one).
+        unixTrace: params.get('unixtrace') ?? '',
         display: screen && { width: screen.width, height: screen.height, screen: screen.screen, frame: screen.frame, input: screen.input },
         audio,
         d3dCanvas: d3dOffscreen?.canvas,
