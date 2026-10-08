@@ -93,9 +93,16 @@ export class VirtualMemory {
     for (let p = p0; p < p1; p++) {
       if (this.region[p] < 0) return false;
     }
-    for (let p = p0; p < p1; p++) {
-      if (!this.prot[p]) this.m.u8.fill(0, p * PAGE, (p + 1) * PAGE);
-      this.prot[p] = prot;
+    // Zero each run of pages not yet committed with one fill.
+    for (let p = p0; p < p1; ) {
+      if (this.prot[p]) {
+        this.prot[p++] = prot;
+        continue;
+      }
+      let q = p;
+      while (q < p1 && !this.prot[q]) this.prot[q++] = prot;
+      this.m.u8.fill(0, p * PAGE, q * PAGE);
+      p = q;
     }
     return true;
   }

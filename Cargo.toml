@@ -5,6 +5,8 @@ members = [
     "crates/wwt-cli",
     "crates/wwt-testkit",
     "crates/wwt-wasm",
+    "crates/wwt-heap",
+    "crates/wwt-strings",
     "crates/d3dgpu-proto",
     "crates/d3dgpu-emu",
     "crates/d3dgpu-shader",
@@ -59,6 +61,14 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# The native heap runs on every allocation: optimize it for speed.
+[profile.release-wasm.package.wwt-heap]
+opt-level = 3
+
+# So do the native string functions.
+[profile.release-wasm.package.wwt-strings]
+opt-level = 3
 
 # The d3dgpu render core in the browser: speed over size, about 40% less
 # CPU per draw than opt-level "s" for an 11% larger module.

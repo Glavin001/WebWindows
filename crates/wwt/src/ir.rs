@@ -782,6 +782,25 @@ pub enum Term {
         code: u32,
         eip: u32,
     },
+    /// Leave the function through a native implementation: the host's
+    /// import of this name, tail-called with the CPU state written back. It
+    /// does the whole x86 function (reads the arguments from the stack, sets
+    /// the registers, pops the return address) and returns the next address
+    /// (see `crate::builtin`).
+    Native(&'static str),
+    /// Try a native implementation before the translated code: call the
+    /// host's import of this name with the CPU state written back, followed
+    /// by `args` (constants the translator resolved, such as the addresses
+    /// of data the implementation reads). It either does the whole x86
+    /// function, like [`Term::Native`], and returns the next address, which
+    /// leaves the function; or it declines by returning 0 without changing
+    /// any state, and the function continues at `fallback`, its translated
+    /// body (see `crate::builtin::NATIVE_TRY`).
+    NativeTry {
+        name: &'static str,
+        args: Vec<u32>,
+        fallback: BlockId,
+    },
     /// Placeholder during construction.
     None,
 }
@@ -804,6 +823,7 @@ impl Term {
                 v
             }
             Term::Call { cont, .. } => vec![*cont],
+            Term::NativeTry { fallback, .. } => vec![*fallback],
             _ => vec![],
         }
     }
@@ -814,6 +834,7 @@ impl Term {
             Term::Branch { t, f, .. } => vec![t, f],
             Term::Switch { targets, .. } => targets.iter_mut().collect(),
             Term::Call { cont, .. } => vec![cont],
+            Term::NativeTry { fallback, .. } => vec![fallback],
             _ => vec![],
         }
     }
@@ -859,6 +880,8 @@ impl Term {
                 | Term::JmpInd(_)
                 | Term::Fault { .. }
                 | Term::Switch { .. }
+                | Term::Native(_)
+                | Term::NativeTry { .. }
         )
     }
 
@@ -884,6 +907,86 @@ pub struct Function {
     pub blocks: Vec<Block>,
     /// Type of every vreg, including state vregs.
     pub vtypes: Vec<Ty>,
+    /// What the code may assume about state across calls and returns.
+    pub abi: CallAbi,
+}
+
+/// What a function may assume about the machine state across its calls and
+/// returns. The default assumes nothing: all state is written back at both.
+/// Compiled C never reads the arithmetic flags across a call or return and
+/// its callees preserve ebx, esi, edi and ebp; not all hand-written
+/// assembly does (Delphi's runtime returns comparison results in the
+/// flags, MSVC's `_aulldvrm` returns in ebx:ecx), so these are only assumed
+/// for code known or shown to rely on them nowhere.
+#[derive(Debug, Clone, Default)]
+pub struct CallAbi {
+    /// No caller reads the flags after this function returns: they are not
+    /// written back at returns.
+    pub flags_dead_at_ret: bool,
+    /// Which callees do not read the flags on entry: the flags are not
+    /// written back before calls to them.
+    pub flag_free_callees: FlagFreeCallees,
+    /// Callees preserve ebx, esi, edi and ebp, which keep their values in
+    /// locals across a call instead of being reloaded. (They are still
+    /// written back before it, for code that captures them: setjmp,
+    /// exception dispatch.)
+    pub callee_saved: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub enum FlagFreeCallees {
+    /// None known: always write the flags back.
+    #[default]
+    None,
+    /// Every callee.
+    All,
+    /// Direct calls to the functions listed, and indirect calls except
+    /// through the import slots listed.
+    Known(std::sync::Arc<FlagFree>),
+}
+
+#[derive(Debug, Default)]
+pub struct FlagFree {
+    /// The module's function entries.
+    pub entries: std::collections::HashSet<u32>,
+    /// Those that need the flags on entry (grows while it is computed, see
+    /// `translate::prove_flags_abi`).
+    pub needing: std::sync::RwLock<std::collections::HashSet<u32>>,
+    /// Import address table slots of functions that read the flags
+    /// (`call [slot]`).
+    pub reading_slots: std::collections::HashSet<u32>,
+}
+
+impl CallAbi {
+    /// The C calling convention, for code known to be compiled C.
+    pub fn c() -> CallAbi {
+        CallAbi {
+            flags_dead_at_ret: true,
+            flag_free_callees: FlagFreeCallees::All,
+            callee_saved: true,
+        }
+    }
+
+    /// Whether a direct call to `target` may read the flags on entry.
+    pub fn direct_callee_reads_flags(&self, target: u32) -> bool {
+        match &self.flag_free_callees {
+            FlagFreeCallees::None => true,
+            FlagFreeCallees::All => false,
+            FlagFreeCallees::Known(k) => {
+                !k.entries.contains(&target) || k.needing.read().unwrap().contains(&target)
+            }
+        }
+    }
+
+    /// Whether an indirect call may read the flags on entry, given the
+    /// import slot it calls through when known.
+    pub fn indirect_callee_reads_flags(&self, slot: Option<u32>) -> bool {
+        match &self.flag_free_callees {
+            FlagFreeCallees::None => true,
+            FlagFreeCallees::All => false,
+            FlagFreeCallees::Known(k) => slot.is_some_and(|s| k.reading_slots.contains(&s)),
+        }
+    }
 }
 
 impl Function {
@@ -897,6 +1000,7 @@ impl Function {
             entry,
             blocks: vec![],
             vtypes,
+            abi: CallAbi::default(),
         }
     }
 
@@ -1136,6 +1240,12 @@ impl fmt::Display for Function {
                 Term::Ret(v) => format!("ret {}", VName(*v)),
                 Term::JmpInd(v) => format!("jmp {}", VName(*v)),
                 Term::Fault { code, eip } => format!("fault {code:#x} at {eip:#x}"),
+                Term::Native(n) => format!("native {n}"),
+                Term::NativeTry {
+                    name,
+                    args,
+                    fallback,
+                } => format!("native {name}{args:x?} or b{fallback}"),
                 Term::None => "<none>".into(),
             };
             writeln!(f, "    {t}")?;

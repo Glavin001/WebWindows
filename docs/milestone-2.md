@@ -113,7 +113,9 @@ On the development machine (Xeon @ 2.1 GHz, Node 22 / Chromium):
 | Translated Wine, Chromium (browser page) | ~8,900–9,500 | ~36–38% |
 
 Wine adds no measurable cost to compute-bound code: its DLLs are only on
-the path for system calls. Raising this ratio is M7 work.
+the path for system calls. These were the M2 numbers; for the current ones,
+the comparison with Emscripten (the same C compiled straight to
+WebAssembly) and the profiling tools, see [performance.md](performance.md).
 
 **Geekbench.** Geekbench 5 and 6 ship only 64-bit (and ARM64) benchmark
 binaries, outside the plan's 32-bit scope. Geekbench 3 and 4 include 32-bit

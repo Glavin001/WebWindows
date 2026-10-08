@@ -6,6 +6,7 @@
 import { ProcessExit, hex } from '../runtime.mjs';
 import { parsePe, GL_UNIXLIB, WS2_32_UNIXLIB } from './host.mjs';
 import { WIN32U_UNIXLIB } from './unix.mjs';
+import { aliasImportThunks } from './thunks.mjs';
 import { WINED3D_UNIXLIB } from './d3d.mjs';
 import { AUDIO_UNIXLIB } from './audio.mjs';
 import { ntRaiseException, restoreContext } from './exceptions.mjs';
@@ -66,6 +67,70 @@ function iosb(h, addr, status, info) {
   if (!addr) return;
   h.w32(addr, status);
   h.w32(addr + 4, info);
+}
+
+// ---- File contents ----
+//
+// A file's bytes live in `h.files` (path -> Uint8Array whose length is the
+// file size). Every handle reads them from there, so a write through one
+// handle is seen by the others. Growing files keep spare capacity in the
+// view's buffer, so appending does not copy the whole file each time.
+
+/** The current bytes of an open regular file. */
+function fileBytes(h, f) {
+  return (f.path && h.files.get(f.path)) || f.data || new Uint8Array(0);
+}
+
+/** Sets a file's size, zero-filling any new bytes. */
+function setFileSize(h, f, size) {
+  const cur = fileBytes(h, f);
+  let next;
+  if (size <= cur.length) {
+    next = cur.subarray(0, size);
+  } else if (cur.byteOffset === 0 && size <= cur.buffer.byteLength && !(cur.buffer instanceof SharedArrayBuffer)) {
+    next = new Uint8Array(cur.buffer, 0, size);
+    next.fill(0, cur.length);
+  } else {
+    const cap = Math.max(size, cur.length * 2, 0x10000);
+    let buf = h.spareFileBuffer;
+    if (buf && buf.byteLength >= cap) {
+      h.spareFileBuffer = null;
+    } else {
+      buf = new ArrayBuffer(cap);
+    }
+    next = new Uint8Array(buf, 0, size);
+    next.set(cur);
+    next.fill(0, cur.length);
+  }
+  if (f.path) h.files.set(f.path, next);
+  f.data = next;
+  return next;
+}
+
+/** Writes `bytes` at `pos`, extending the file as needed. */
+function writeFileBytes(h, f, pos, bytes) {
+  let data = fileBytes(h, f);
+  if (pos + bytes.length > data.length) data = setFileSize(h, f, pos + bytes.length);
+  data.set(bytes, pos);
+}
+
+/** Deletes files whose last handle closed with a deletion pending. */
+function closeFile(h, f) {
+  if (!f.path || !h.deletePending?.has(f.path)) return;
+  for (const o of h.handles.values()) if (o !== f && o.type === 'file' && o.path === f.path) return;
+  h.deletePending.delete(f.path);
+  if (f.dir) {
+    h.dirs.delete(f.path);
+    return;
+  }
+  const bytes = h.files.get(f.path);
+  h.files.delete(f.path);
+  // Keep the largest buffer of a deleted file for the next file that grows:
+  // a program that deletes and recreates a file (SQLite's journal, once per
+  // transaction) then reuses it instead of growing a new one from nothing.
+  if (bytes && bytes.byteOffset === 0 && !(bytes.buffer instanceof SharedArrayBuffer)) {
+    if (!h.spareFileBuffer || bytes.buffer.byteLength > h.spareFileBuffer.byteLength) h.spareFileBuffer = bytes.buffer;
+  }
 }
 
 /** Resolves an OBJECT_ATTRIBUTES to a DOS path. */
@@ -163,6 +228,12 @@ export const SYSCALLS = {
     const old = this.vm.protect(base, end - base, prot);
     if (old < 0) return STATUS.NOT_MAPPED_VIEW;
     if (pold) this.w32(pold, old);
+    // The loader restores an image's protection after filling its imports.
+    if (this.aliasThunks) {
+      for (const [b, img] of this.images) {
+        if (base >= b && base < b + img.size) aliasImportThunks(this.m, b, b + img.size);
+      }
+    }
     this.w32(pbase, base);
     this.w32(psize, end - base);
     return STATUS.SUCCESS;
@@ -236,7 +307,9 @@ export const SYSCALLS = {
   NtClose(a) {
     const h = a(0);
     if (!this.handles.has(h)) return STATUS.INVALID_HANDLE;
+    const obj = this.handles.get(h);
     this.handles.delete(h);
+    if (obj?.type === 'file') closeFile(this, obj);
     return STATUS.SUCCESS;
   },
   NtDuplicateObject(a) {
@@ -450,7 +523,7 @@ export const SYSCALLS = {
     return STATUS.SUCCESS;
   },
   NtQueryDefaultLocale(a) {
-    this.w32(a(1), 0x409);
+    this.w32(a(1), a(0) ? this.userLocale : 0x409);
     return STATUS.SUCCESS;
   },
 
@@ -492,12 +565,12 @@ export const SYSCALLS = {
 
   // -- files
   NtCreateFile(a) {
-    const [ph, , oa, piosb, , attrs, , disposition] = [a(0), a(1), a(2), a(3), a(4), a(5), a(6), a(7)];
+    const [ph, , oa, piosb, , attrs, , disposition, options] = [a(0), a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8)];
     void attrs;
-    return openFile(this, ph, oa, piosb, disposition);
+    return openFile(this, ph, oa, piosb, disposition, options);
   },
   NtOpenFile(a) {
-    return openFile(this, a(0), a(2), a(3), 1 /* FILE_OPEN */);
+    return openFile(this, a(0), a(2), a(3), 1 /* FILE_OPEN */, a(5));
   },
   NtQueryAttributesFile(a) {
     const path = oaPath(this, a(0));
@@ -524,7 +597,7 @@ export const SYSCALLS = {
     const [h, piosb, buf, len, cls] = [a(0), a(1), a(2), a(3), a(4)];
     const f = this.object(h);
     if (!f || f.type !== 'file') return STATUS.INVALID_HANDLE;
-    const size = f.data ? f.data.length : 0;
+    const size = f.dir || f.std ? 0 : fileBytes(this, f).length;
     const done = (n) => (iosb(this, piosb, 0, n), STATUS.SUCCESS);
     switch (cls) {
       case 4: // FileBasicInformation
@@ -580,8 +653,34 @@ export const SYSCALLS = {
     const [h, piosb, buf, , cls] = [a(0), a(1), a(2), a(3), a(4)];
     const f = this.object(h);
     if (!f) return STATUS.INVALID_HANDLE;
-    if (cls === 14) f.pos = Number(this.u64(buf));
+    switch (cls) {
+      case 14: // FilePositionInformation
+        f.pos = Number(this.u64(buf));
+        break;
+      case 20: // FileEndOfFileInformation
+        if (f.type === 'file' && !f.dir && !f.std) setFileSize(this, f, Number(this.u64(buf)));
+        break;
+      case 13: // FileDispositionInformation: BOOLEAN DeleteFile
+      case 64: {
+        // FileDispositionInformationEx: FILE_DISPOSITION_DELETE (1)
+        const del = cls === 13 ? this.m.u8[buf] !== 0 : (this.u32(buf) & 1) !== 0;
+        if (!f.path) break;
+        this.deletePending ??= new Set();
+        if (del) this.deletePending.add(f.path);
+        else this.deletePending.delete(f.path);
+        break;
+      }
+    }
     iosb(this, piosb, 0, 0);
+    return STATUS.SUCCESS;
+  },
+  // One process: byte-range locks never conflict.
+  NtLockFile(a) {
+    iosb(this, a(4), 0, 0);
+    return STATUS.SUCCESS;
+  },
+  NtUnlockFile(a) {
+    iosb(this, a(1), 0, 0);
     return STATUS.SUCCESS;
   },
   NtReadFile(a) {
@@ -597,32 +696,33 @@ export const SYSCALLS = {
       const o = this.u64(poff);
       if (o !== 0xfffffffffffffffen && o !== 0xffffffffffffffffn) pos = Number(o);
     }
-    const n = Math.max(0, Math.min(len, f.data.length - pos));
+    const data = fileBytes(this, f);
+    const n = Math.max(0, Math.min(len, data.length - pos));
     if (n === 0 && len > 0) {
       iosb(this, piosb, STATUS.END_OF_FILE, 0);
       return STATUS.END_OF_FILE;
     }
-    this.m.u8.set(f.data.subarray(pos, pos + n), buf);
+    this.m.u8.set(data.subarray(pos, pos + n), buf);
     f.pos = pos + n;
     iosb(this, piosb, 0, n);
     return STATUS.SUCCESS;
   },
   NtWriteFile(a) {
-    const [h, , , , piosb, buf, len] = [a(0), a(1), a(2), a(3), a(4), a(5), a(6)];
+    const [h, , , , piosb, buf, len, poff] = [a(0), a(1), a(2), a(3), a(4), a(5), a(6), a(7)];
     const f = this.object(h);
     if (!f || f.type !== 'file') return STATUS.INVALID_HANDLE;
-    const bytes = this.m.u8.slice(buf, buf + len);
-    if (f.std === 'stdout') this.stdout(bytes);
-    else if (f.std === 'stderr') this.stderr(bytes);
-    else if (f.data) {
-      const pos = f.pos ?? 0;
-      if (pos + len > f.data.length) {
-        const n = new Uint8Array(pos + len);
-        n.set(f.data);
-        f.data = n;
-        this.files.set(f.path, n);
+    if (f.std === 'stdout') this.stdout(this.m.u8.slice(buf, buf + len));
+    else if (f.std === 'stderr') this.stderr(this.m.u8.slice(buf, buf + len));
+    else if (!f.dir) {
+      // An explicit offset, or FILE_WRITE_TO_END_OF_FILE (-1), or the file
+      // pointer (FILE_USE_FILE_POINTER_POSITION, -2, or no offset).
+      let pos = f.pos ?? 0;
+      if (poff) {
+        const o = this.u64(poff);
+        if (o === 0xffffffffffffffffn) pos = fileBytes(this, f).length;
+        else if (o !== 0xfffffffffffffffen) pos = Number(o);
       }
-      f.data.set(bytes, pos);
+      writeFileBytes(this, f, pos, this.m.u8.subarray(buf, buf + len));
       f.pos = pos + len;
     }
     iosb(this, piosb, 0, len);
@@ -646,11 +746,14 @@ export const SYSCALLS = {
     if (!dir || dir.type !== 'file') return STATUS.INVALID_HANDLE;
     if (!dir.dir) return STATUS.INVALID_PARAMETER;
     // FILE_INFORMATION_CLASS -> offset of FileName (and of FileId, if any).
-    // 60 and 63 are the FileIdExtd... classes (a 128-bit FileId) Wine 11's
-    // FindFirstFileEx asks for.
+    // 60/63 (FileIdExtd[Both]DirectoryInformation, which Wine 11's
+    // FindFirstFileEx asks for) have a 128-bit FileId; the low half is set.
     const LAYOUT = { 1: [64], 2: [68], 3: [94], 12: [12], 37: [104, 96], 38: [80, 72], 60: [88, 72], 63: [114, 72] };
     const layout = LAYOUT[cls];
-    if (!layout) return STATUS.INVALID_INFO_CLASS;
+    if (!layout) {
+      this.log(`NtQueryDirectoryFile class ${cls} not implemented`);
+      return STATUS.INVALID_INFO_CLASS;
+    }
     // The listing is taken on the first call (or a restart), with its mask.
     if (restart || !dir.listing) {
       const mask = pmask ? this.ustr(pmask) : '*';
@@ -833,7 +936,7 @@ function mapReadOnlyFile(h, path) {
   return r;
 }
 
-function openFile(h, ph, oa, piosb, disposition) {
+function openFile(h, ph, oa, piosb, disposition, options = 0) {
   const path = oaPath(h, oa);
   if (!path) return STATUS.OBJECT_NAME_INVALID;
   const raw = oaName(h, oa);
@@ -850,7 +953,12 @@ function openFile(h, ph, oa, piosb, disposition) {
       const parent = path.replace(/\\[^\\]*$/, '');
       return h.isDir(parent) ? STATUS.OBJECT_NAME_NOT_FOUND : STATUS.OBJECT_PATH_NOT_FOUND;
     }
-    h.files.set(path, new Uint8Array(0));
+    if (options & 1) {
+      // FILE_DIRECTORY_FILE: a new directory (CreateDirectory).
+      h.dirs.add(path);
+    } else {
+      h.files.set(path, new Uint8Array(0));
+    }
     fi = fileInfo(h, path);
   } else if (disposition === 2) {
     return STATUS.OBJECT_NAME_COLLISION;
@@ -859,6 +967,11 @@ function openFile(h, ph, oa, piosb, disposition) {
     fi = fileInfo(h, path);
   }
   const obj = { type: 'file', path, dir: fi.dir, data: fi.dir ? null : h.fileAt(path), pos: 0 };
+  if (options & 0x1000) {
+    // FILE_DELETE_ON_CLOSE
+    h.deletePending ??= new Set();
+    h.deletePending.add(path);
+  }
   h.w32(ph, h.newHandle(obj));
   iosb(h, piosb, 0, 1); // FILE_OPENED
   return STATUS.SUCCESS;

@@ -6,19 +6,62 @@ on:
   push:
     branches: [main]
 
-# A new push to a pull request cancels its run that is still going.
-concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+# A new push to a pull request cancels the tests of its run that is still
+# going (each test job's concurrency group), but not the build and the
+# deployment: the preview of the commit before still goes up.
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  # A cache download that stalls gives up after two minutes, not ten.
+  SEGMENT_DOWNLOAD_TIMEOUT_MINS: 2
+  # Pinned so Wine's Unix side (built with it) can be cached.
+  EMSDK_VERSION: 6.0.11
 
+# The jobs, and what waits for what:
+#
+#   changes ─┬─ linux ────────────────────────┬─ windows ─┐
+#            ├─ torture (2 shards) ───────────│───────────┤
+#            ├─ emscripten ───────────────────│───────────┼─ CI passed
+#            └─ wine-build ─┬─ wine (5 shards)┘           │
+#                           └─ deploy (Preview/Production)┘
+#
+# A change to nothing but documentation (Markdown, docs/) skips everything
+# except the last job, which passes; protect main with that one check.
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # A file is code when it matches all of these.
+          predicate-quantifier: every
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!docs/**'
+
   # Everything that runs on x86 Linux, which is also the source of truth for
   # instruction behavior: the oracle re-records every case on this CPU.
   linux:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    concurrency:
+      group: ${{ github.workflow }}-linux-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -29,10 +72,10 @@ jobs:
         with:
           node-version: 22
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install toolchains
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 csmith binaryen mesa-vulkan-drivers
+        run: tools/ci/apt-install.sh gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 csmith binaryen mesa-vulkan-drivers
       - name: Format
         run: cargo fmt --all --check
       - name: Build
@@ -54,10 +97,6 @@ jobs:
         run: node tests/programs/check.mjs --jobs 4
       - name: Csmith (layer 2)
         run: node tests/programs/check.mjs --csmith 40 --seed ${{ github.run_number }}000 --opt O0,O2 --jobs 4
-      - name: GCC torture (layer 2)
-        run: |
-          sh tools/torture/fetch.sh
-          node tests/programs/check.mjs --torture target/gcc-src/gcc/testsuite/gcc.c-torture/execute --opt O0,O2 --jobs 4
       - name: Instruction coverage of MinGW output
         run: cargo run -p wwt-testkit --bin coverage -- target/programs/*.exe
       - name: Memory spike
@@ -80,16 +119,21 @@ jobs:
             target/programs/*.exe
             target/programs/results*.json
 
-  # Milestone 2: programs on Wine's own DLLs, translated (not ported).
-  wine:
+  # GCC's execution torture tests (layer 2) on the JavaScript Win32 shims,
+  # split in two.
+  torture:
+    name: torture (${{ matrix.shard }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    concurrency:
+      group: ${{ github.workflow }}-torture-${{ matrix.shard }}-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
-    # Comments the Vercel preview's link on pull requests.
-    permissions:
-      contents: read
-      pull-requests: write
-    env:
-      WINE_SRC: ${{ github.workspace }}/../wine-src/wine-11.0
-      WINE_BUILD: ${{ github.workspace }}/../wine-build
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1/2, 2/2]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -98,111 +142,265 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # The linux job's cache: it builds the same translators.
       - uses: Swatinem/rust-cache@v2
-      - name: Install toolchains
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 flex bison libfreetype-dev
-      - uses: actions/cache@v4
         with:
-          path: |
-            ${{ github.workspace }}/../wine-src
-            ${{ github.workspace }}/../wine-build
-          key: wine-${{ hashFiles('tools/wine/**', 'native/audio/**') }}
-      - name: Build Wine's i386 PE DLLs, programs and conformance tests
-        run: |
-          sh tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost \
-            user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 \
-            rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts \
-            hid version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d d3d9 d3dcompiler_47 dinput dinput8 setupapi \
-            ws2_32 wsock32 iphlpapi dnsapi nsi \
-            kernel32/tests user32/tests gdi32/tests
-      - uses: mymindstorm/setup-emsdk@v14
+          shared-key: linux
+          save-if: false
+      - name: Install toolchains
+        run: tools/ci/apt-install.sh gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686
+      # The translator, and the one compiled to WebAssembly that translates
+      # what was not translated ahead of time (run.mjs).
       - name: Build
         run: |
-          cargo build --release -p wwt-cli
+          cargo build -p wwt-cli
           cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
-          sh native/wine-unix/build.sh
-          runtime/d3dgpu/build.sh
-      # The static site (page, runtime, translator, Wine bundle), deployed
-      # to Vercel as a prebuilt output (Vercel builds nothing): a preview
-      # for pull requests, production for main. Not for forks, which get no
-      # secrets.
+      - name: GCC torture (layer 2)
+        run: |
+          sh tools/torture/fetch.sh
+          node tests/programs/check.mjs --torture target/gcc-src/gcc/testsuite/gcc.c-torture/execute --opt O0,O2 --jobs 4 --shard ${{ matrix.shard }}
+
+  # Milestone 2 on: Wine's own DLLs, translated (not ported). Builds Wine,
+  # its Unix side, the translator and the site once; the shards below and
+  # the deployment take them from here.
+  wine-build:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      current: ${{ steps.head.outputs.current != 'false' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Keyed as the wine job that built these before was.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wine
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Started first, to build while Wine is restored and brought up to
+      # date; the bundle step waits for it.
+      - name: Build the translator and the d3dgpu module (in the background)
+        run: |
+          { cargo build --release -p wwt-cli \
+            && cargo build -p wwt-wasm -p wwt-heap -p wwt-strings --target wasm32-unknown-unknown --profile release-wasm \
+            && runtime/d3dgpu/build.sh; echo $? > "$RUNNER_TEMP/rust.tmp"; mv "$RUNNER_TEMP/rust.tmp" "$RUNNER_TEMP/rust.status"; } > "$RUNNER_TEMP/rust.log" 2>&1 &
+      - uses: ./.github/actions/wine
+        id: wine
+        with:
+          save: 'true'
+      # Wine's Unix side (wineserver, ntdll's and win32u's Unix parts) depends
+      # on its sources, Wine's configuration (tools/wine/build.sh) and
+      # Emscripten; not on the PE DLLs or wined3d's backend, which change
+      # far more often.
+      - uses: actions/cache/restore@v4
+        id: wine-unix
+        with:
+          path: |
+            target/wine-unix/wine_unix.mjs
+            target/wine-unix/wine_unix.wasm
+            target/wine-unix/wine_unix.json
+            target/wine-unix/win32u_syscalls.json
+          key: wine-unix-${{ env.EMSDK_VERSION }}-${{ hashFiles('native/wine-unix/**', 'tools/wine/build.sh') }}
+      - uses: mymindstorm/setup-emsdk@v14
+        if: steps.wine-unix.outputs.cache-hit != 'true'
+        with:
+          version: ${{ env.EMSDK_VERSION }}
+      - name: Wine's Unix side (Emscripten)
+        if: steps.wine-unix.outputs.cache-hit != 'true'
+        run: sh native/wine-unix/build.sh
+      - uses: actions/cache/save@v4
+        if: steps.wine-unix.outputs.cache-hit != 'true'
+        with:
+          path: |
+            target/wine-unix/wine_unix.mjs
+            target/wine-unix/wine_unix.wasm
+            target/wine-unix/wine_unix.json
+            target/wine-unix/win32u_syscalls.json
+          key: ${{ steps.wine-unix.outputs.cache-primary-key }}
+      - name: Wait for the translator and the d3dgpu module
+        run: |
+          while [ ! -f "$RUNNER_TEMP/rust.status" ]; do sleep 1; done
+          cat "$RUNNER_TEMP/rust.log"
+          exit "$(cat "$RUNNER_TEMP/rust.status")"
+      - name: The Wine bundle
+        run: node runtime/node/wine-bundle.mjs
+      # One archive: it keeps the translator executable, and it is quicker
+      # to move than the bundle's files one by one.
+      - name: Pack the build
+        run: |
+          tar -cf - target/release/wwt target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm \
+            target/wasm32-unknown-unknown/release-wasm/wwt_heap.wasm target/wasm32-unknown-unknown/release-wasm/wwt_strings.wasm \
+            target/wine-unix/wine_unix.mjs target/wine-unix/wine_unix.wasm target/wine-unix/wine_unix.json \
+            target/wine-unix/win32u_syscalls.json target/wine-bundle runtime/d3dgpu/pkg \
+            | zstd -T0 -3 -o wine-build.tar.zst
+          ls -la wine-build.tar.zst
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wine-build
+          path: wine-build.tar.zst
+          compression-level: 0
+          retention-days: 7
+      - name: Is this commit still the pull request's head?
+        id: head
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.pulls.get({ ...context.repo, pull_number: context.issue.number });
+            core.setOutput('current', String(data.head.sha === context.payload.pull_request.head.sha));
+
+  # The static site (page, runtime, translator, Wine bundle), deployed to
+  # Vercel as a prebuilt output (Vercel builds nothing): the Preview
+  # environment for pull requests, Production for main. Each shows on the
+  # pull request (or the commit) with a link to the deployment. Not for
+  # forks, which get no secrets.
+  deploy:
+    needs: wine-build
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # One at a time per pull request (and for production); a running one
+    # finishes, a waiting one gives way to a newer commit's.
+    concurrency:
+      group: ${{ github.workflow }}-deploy-${{ github.event.pull_request.number || 'production' }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && 'Production' || 'Preview' }}
+      url: ${{ steps.vercel.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: wine-build
+      - name: Unpack the build
+        run: zstd -dc wine-build.tar.zst | tar -xf -
+      - uses: actions/cache@v4
+        with:
+          path: ~/.npm/_npx
+          key: npx-vercel-62
       - name: Deploy the site to Vercel
         id: vercel
-        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: team_9BEP6m6pAw2dpH7RJPuYYHK8
           VERCEL_PROJECT_ID: prj_4EvacVdNNW0IJFbS2MH3tuqOglvq
+          TARGET: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && 'production' || 'preview' }}
         run: |
-          node runtime/node/wine-bundle.mjs
-          sh tools/site/deploy.sh "$([ "$GITHUB_EVENT_NAME" = push ] && echo production || echo preview)" | tee vercel.log
-          url=$(tail -n 1 vercel.log)
+          sh tools/site/deploy.sh "$TARGET" | tee vercel.log
+          url=$(tail -n 1 vercel.log)/runtime/web/
           echo "url=$url" >> "$GITHUB_OUTPUT"
-          echo "Site: $url" >> "$GITHUB_STEP_SUMMARY"
-      - name: Link the preview on the pull request
-        if: steps.vercel.outputs.url && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        env:
-          URL: ${{ steps.vercel.outputs.url }}
+          echo "Site ($TARGET) of ${GITHUB_SHA::7}: $url" >> "$GITHUB_STEP_SUMMARY"
+
+  # The Wine tests, in parallel shards on the build above.
+  wine:
+    name: wine (${{ matrix.suite }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
+    needs: wine-build
+    # A shard of an older commit starting after the newer commit's would
+    # cancel it: a run that a newer push overtook leaves the Wine tests to
+    # that push's run.
+    if: needs.wine-build.outputs.current == 'true'
+    concurrency:
+      group: ${{ github.workflow }}-wine-${{ matrix.suite }}-${{ matrix.shard }}-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: programs
+          - suite: kernel32, gdi32
+          - suite: user32
+          - suite: torture
+            shard: 1/2
+          - suite: torture
+            shard: 2/2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          script: |
-            const marker = '<!-- vercel-preview -->';
-            const body = `${marker}\nPreview of ${context.payload.pull_request.head.sha.slice(0, 7)}: ${process.env.URL}/runtime/web/`;
-            const { owner, repo } = context.repo;
-            const issue_number = context.issue.number;
-            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
-            const old = comments.find((c) => c.body.startsWith(marker));
-            if (old) await github.rest.issues.updateComment({ owner, repo, comment_id: old.id, body });
-            else await github.rest.issues.createComment({ owner, repo, issue_number, body });
+          node-version: 22
+      - uses: ./.github/actions/wine
+      - uses: actions/download-artifact@v4
+        with:
+          name: wine-build
+      - name: Unpack the build
+        run: zstd -dc wine-build.tar.zst | tar -xf -
+
       - name: Programs on translated Wine
+        if: matrix.suite == 'programs'
         run: node tests/programs/check.mjs --wine --jobs 4
       - name: Windows test programs on translated Wine (exceptions, threads, sound, DirectDraw)
+        if: matrix.suite == 'programs'
         run: node tests/wine/win32.mjs --jobs 4
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && matrix.suite == 'programs'
         with:
           name: win32-programs
           path: |
             target/win32/*.exe
             target/win32/results-win32.json
-      - name: Wine's kernel32 tests (layer 3), against the recorded baseline
-        run: |
-          node tests/wine/winetest.mjs --jobs 4 --timeout 60 --baseline tests/wine/baseline/kernel32_test.json \
-            "$WINE_BUILD/dlls/kernel32/tests/i386-windows/kernel32_test.exe"
       - name: GUI programs on translated Wine (browser display driver, headless)
+        if: matrix.suite == 'programs'
         run: node tests/wine/gui.mjs
-      - name: Wine's user32 and gdi32 tests, against the recorded baselines
-        run: |
-          node tests/wine/winetest.mjs --jobs 4 --timeout 120 --baseline tests/wine/baseline/user32_test.json \
-            "$WINE_BUILD/dlls/user32/tests/i386-windows/user32_test.exe"
-          node tests/wine/winetest.mjs --jobs 4 --timeout 120 --baseline tests/wine/baseline/gdi32_test.json \
-            "$WINE_BUILD/dlls/gdi32/tests/i386-windows/gdi32_test.exe"
-      - name: GCC torture on translated Wine
-        run: |
-          sh tools/torture/fetch.sh
-          node tests/programs/check.mjs --wine --torture target/gcc-src/gcc/testsuite/gcc.c-torture/execute --opt O2 --jobs 4
       - name: Browser on translated Wine (headless Chromium)
+        if: matrix.suite == 'programs'
         run: |
           npx --yes playwright@1 install --with-deps chromium
           npm install --no-save playwright@1
-          node runtime/node/wine-bundle.mjs
           node tests/web/browser.mjs tests/programs/hello.exe "Hello from translated x86!" --wine
           node tests/web/picker.mjs
           node tests/web/gui.mjs
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && matrix.suite == 'programs'
         with:
           name: gui-screens
           path: target/gui/*.png
+
+      - name: Wine's kernel32 tests (layer 3), against the recorded baseline
+        if: matrix.suite == 'kernel32, gdi32'
+        run: |
+          node tests/wine/winetest.mjs --jobs 4 --timeout 60 --baseline tests/wine/baseline/kernel32_test.json \
+            "$WINE_BUILD/dlls/kernel32/tests/i386-windows/kernel32_test.exe"
+      - name: Wine's gdi32 tests, against the recorded baseline
+        if: matrix.suite == 'kernel32, gdi32'
+        run: |
+          node tests/wine/winetest.mjs --jobs 4 --timeout 120 --baseline tests/wine/baseline/gdi32_test.json \
+            "$WINE_BUILD/dlls/gdi32/tests/i386-windows/gdi32_test.exe"
+      - name: Wine's user32 tests, against the recorded baseline
+        if: matrix.suite == 'user32'
+        run: |
+          node tests/wine/winetest.mjs --jobs 4 --timeout 120 --baseline tests/wine/baseline/user32_test.json \
+            "$WINE_BUILD/dlls/user32/tests/i386-windows/user32_test.exe"
+
+      - name: GCC torture on translated Wine
+        if: matrix.suite == 'torture'
+        run: |
+          sh tools/torture/fetch.sh
+          node tests/programs/check.mjs --wine --torture target/gcc-src/gcc/testsuite/gcc.c-torture/execute --opt O2 --jobs 4 --shard ${{ matrix.shard }}
 
   # Runs the same MinGW executables on real Windows and checks they print
   # what the translated runs printed (validating the Linux reference, and
   # the recorded output of the Windows-only test programs).
   windows:
     needs: [linux, wine]
+    concurrency:
+      group: ${{ github.workflow }}-windows-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: windows-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -221,11 +419,35 @@ jobs:
 
   # Spike: Emscripten's data, heap and stacks above the guest limit.
   emscripten:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    concurrency:
+      group: ${{ github.workflow }}-emscripten-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EMSDK_VERSION }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: spikes/emscripten/build.sh
+
+  # The one check to require: it passes when every job above passed or was
+  # skipped (documentation-only changes, forks' deployments). A run that a
+  # newer push overtook fails it: its tests were cancelled or not run.
+  ci:
+    name: CI passed
+    if: always()
+    needs: [changes, linux, torture, wine-build, deploy, wine, windows, emscripten]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed or was skipped
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || needs.wine-build.outputs.current == 'false'
+        run: |
+          echo '${{ toJSON(needs) }}'
+          exit 1

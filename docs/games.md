@@ -62,7 +62,7 @@ exits with code 5 before opening its window; not looked into yet.
   is set or a semaphore or mutex released.
 * **Spinning without system calls.** FTEQW's main thread waits for its
   workers in a loop that makes no system calls. Translated loops now check
-  the thread's slice deadline at their back edges and yield (ABI version 5:
+  the thread's slice deadline at their back edges and yield (ABI version 6:
   a `preempt` import, a `tick` address, `cpu.PREEMPT_AT`).
 * **`*.*` matched nothing.** Wine's `FindFirstFile` turns `*.*` into NT's
   DOS wildcards (`<`, `>`, `"`), which the host's directory listing now

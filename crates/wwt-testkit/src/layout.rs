@@ -16,6 +16,7 @@ pub const STACK: u32 = MEM_BASE + 0x1c0;
 pub const NATIVE_BASE: u32 = 0x0100_0000;
 pub const L1: u32 = NATIVE_BASE;
 pub const ZERO_L2: u32 = NATIVE_BASE + 0x40_0000;
-pub const CODE_BITMAP: u32 = ZERO_L2 + 0x4000;
-pub const CPU: u32 = CODE_BITMAP + 0x2_0000;
+/// One byte per 4 KB page of the 4 GB space (`wwt::abi::store_map`).
+pub const STORE_MAP: u32 = ZERO_L2 + 0x4000;
+pub const CPU: u32 = STORE_MAP + 0x10_0000;
 pub const MEMORY_PAGES: u64 = (CPU as u64 + 0x1_0000) / 65536 + 1;

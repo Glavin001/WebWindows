@@ -21,6 +21,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { parsePe, peImports as imports, rebaseImage } from '../wine/host.mjs';
+import { NATIVE_HEAP_FLAG } from '../wine/heap.mjs';
+import { NATIVE_STRINGS_DLLS, NATIVE_STRINGS_FLAG } from '../wine/strings.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const out = resolve(process.argv[2] ?? join(root, 'target/wine-bundle'));
@@ -73,6 +75,13 @@ function stripped(path) {
 
 const unixDir = join(root, 'target/wine-unix');
 const withUnix = existsSync(join(unixDir, 'wine_unix.mjs'));
+// ntdll's heap as native WebAssembly (crates/wwt-heap), when built: the
+// bundle's ntdll then imports it (--native-heap), and the bundle ships it.
+const heapWasm = join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_heap.wasm');
+const withHeap = existsSync(heapWasm);
+// Likewise the native string and locale functions (crates/wwt-strings).
+const stringsWasm = join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_strings.wasm');
+const withStrings = existsSync(stringsWasm);
 
 mkdirSync(out, { recursive: true });
 const manifest = { wine: '11.0', dlls: {}, nls: [] };
@@ -97,8 +106,22 @@ for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS] : [])]) {
   }
   writeFileSync(join(out, name), bytes);
   const media = MEDIA_DLLS.includes(d);
-  execFileSync(wwt, ['translate', ...(TRANSLATE_FLAGS[d] ?? []), join(out, name), '-o', join(out, `${name}.wasm`)], { stdio: ['ignore', 'ignore', 'inherit'] });
+  // The browser runs Wine with a 2 GB guest (runtime/web/worker.mjs).
+  const flags = [...(TRANSLATE_FLAGS[d] ?? []), '--guest-limit-mb', '2048'];
+  if (withHeap && d === 'ntdll') flags.push(NATIVE_HEAP_FLAG);
+  if (withStrings && NATIVE_STRINGS_DLLS.includes(name)) flags.push(NATIVE_STRINGS_FLAG);
+  execFileSync(wwt, ['translate', ...flags, join(out, name), '-o', join(out, `${name}.wasm`)], {
+    stdio: ['ignore', 'ignore', 'inherit'],
+  });
   manifest.dlls[name] = { pe: name, wasm: `${name}.wasm`, ...(media && { group: 'media' }) };
+}
+if (withHeap) {
+  copyFileSync(heapWasm, join(out, 'wwt_heap.wasm'));
+  manifest.heap = 'wwt_heap.wasm';
+}
+if (withStrings) {
+  copyFileSync(stringsWasm, join(out, 'wwt_strings.wasm'));
+  manifest.strings = 'wwt_strings.wasm';
 }
 for (const n of NLS) {
   copyFileSync(join(wineSrc, 'nls', `${n}.nls`), join(out, `${n}.nls`));

@@ -129,21 +129,21 @@ pub fn cf(kind: u32) -> E {
 
 pub fn zf(kind: u32) -> E {
     match op_of(kind) {
-        EXPLICIT => bit(Fr, 6),
+        EXPLICIT | SAHF => bit(Fr, 6),
         _ => not1(Fr),
     }
 }
 
 pub fn sf(kind: u32) -> E {
     match op_of(kind) {
-        EXPLICIT => bit(Fr, 7),
+        EXPLICIT | SAHF => bit(Fr, 7),
         _ => sign(Fr, width_of(kind)),
     }
 }
 
 pub fn pf(kind: u32) -> E {
     match op_of(kind) {
-        EXPLICIT => bit(Fr, 2),
+        EXPLICIT | SAHF => bit(Fr, 2),
         _ => not1(and(Un(UnOp::I32Popcnt, Box::new(and(Fr, K(0xff)))), K(1))),
     }
 }
@@ -154,7 +154,7 @@ pub fn af(kind: u32) -> E {
         INC => not1(and(Fr, K(0xf))),
         DEC => bin(BinOp::I32Eq, and(Fr, K(0xf)), K(0xf)),
         NEG => bit(xor(Fa, Fr), 4),
-        EXPLICIT => bit(Fr, 4),
+        EXPLICIT | SAHF => bit(Fr, 4),
         _ => K(0),
     }
 }
@@ -170,6 +170,7 @@ pub fn of(kind: u32) -> E {
         SHL => xor(sign(Fr, w), cf(kind)),
         SHR => sign(Fa, w),
         MUL => Fb,
+        SAHF => Fa,
         _ => bit(Fr, 11),
     }
 }
@@ -178,6 +179,9 @@ pub fn of(kind: u32) -> E {
 pub fn eflags(kind: u32) -> E {
     if op_of(kind) == EXPLICIT {
         return and(Fr, K(fl::ARITH));
+    }
+    if op_of(kind) == SAHF {
+        return or(and(Fr, K(fl::ARITH & !fl::OF)), shl(Fa, 11));
     }
     let mut e = cf(kind);
     e = or(e, shl(pf(kind), 2));
@@ -236,7 +240,7 @@ fn direct(cc: Cc, op: u32, w: u32) -> Option<E> {
         (LOGIC, Cc::GE) | (LOGIC, Cc::NS) => not1(sign(Fr, w)),
         (LOGIC, Cc::LE) => bin(BinOp::I32LeS, s(Fr), K(0)),
         (LOGIC, Cc::G) => bin(BinOp::I32GtS, s(Fr), K(0)),
-        (_, Cc::NE) if op != EXPLICIT => bin(BinOp::I32Ne, Fr, K(0)),
+        (_, Cc::NE) if op != EXPLICIT && op != SAHF => bin(BinOp::I32Ne, Fr, K(0)),
         _ => return None,
     })
 }

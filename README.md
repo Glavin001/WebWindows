@@ -32,6 +32,8 @@ node runtime/node/run.mjs tests/programs/hello.exe
 # On translated Wine (build Wine's i386 PE DLLs first; needs flex, bison):
 tools/wine/build.sh
 cargo build --release -p wwt-cli
+cargo build -p wwt-heap --target wasm32-unknown-unknown --profile release-wasm  # ntdll's heap, native
+cargo build -p wwt-strings --target wasm32-unknown-unknown --profile release-wasm  # string functions, native
 node runtime/node/wine.mjs tests/programs/hello.exe
 
 # Windowed programs: Wine's Unix side with Emscripten (emcc on PATH), the
@@ -52,12 +54,12 @@ node runtime/web/serve.mjs 8080
 # http://localhost:8080/runtime/web/
 ```
 
-CI runs for pull requests and for `main`. Its wine job also deploys the
-static site to Vercel (`tools/site/deploy.sh`, with the `VERCEL_TOKEN`
-secret): a preview for each pull request, linked in a comment on it, and
-production for `main`. The site goes up prebuilt, with its cross-origin
-isolation headers, so Vercel builds nothing (`vercel.json` turns its Git
-builds off).
+CI runs for pull requests and for `main`. Its deploy job puts the static
+site on Vercel (`tools/site/deploy.sh`, with the `VERCEL_TOKEN` secret)
+as a GitHub deployment: the `Preview` environment for pull requests (the
+pull request links it), `Production` for `main`. The site goes up
+prebuilt, with its cross-origin isolation headers, so Vercel builds
+nothing (`vercel.json` turns its Git builds off).
 
 The CLI also inspects and translates binaries:
 
@@ -117,6 +119,7 @@ The plan's verification pipeline, as implemented:
 | 3. Wine's own tests | Every unit of Wine's `kernel32`, `user32` and `gdi32` conformance tests on translated Wine, against recorded baselines | `node tests/wine/winetest.mjs --baseline tests/wine/baseline/user32_test.json .../user32_test.exe` |
 | 4. Real software (start) | The browser front end in headless Chromium: the cache and profile loop, the folder picker, Wine's Minesweeper and Notepad driven with mouse and keyboard, and Direct3D 9 test programs on WebGPU; the same windowed programs headless in Node with screenshots; a Direct3D 9 benchmark | `node tests/web/browser.mjs`, `tests/web/picker.mjs`, `tests/web/gui.mjs`, `tests/wine/gui.mjs`, `tests/web/d3d9bench.mjs` |
 | 5. Own output | Snapshots of IR and WAT for committed binaries | `cargo test -p wwt --test snapshots` |
+| Speed | CoreMark native vs. Emscripten vs. translated, with checksum check; profiles by function | `node tools/bench/coremark.mjs`, see [docs/performance.md](docs/performance.md) |
 
 Instruction fixtures (`tests/fixtures/instructions/*.jsonl.gz`) are recorded
 on x86 hardware and replayed anywhere:
@@ -130,6 +133,10 @@ cargo run -p wwt-testkit --bin coverage -- *.exe # forms in binaries vs suite
 CI (`.github/workflows/ci.yml`) runs all of this on x86 Linux runners,
 re-checks the fixtures against the runner's CPU, runs the same MinGW
 executables natively on a Windows runner, and runs the Emscripten spike.
+Wine is built once per run (from a cached build tree) and its tests and
+the GCC torture tests run in parallel shards (`check.mjs --shard K/N`).
+A change to nothing but documentation (Markdown, `docs/`) skips it all;
+the `CI passed` job sums up the run and is the one check to require.
 
 ## Repository layout
 
@@ -137,6 +144,8 @@ executables natively on a Windows runner, and runs the Emscripten spike.
 crates/wwt          translator library
 crates/wwt-cli      `wwt` command-line tool
 crates/wwt-wasm     translator compiled to WebAssembly (fast mode, browser)
+crates/wwt-heap     ntdll's heap as native WebAssembly, for translated Wine
+crates/wwt-strings  hot string, locale and TLS functions as native WebAssembly, for translated Wine
 crates/wwt-testkit  instruction generator, oracle driver, wasmtime runner
 crates/d3dgpu-*     Direct3D 9/10/11 on WebGPU core: protocol, shader translators
                     (SM1-3, DXBC SM4/5), emulation library, render core (wgpu),
@@ -150,11 +159,11 @@ tools/wine          builds Wine's i386 PE DLLs, programs, tests and fonts
 tools/wine-layout   generates Wine's structure layouts for the runtime
 tools/samples       builds the test programs the web page lists (runtime/web/samples.json)
 tools/torture       fetches GCC's torture tests
-tools/bench         CoreMark: native vs. translated (shims and Wine)
+tools/bench         CoreMark tiers incl. Emscripten, profiler, per-function comparison, A/B
 tools/site          assembles the static site and deploys it to Vercel
 tests/              fixtures, test programs, Csmith runtime, browser test
 spikes/             M1 spikes: memory size, Emscripten above the guest limit
-docs/               the plan (plan.md) and each milestone's status
+docs/               the plan (plan.md), each milestone's status, performance guide
 ```
 
 ## Direct3D on WebGPU
