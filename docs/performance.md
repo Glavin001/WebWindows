@@ -209,8 +209,10 @@ What running real programs found that CoreMark could not:
   (`cpu::CODE_WRITABLE`). While no such page exists, which is the usual
   case, stores skip the store map and share guest-limit checks like loads
   do, with 64 KB of nothing above the guest limit
-  (`native_layout::GUARD`). Lua +8% (strings +16%), apibench +4%.
-  `WWT_STORE_MAP=always` keeps the lookup on.
+  (`native_layout::GUARD`). Against the lookup on every store
+  (`WWT_STORE_MAP=always`, which keeps it on), Lua is 8% faster and
+  apibench 4%; against the build before the flag existed the gain is
+  smaller (Lua fib 6%, sort 3%, the rest within noise).
 - **Wine's heap** (`RtlAllocateHeap` and friends) was 15–17% of Lua's time:
   handle checks, the LFH front end, critical sections and free lists, all
   as translated x86 with a register write-back at every internal call. It
