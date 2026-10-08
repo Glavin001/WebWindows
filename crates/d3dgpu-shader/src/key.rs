@@ -159,6 +159,20 @@ pub enum Fog {
     Linear,
     Exp,
     Exp2,
+    /// Vertex fog whose `FOG` varying carries the fog coordinate (eye
+    /// distance or depth), turned into the factor per pixel by
+    /// `D3DRS_FOGVERTEXMODE`'s equation: wined3d's fixed-function vertex
+    /// shaders work this way.
+    VertexLinear,
+    VertexExp,
+    VertexExp2,
+}
+
+impl Fog {
+    /// Whether the fog reads the `FOG` varying.
+    pub fn uses_varying(self) -> bool {
+        matches!(self, Fog::Vertex | Fog::VertexLinear | Fog::VertexExp | Fog::VertexExp2)
+    }
 }
 
 /// Pixel shader variant key.

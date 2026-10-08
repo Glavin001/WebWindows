@@ -478,6 +478,9 @@ static inline void wgpu_set_render_state(struct wined3d_device_wgpu *device, uin
         wgpu_send_render_state(device, state, value);
 }
 
+/* The last fence any device signalled. */
+static uint64_t wgpu_last_fence;
+
 /* Signals a fence and waits for it, then copies `size` bytes of the
  * readback region at `offset` to `dst`. */
 static void wgpu_wait(struct wined3d_device_wgpu *device, uint32_t offset, uint32_t size, void *dst)
@@ -485,7 +488,11 @@ static void wgpu_wait(struct wined3d_device_wgpu *device, uint32_t offset, uint3
     struct d3dgpu_cmd_signal *cmd;
     struct wgpu_wait_params params;
 
-    ++device->fence;
+    /* The core's fence counts for the whole process: a device created
+     * after another continues from it, or it would take the first one's
+     * completed fences for its own and read stale data. */
+    device->fence = max(device->fence, wgpu_last_fence) + 1;
+    wgpu_last_fence = device->fence;
     if ((cmd = wgpu_cmd(device, D3DGPU_OP_SIGNAL, sizeof(*cmd))))
     {
         cmd->fence_lo = device->fence;
@@ -950,8 +957,8 @@ static void wgpu_download(struct wined3d_device_wgpu *device, struct wined3d_tex
             cmd->dest_offset = 0;
             cmd->row_pitch = row_pitch;
             cmd->slice_pitch = row_pitch * ((part.height + block_h - 1) / block_h);
-            cmd->fence_lo = device->fence + 1;
-            cmd->fence_hi = (device->fence + 1) >> 32;
+            cmd->fence_lo = max(device->fence, wgpu_last_fence) + 1;
+            cmd->fence_hi = (max(device->fence, wgpu_last_fence) + 1) >> 32;
             wgpu_wait(device, 0, cmd->slice_pitch, dst + z * slice_pitch + (y / block_h) * row_pitch);
         }
     }
@@ -1752,6 +1759,31 @@ static void wgpu_apply_render_states(struct wined3d_device_wgpu *device, struct 
     if (ps_consts)
         wgpu_set_render_state(device, WINED3D_RS_ALPHAREF, lrintf(ps_consts->alpha_test_ref * 255.0f));
     wgpu_set_render_state(device, WINED3D_RS_SRGBWRITEENABLE, state->extra_ps_args.srgb_write);
+    /* Fog, applied by the core after pixel shaders before 3.0. wined3d's
+     * fixed-function vertex shaders output the fog coordinate, which the
+     * core turns into the factor with FOGVERTEXMODE's equation; a program's
+     * vertex shader (or pre-transformed vertices) gives the factor itself,
+     * which FOGVERTEXMODE NONE tells it. Start and end come back from the
+     * constants (end, 1 / (end - start)); a zero scale fogs everything. */
+    wgpu_set_render_state(device, WINED3D_RS_FOGENABLE, state->extra_ps_args.fog_enable);
+    wgpu_set_render_state(device, WINED3D_RS_FOGTABLEMODE, state->extra_ps_args.fog_mode);
+    {
+        const struct wined3d_shader *vs = state->shader[WINED3D_SHADER_TYPE_VERTEX];
+        bool rhw = state->vertex_declaration && state->vertex_declaration->position_transformed;
+
+        wgpu_set_render_state(device, WINED3D_RS_FOGVERTEXMODE, (!vs || vs->is_ffp_vs) && !rhw
+                ? state->render_states[WINED3D_RS_FOGVERTEXMODE] : WINED3D_FOG_NONE);
+    }
+    if (ps_consts)
+    {
+        const struct wined3d_ffp_fog_constants *fog = &ps_consts->fog;
+        float start = fog->scale > 0.0f ? fog->end - 1.0f / fog->scale : fog->end;
+
+        wgpu_set_render_state(device, WINED3D_RS_FOGCOLOR, d3dcolor_from_wined3d(&fog->colour));
+        wgpu_set_render_state(device, WINED3D_RS_FOGSTART, float_bits(start));
+        wgpu_set_render_state(device, WINED3D_RS_FOGEND, float_bits(fog->end));
+        wgpu_set_render_state(device, WINED3D_RS_FOGDENSITY, float_bits(fog->density));
+    }
     wgpu_set_render_state(device, WINED3D_RS_CLIPPLANEENABLE, state->extra_vs_args.clip_planes);
     if (vs_consts && state->extra_vs_args.clip_planes)
     {

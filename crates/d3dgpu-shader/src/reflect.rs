@@ -264,7 +264,7 @@ pub fn ps_linkage(refl: &Reflection, key: &PixelKey) -> Vec<Varying> {
         })
         .collect();
     let fog = Semantic::new(usage::FOG, 0);
-    if key.fog == Fog::Vertex && !out.iter().any(|v| v.semantic == fog) {
+    if key.fog.uses_varying() && !out.iter().any(|v| v.semantic == fog) {
         out.push(Varying { semantic: fog, interp: Interp::Perspective });
     }
     out

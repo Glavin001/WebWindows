@@ -1264,7 +1264,7 @@ impl<'a> Gen<'a> {
                     let _ = writeln!(prologue, "    tc{0} = in{loc};", sem.index);
                 }
             }
-            if sem.usage == usage::FOG && key.fog == Fog::Vertex {
+            if sem.usage == usage::FOG && key.fog.uses_varying() {
                 let _ = writeln!(prologue, "    let fog_in = in{loc}.x;");
             }
             loc += 1;
@@ -1326,6 +1326,14 @@ impl<'a> Gen<'a> {
                 Fog::Linear => Some("(drv.fog_params.y - frag_pos.z) * drv.fog_params.w".into()),
                 Fog::Exp => Some("exp(-drv.fog_params.z * frag_pos.z)".into()),
                 Fog::Exp2 => Some("exp(-(drv.fog_params.z * frag_pos.z) * (drv.fog_params.z * frag_pos.z))".into()),
+                Fog::VertexLinear | Fog::VertexExp | Fog::VertexExp2 => {
+                    let c = if linkage.iter().any(|v| v.semantic.usage == usage::FOG) { "fog_in" } else { "0.0" };
+                    Some(match key.fog {
+                        Fog::VertexLinear => format!("(drv.fog_params.y - {c}) * drv.fog_params.w"),
+                        Fog::VertexExp => format!("exp(-drv.fog_params.z * {c})"),
+                        _ => format!("exp(-(drv.fog_params.z * {c}) * (drv.fog_params.z * {c}))"),
+                    })
+                }
             };
             if let Some(f) = f {
                 let _ = writeln!(m, "    let fog = clamp({f}, 0.0, 1.0);");

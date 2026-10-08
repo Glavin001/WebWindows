@@ -564,11 +564,20 @@ impl Core {
             key.alpha_test = self.st.r(RenderState::AlphaFunc).min(8) as u8;
         }
         if self.st.r(RenderState::FogEnable) != 0 && ps.shader.version.major < 3 {
+            // Without table fog, D3DRS_FOGVERTEXMODE says whether the FOG
+            // varying is the factor (NONE: a vertex shader's oFog) or a
+            // coordinate for its equation (wined3d's fixed-function
+            // vertex shaders; the adapter sends NONE for its own shaders).
             key.fog = match FogMode(self.st.r(RenderState::FogTableMode)) {
                 FogMode::Linear => Fog::Linear,
                 FogMode::Exp => Fog::Exp,
                 FogMode::Exp2 => Fog::Exp2,
-                _ => Fog::Vertex,
+                _ => match FogMode(self.st.r(RenderState::FogVertexMode)) {
+                    FogMode::Linear => Fog::VertexLinear,
+                    FogMode::Exp => Fog::VertexExp,
+                    FogMode::Exp2 => Fog::VertexExp2,
+                    _ => Fog::Vertex,
+                },
             };
         }
         key.clip = self.clip_mode();
