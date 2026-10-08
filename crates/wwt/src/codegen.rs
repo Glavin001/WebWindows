@@ -42,7 +42,8 @@ const T_FAULT: u32 = 1;
 const T_CODE_WRITE: u32 = 2;
 const T_MATH: u32 = 3;
 const T_F64_F64: u32 = 4;
-const T_FIRST_HELPER: u32 = 5;
+const T_PREEMPT: u32 = 5;
+const T_FIRST_HELPER: u32 = 6;
 
 // Imported function indices.
 const F_FAULT: u32 = 0;
@@ -52,13 +53,15 @@ const F_MATH: u32 = 2;
 /// through JavaScript (the other operations go through `math`).
 const F_SIN: u32 = 3;
 const F_COS: u32 = 4;
-const NUM_FUNC_IMPORTS: u32 = 5;
+const F_PREEMPT: u32 = 5;
+const NUM_FUNC_IMPORTS: u32 = 6;
 
 // Imported global indices.
 const G_TABLE_BASE: u32 = 0;
 const G_LOOKUP_L1: u32 = 1;
 const G_GUEST_CHECK: u32 = 2;
 const G_CODE_BITMAP: u32 = 3;
+const G_TICK: u32 = 4;
 
 fn val_type(t: Ty) -> ValType {
     match t {
@@ -163,6 +166,10 @@ impl<'a> ModuleGen<'a> {
             .ty()
             .function([ValType::I32, ValType::F64, ValType::F64], [ValType::F64]);
         types.ty().function([ValType::F64], [ValType::F64]);
+        // preempt(cpu, eip) -> yield?
+        types
+            .ty()
+            .function([ValType::I32, ValType::I32], [ValType::I32]);
         let mut helper_type_idx = vec![];
         for h in &self.helpers {
             let (params, ret) = h.signature();
@@ -206,6 +213,11 @@ impl<'a> ModuleGen<'a> {
         );
         imp.import(
             imports::MODULE,
+            imports::PREEMPT,
+            EntityType::Function(T_PREEMPT),
+        );
+        imp.import(
+            imports::MODULE,
             imports::MEMORY,
             MemoryType {
                 minimum: 1,
@@ -231,6 +243,7 @@ impl<'a> ModuleGen<'a> {
             imports::LOOKUP_L1,
             imports::GUEST_LIMIT,
             imports::CODE_BITMAP,
+            imports::TICK,
         ] {
             imp.import(
                 imports::MODULE,
@@ -760,8 +773,35 @@ impl<'g, 'a> FnGen<'g, 'a> {
         (self.ctx.len() - 1 - pos) as u32
     }
 
+    /// At a loop's back edge: once the thread's slice deadline has passed,
+    /// writes the state back and asks the host whether to switch threads;
+    /// if so, the loop's frames return the yield address and the thread
+    /// resumes at the loop header later. Two loads and a compare otherwise.
+    fn preempt_check(&mut self, src: BlockId, tgt: BlockId) {
+        self.emit(W::GlobalGet(G_TICK));
+        self.emit(W::I32Load(memarg(0, 2)));
+        self.emit(W::LocalGet(0));
+        self.emit(W::I32Load(memarg(cpu::PREEMPT_AT, 2)));
+        self.emit(W::I32GeU);
+        self.emit(W::If(BlockType::Empty));
+        self.ctx.push(Ctx::If);
+        self.sync(self.a.dirty_end[src as usize]);
+        self.emit(W::LocalGet(0));
+        self.emit(W::I32Const(self.f.blocks[tgt as usize].addr as i32));
+        self.emit(W::Call(F_PREEMPT));
+        self.emit(W::If(BlockType::Empty));
+        self.emit(W::I32Const(abi::addr::YIELD as i32));
+        self.emit(W::Return);
+        self.emit(W::End);
+        self.ctx.pop();
+        self.emit(W::End);
+    }
+
     fn do_branch(&mut self, src: BlockId, tgt: BlockId) {
         if self.ctx.contains(&Ctx::Dispatch) {
+            if self.rpo_num[tgt as usize] <= self.rpo_num[src as usize] {
+                self.preempt_check(src, tgt);
+            }
             self.emit(W::I32Const(tgt as i32));
             self.emit(W::LocalSet(self.label_local));
             let l = self.label(Ctx::Dispatch);
@@ -769,6 +809,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             return;
         }
         if self.rpo_num[tgt as usize] <= self.rpo_num[src as usize] {
+            self.preempt_check(src, tgt);
             let l = self.label(Ctx::Loop(tgt));
             self.emit(W::Br(l));
         } else if self.merge[tgt as usize] {

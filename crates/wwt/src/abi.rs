@@ -44,6 +44,10 @@ pub mod cpu {
     /// Information about the last fault raised by translated code.
     pub const FAULT_CODE: u32 = 356;
     pub const FAULT_ADDR: u32 = 360;
+    /// When this thread's time slice ends, in the units of the `tick` word
+    /// (milliseconds): translated loops call `preempt` once the tick reaches
+    /// it, so a thread that spins without system calls still lets others run.
+    pub const PREEMPT_AT: u32 = 364;
     /// Scratch space for the host and kernel.
     pub const SCRATCH: u32 = 384;
     pub const SIZE: u32 = 512;
@@ -163,6 +167,11 @@ pub mod imports {
     pub const MATH: &str = "math";
     pub const SIN: &str = "sin";
     pub const COS: &str = "cos";
+    /// `preempt(cpu, eip) -> yield?`: a loop's slice deadline passed; non-zero
+    /// when the host switches threads (the thread resumes at `eip`).
+    pub const PREEMPT: &str = "preempt";
+    /// Address of a u32 millisecond counter the host keeps current.
+    pub const TICK: &str = "tick";
 }
 
 /// Custom section listing the x86 address of each translated function, in
@@ -171,7 +180,7 @@ pub const FUNCS_SECTION: &str = "wwt.funcs";
 /// Custom section with JSON metadata about the translation.
 pub const META_SECTION: &str = "wwt.meta";
 /// Bumped whenever generated code changes incompatibly, to invalidate caches.
-pub const ABI_VERSION: u32 = 4;
+pub const ABI_VERSION: u32 = 5;
 /// Every translated module exports its lazy-flags evaluator under this
 /// name: `(fk, fr, fa, fb, fc) -> eflags` (the arithmetic flags).
 pub const EFLAGS_EXPORT: &str = "eflags";
@@ -215,6 +224,7 @@ pub fn abi_json() -> String {
         ("MXCSR", MXCSR),
         ("FAULT_CODE", FAULT_CODE),
         ("FAULT_ADDR", FAULT_ADDR),
+        ("PREEMPT_AT", PREEMPT_AT),
         ("SCRATCH", SCRATCH),
         ("SIZE", SIZE),
     ]

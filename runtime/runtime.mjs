@@ -113,6 +113,10 @@ export class Machine {
     this.zeroL2 = take(L2_BYTES, PAGE);
     this.codeBitmap = take(L1_ENTRIES / 8, PAGE);
     this.cpuArea = take(this.abi.cpu.SIZE * 128, PAGE);
+    // The millisecond counter translated loops compare with their thread's
+    // slice deadline (cpu.PREEMPT_AT). A host with a clock points tickAddr
+    // at its own (the Wine host: KUSER_SHARED_DATA's tick count).
+    this.tickAddr = take(16);
     this.nativeNext = p;
     this.nativeEnd = this.guestLimit + this.nativeSize;
     this.u32.fill(this.zeroL2, this.l1 >>> 2, (this.l1 >>> 2) + L1_ENTRIES);
@@ -161,10 +165,22 @@ export class Machine {
       cpu = this.cpuArea + size * this.cpuSlots++;
     }
     this.u8.fill(0, cpu, cpu + size);
+    this.u32[(cpu + this.abi.cpu.PREEMPT_AT) >>> 2] = 0xffffffff;
     // x87 control word: 64-bit precision, round to nearest, all masked.
     this.dv.setUint16(cpu + this.abi.cpu.FPU_CW, 0x037f, true);
     this.dv.setUint32(cpu + this.abi.cpu.MXCSR, 0x1f80, true);
     return cpu;
+  }
+
+  /**
+   * A translated loop's slice deadline passed. `onPreempt` (a host with
+   * threads) returns whether it switched threads, the current one to resume
+   * at `eip`; otherwise the deadline goes away.
+   */
+  preempt(cpu, eip) {
+    if (this.onPreempt) return this.onPreempt(cpu >>> 0, eip >>> 0) ? 1 : 0;
+    this.u32[((cpu >>> 0) + this.abi.cpu.PREEMPT_AT) >>> 2] = 0xffffffff;
+    return 0;
   }
 
   /** Returns a thread's CPU state slot for reuse. */
@@ -221,6 +237,8 @@ export class Machine {
       // The builtins themselves, so engines call them directly.
       sin: Math.sin,
       cos: Math.cos,
+      preempt: (cpu, eip) => this.preempt(cpu, eip),
+      tick: this.tickAddr,
     };
     const finish = (instance) => {
       for (let i = 0; i < addrs.length; i++) {
@@ -228,7 +246,7 @@ export class Machine {
         this.register(addrs[i], base + i);
       }
       this.funcCount += addrs.length;
-      const rec = { name, base, count: addrs.length, meta, instance };
+      const rec = { name, base, count: addrs.length, meta, instance, addrs };
       this.modules.push(rec);
       this.log(`loaded ${name}: ${addrs.length} functions at table ${base}`);
       return rec;
@@ -249,7 +267,7 @@ export class Machine {
     const page = addr >>> 12;
     let l2 = this.u32[(this.l1 >>> 2) + page];
     if (l2 === this.zeroL2) {
-      l2 = this.nativeAlloc(L2_BYTES, PAGE);
+      l2 = this.freeL2?.pop() ?? this.nativeAlloc(L2_BYTES, PAGE);
       this.u8.fill(0, l2, l2 + L2_BYTES);
       this.u32[(this.l1 >>> 2) + page] = l2;
       this.u8[this.codeBitmap + (page >>> 3)] |= 1 << (page & 7);
@@ -271,7 +289,15 @@ export class Machine {
   /** A store hit a page with translated code: drop the page's translations. */
   codeWrite(cpu, addr) {
     const page = addr >>> 12;
-    this.log(`code write at ${hex(addr)}: invalidating page ${hex(page << 12)}`);
+    // Logged once per page: code that patches itself does it every frame.
+    if (!(this.patchedPages ??= new Set()).has(page)) {
+      this.patchedPages.add(page);
+      this.log(`code write at ${hex(addr)}: invalidating page ${hex(page << 12)} (further writes to it not logged)`);
+    }
+    const l2 = this.u32[(this.l1 >>> 2) + page];
+    // Its second-level table is reused when the page is registered again
+    // (code that patches itself every frame would otherwise use up memory).
+    if (l2 !== this.zeroL2) (this.freeL2 ??= []).push(l2);
     this.u32[(this.l1 >>> 2) + page] = this.zeroL2;
     this.u8[this.codeBitmap + (page >>> 3)] &= ~(1 << (page & 7));
   }

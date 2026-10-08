@@ -69,15 +69,44 @@ export class FastTranslator {
  * of guest memory starting at the address and loads the result.
  */
 export function enableFastMode(machine, translator, { window = 0x40000, log } = {}) {
+  // Translations by address and content: code that patches itself (Quake's
+  // software renderers rewrite immediates every frame) misses again after
+  // each patch, mostly with bytes it had before, and gets the module that
+  // was translated for them back instead of a new one.
+  const seen = new Map();
   machine.onMiss = (cpu, addr) => {
-    const end = Math.min(addr + window, machine.guestLimit);
+    // Within the code section around the address, when the host knows it:
+    // the key then covers code only, not data that changes all the time.
+    const end = Math.min(addr + window, machine.guestLimit, machine.codeEnd?.(addr) ?? Infinity);
     const code = machine.u8.slice(addr, end);
+    const key = `${addr}:${contentHash(code)}`;
+    const old = seen.get(key);
+    if (old) {
+      old.addrs.forEach((a, i) => machine.lookup(a) || machine.register(a, old.base + i));
+      return machine.lookup(addr);
+    }
     const t0 = performance.now();
     const known = machine.entriesIn(addr, end);
     const bytes = translator.translate(code, addr, [addr], { known });
     if (!bytes.length) return 0;
     const rec = machine.loadModuleSync(bytes, `fast@${addr.toString(16)}`, { keepExisting: true });
+    seen.set(key, rec);
     log?.(`fast mode: translated ${addr.toString(16)} (${rec.count} functions, ${bytes.length} bytes) in ${(performance.now() - t0).toFixed(1)} ms`);
     return machine.lookup(addr);
   };
+}
+
+/** Two independent 32-bit hashes of bytes (FNV-1a and a murmur-style mix over 32-bit words). */
+function contentHash(bytes) {
+  let h = 0x811c9dc5;
+  let g = 0x9747b28c;
+  const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.length >>> 2);
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    h = Math.imul(h ^ w, 0x01000193);
+    g = Math.imul(g ^ Math.imul(w, 0xcc9e2d51), 0x1b873593) + 0xe6546b64;
+    g = (g << 13) | (g >>> 19);
+  }
+  for (let i = words.length * 4; i < bytes.length; i++) h = Math.imul(h ^ bytes[i], 0x01000193);
+  return `${(h >>> 0).toString(16)}:${(g >>> 0).toString(16)}:${bytes.length}`;
 }

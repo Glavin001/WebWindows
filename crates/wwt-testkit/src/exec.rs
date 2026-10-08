@@ -114,6 +114,9 @@ impl Executor {
         });
         let sin = Func::wrap(&mut store, |a: f64| -> f64 { a.sin() });
         let cos = Func::wrap(&mut store, |a: f64| -> f64 { a.cos() });
+        // One thread: a loop's slice deadline never passes (PREEMPT_AT is
+        // u32::MAX against a tick that stays 0), and nothing switches.
+        let preempt = Func::wrap(&mut store, |_cpu: i32, _eip: i32| -> i32 { 0 });
         let g = |store: &mut Store<State>, v: u32| {
             Global::new(
                 store,
@@ -140,6 +143,8 @@ impl Executor {
                     "math" => math.into(),
                     "sin" => sin.into(),
                     "cos" => cos.into(),
+                    "preempt" => preempt.into(),
+                    "tick" => g(&mut store, ZERO_L2)?.into(),
                     n => return Err(anyhow!("unexpected import {n}")),
                 })
             })
@@ -159,6 +164,7 @@ impl Executor {
             w32(&memory, CPU + cpu::FR, c.eflags & fl::ARITH);
             w32(&memory, CPU + cpu::DF, c.eflags >> 10 & 1);
             w32(&memory, CPU + cpu::EFLAGS_SYS, 0x200);
+            w32(&memory, CPU + cpu::PREEMPT_AT, u32::MAX);
             let fx = c.fx_bytes();
             load_fx(&memory, &fx);
             let simd = is_simd_case(c);
