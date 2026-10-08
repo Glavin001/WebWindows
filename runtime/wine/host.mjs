@@ -211,6 +211,8 @@ export class WineHost {
     this.files = opts.files;
     /** lower-case DOS path -> its last name as created (see rememberCase) */
     this.caseNames = opts.caseNames ?? new Map();
+    /** lower-case DOS path -> FILETIME (BigInt) of its last write; others read as a fixed date */
+    this.fileTimes = opts.fileTimes ?? new Map();
     this.dirs = indexDirectories(this.files);
     // The side-by-side store wineboot would have filled.
     installAssemblies(this.files);

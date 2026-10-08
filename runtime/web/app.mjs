@@ -297,7 +297,7 @@ window.webwindows = {
 
 // ---- Running ---------------------------------------------------------------
 
-async function run(exeName, exeBytes, files, exePath) {
+async function run(exeName, exeBytes, files, exePath, times = {}) {
   saveRecord();
   startRecord(exePath ?? exeName);
   out.textContent = '';
@@ -364,6 +364,7 @@ async function run(exeName, exeBytes, files, exePath) {
         exePath,
         exeBytes,
         files,
+        times,
         argv: args ? args.split(/\s+/) : [],
         translatorUrl,
         noCache: $('nocache').checked,
@@ -390,9 +391,12 @@ async function run(exeName, exeBytes, files, exePath) {
 $('run').onclick = async () => {
   const name = $('exe').value;
   const files = {};
-  for (const [k, f] of folder) files[k] = await f.arrayBuffer();
+  // When each file was last written, for the program's file times (games
+  // compare them with what their caches recorded).
+  const times = {};
+  for (const [k, f] of folder) (files[k] = await f.arrayBuffer()), (times[k] = f.lastModified);
   const exe = await folder.get(name).arrayBuffer();
-  run(name.split('/').pop(), exe, files, name);
+  run(name.split('/').pop(), exe, files, name, times);
 };
 
 // Wine's own programs from the bundles that carry Wine's Unix side (the

@@ -120,6 +120,7 @@ function writeFileBytes(h, f, pos, bytes) {
   let data = fileBytes(h, f);
   if (pos + bytes.length > data.length) data = setFileSize(h, f, pos + bytes.length);
   data.set(bytes, pos);
+  if (f.path) h.fileTimes.set(f.path, filetimeFromMs(Date.now()));
   h.onFileWrite?.(f.path);
 }
 
@@ -168,8 +169,15 @@ function fileInfo(h, path) {
   return null;
 }
 
-function writeTimes(h, at) {
-  for (let i = 0; i < 4; i++) h.w64(at + i * 8, FILETIME_2020);
+/** Creation, access, write and change times: the file's (see WineHost.fileTimes), or a fixed date. */
+function writeTimes(h, at, path) {
+  const t = h.fileTimes.get(path) ?? FILETIME_2020;
+  for (let i = 0; i < 4; i++) h.w64(at + i * 8, t);
+}
+
+/** A FILETIME (100 ns since 1601) from milliseconds since 1970. */
+export function filetimeFromMs(ms) {
+  return BigInt(Math.round(ms * 10000)) + 116444736000000000n;
 }
 
 function memInfo(h, addr, buf) {
@@ -646,7 +654,7 @@ export const SYSCALLS = {
     this.log(`NtQueryAttributesFile ${path} -> ${fi ? (fi.dir ? 'dir' : fi.size) : 'missing'}`);
     if (!fi) return STATUS.OBJECT_NAME_NOT_FOUND;
     const buf = a(1);
-    writeTimes(this, buf);
+    writeTimes(this, buf, path);
     this.w32(buf + 32, fi.dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
     return STATUS.SUCCESS;
   },
@@ -655,7 +663,7 @@ export const SYSCALLS = {
     const fi = path && fileInfo(this, path);
     if (!fi) return STATUS.OBJECT_NAME_NOT_FOUND;
     const buf = a(1);
-    writeTimes(this, buf);
+    writeTimes(this, buf, path);
     this.w64(buf + 32, fi.size);
     this.w64(buf + 40, fi.size);
     this.w32(buf + 48, fi.dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
@@ -669,7 +677,7 @@ export const SYSCALLS = {
     const done = (n) => (iosb(this, piosb, 0, n), STATUS.SUCCESS);
     switch (cls) {
       case 4: // FileBasicInformation
-        writeTimes(this, buf);
+        writeTimes(this, buf, f.path);
         this.w32(buf + 32, f.dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
         return done(40);
       case 5: // FileStandardInformation
@@ -686,7 +694,7 @@ export const SYSCALLS = {
         this.w64(buf, size);
         return done(8);
       case 34: // FileNetworkOpenInformation
-        writeTimes(this, buf);
+        writeTimes(this, buf, f.path);
         this.w64(buf + 32, size);
         this.w64(buf + 40, size);
         this.w32(buf + 48, f.dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
@@ -695,7 +703,7 @@ export const SYSCALLS = {
         if (len < 72) return STATUS.INFO_LENGTH_MISMATCH;
         this.m.u8.fill(0, buf, buf + 72);
         this.w64(buf, 0);
-        writeTimes(this, buf + 8);
+        writeTimes(this, buf + 8, f.path);
         this.w64(buf + 40, (size + 4095) & ~4095);
         this.w64(buf + 48, size);
         this.w32(buf + 56, f.dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
@@ -884,8 +892,9 @@ export const SYSCALLS = {
       if (cls === 12) {
         this.w32(e + 8, name.length * 2);
       } else {
-        const data = isDir ? null : this.files.get(`${dir.path}\\${name}`);
-        writeTimes(this, e + 8);
+        const path = `${dir.path}\\${name.toLowerCase()}`;
+        const data = isDir ? null : this.files.get(path);
+        writeTimes(this, e + 8, path);
         this.w64(e + 40, data?.length ?? 0);
         this.w64(e + 48, data ? (data.length + 4095) & ~4095 : 0);
         this.w32(e + 56, isDir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);

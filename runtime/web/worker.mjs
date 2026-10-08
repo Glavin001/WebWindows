@@ -11,6 +11,7 @@ import { Machine, ProcessExit, GuestFault, hasMemory64 } from '../runtime.mjs';
 import { Process } from '../win32.mjs';
 import { peArch } from '../pe.mjs';
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
+import { filetimeFromMs } from '../wine/syscalls.mjs';
 import { WineHost, parsePe, peImports, rebaseImage, recordCase } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
@@ -69,7 +70,7 @@ async function cacheWrite(dir, name, bytes) {
  * its 32-bit-memory variant: the same DLLs below 2 GB, translated for a
  * 32-bit memory, and the Unix side lowered to one.
  */
-async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, key, bundleUrl, bundle64Url, bundle64m32Url, memory64, display: shared, debug, d3dCanvas, d3dOffscreen, d3dPort }) {
+async function runOnWine({ exeName, exePath, exe, folder, times = {}, argv, ft, abi, dir, key, bundleUrl, bundle64Url, bundle64m32Url, memory64, display: shared, debug, d3dCanvas, d3dOffscreen, d3dPort }) {
   const x64 = peArch(exe) === 'x64';
   const mem64 = x64 && memory64;
   const base = new URL(mem64 ? bundle64Url : x64 ? bundle64m32Url : bundleUrl, self.location.href);
@@ -168,9 +169,11 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
   log(`loaded Wine ${manifest.wine} (${compiled.size} DLLs) in ${(performance.now() - t0).toFixed(0)} ms`);
   // The chosen folder is C:\app; a program given by URL runs from C:\.
   const caseNames = new Map();
+  const fileTimes = new Map();
   for (const [rel, bytes] of Object.entries(folder)) {
     files.set(`c:\\app\\${rel.replaceAll('/', '\\').toLowerCase()}`, new Uint8Array(bytes));
     recordCase(caseNames, `c:\\app\\${rel.replaceAll('/', '\\')}`);
+    if (times[rel]) fileTimes.set(`c:\\app\\${rel.replaceAll('/', '\\').toLowerCase()}`, filetimeFromMs(times[rel]));
   }
   const exeWin = exePath ? `C:\\app\\${exePath.replaceAll('/', '\\')}` : `C:\\${exeName}`;
   const exeDos = exeWin.toLowerCase();
@@ -251,6 +254,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
     debug,
     files,
     caseNames,
+    fileTimes,
     argv: [exeWin, ...argv],
     exePath: exeWin,
     stdout: (b) => postMessage({ type: 'stdout', bytes: b }),
@@ -297,7 +301,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
 }
 
 onmessage = async (e) => {
-  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, bundle64Url, bundle64m32Url, display, audio, debug, d3dCanvas, d3dOffscreen, d3dPort } = e.data;
+  const { exeName, exePath, exeBytes, files = {}, times = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, bundle64Url, bundle64m32Url, display, audio, debug, d3dCanvas, d3dOffscreen, d3dPort } = e.data;
   // The page tests for 64-bit WebAssembly memory once (hasMemory64).
   const memory64 = e.data.memory64 ?? hasMemory64();
   const enc = new TextEncoder();
@@ -309,7 +313,7 @@ onmessage = async (e) => {
     const key = `${await sha256(exe)}-abi${abi.version}-g${guestLimitMB}`;
     const dir = noCache ? null : await cacheDir();
     if (wine) {
-      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, bundle64Url, bundle64m32Url, memory64, display: display && { ...display, audio }, debug, d3dCanvas, d3dOffscreen, d3dPort });
+      const r = await runOnWine({ exeName, exePath, exe, folder: files, times, argv, ft, abi, dir, key, bundleUrl, bundle64Url, bundle64m32Url, memory64, display: display && { ...display, audio }, debug, d3dCanvas, d3dOffscreen, d3dPort });
       if (r.error) postMessage({ type: 'stderr', bytes: enc.encode(`\n*** ${r.error.message}\n`) });
       postMessage({ type: 'exit', code: r.error ? null : r.exitCode, translated: false, runMs: r.runMs, wine: true });
       return;
