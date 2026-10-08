@@ -17,19 +17,26 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: What to build
+      shell: bash
+      run: |
+        echo "WINE_TARGETS=ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts hid version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d d3d9 dinput dinput8 setupapi kernel32/tests user32/tests gdi32/tests" >> "$GITHUB_ENV"
     - name: Install Wine's build tools and MinGW
       shell: bash
       run: |
         tools/ci/apt-install.sh gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 flex bison libfreetype-dev
     # Next to the checkout (cache paths cannot contain '..'), at the same
-    # absolute path in every job: Wine's Makefiles record it.
+    # absolute path in every job: Wine's Makefiles record it. The key is
+    # what goes into the tree: the build script, the sources it copies in
+    # and the targets.
     - name: Locate the build tree
       id: key
       shell: bash
       run: |
         echo "WINE_SRC=${{ runner.workspace }}/wine-src/wine-11.0" >> "$GITHUB_ENV"
         echo "WINE_BUILD=${{ runner.workspace }}/wine-build" >> "$GITHUB_ENV"
-        echo "key=wine-${{ hashFiles('.github/actions/wine/action.yml', 'tools/wine/**', 'native/audio/**', 'native/wined3d-wgpu/**', 'crates/d3dgpu-proto/include/**') }}" >> "$GITHUB_OUTPUT"
+        targets=$(printf %s "$WINE_TARGETS" | sha256sum | cut -c1-8)
+        echo "key=wine-${{ hashFiles('tools/wine/**', 'native/audio/**', 'native/wined3d-wgpu/**', 'crates/d3dgpu-proto/include/**') }}-$targets" >> "$GITHUB_OUTPUT"
     # An older tree is fine: tools/wine/build.sh is incremental (it swaps a
     # changed wined3d patch and copies only changed sources). A download
     # that stalls (SEGMENT_DOWNLOAD_TIMEOUT_MINS, set by the workflow) leaves
@@ -47,11 +54,7 @@ runs:
       run: |
         echo "::group::Wine's build (cache: ${{ steps.restore.outputs.cache-matched-key || 'none' }})"
         trap 'echo ::endgroup::' EXIT
-        sh tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost \
-          user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 \
-          rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts \
-          hid version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d d3d9 dinput dinput8 setupapi \
-          kernel32/tests user32/tests gdi32/tests
+        sh tools/wine/build.sh $WINE_TARGETS
     - uses: actions/cache/save@v4
       if: inputs.save == 'true' && steps.restore.outputs.cache-hit != 'true'
       with:

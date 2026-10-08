@@ -197,7 +197,10 @@ jobs:
         id: wine
         with:
           save: 'true'
-      # Wine's Unix side depends only on its sources, Wine's and Emscripten.
+      # Wine's Unix side (wineserver, ntdll's and win32u's Unix parts) depends
+      # on its sources, Wine's configuration (tools/wine/build.sh) and
+      # Emscripten; not on the PE DLLs or wined3d's backend, which change
+      # far more often.
       - uses: actions/cache/restore@v4
         id: wine-unix
         with:
@@ -206,7 +209,7 @@ jobs:
             target/wine-unix/wine_unix.wasm
             target/wine-unix/wine_unix.json
             target/wine-unix/win32u_syscalls.json
-          key: wine-unix-${{ env.EMSDK_VERSION }}-${{ hashFiles('native/wine-unix/**') }}-${{ steps.wine.outputs.key }}
+          key: wine-unix-${{ env.EMSDK_VERSION }}-${{ hashFiles('native/wine-unix/**', 'tools/wine/build.sh') }}
       - uses: mymindstorm/setup-emsdk@v14
         if: steps.wine-unix.outputs.cache-hit != 'true'
         with:
