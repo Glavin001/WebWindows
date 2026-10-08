@@ -15,6 +15,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # A cache download that stalls gives up after two minutes, not ten.
+  SEGMENT_DOWNLOAD_TIMEOUT_MINS: 2
   # Pinned so Wine's Unix side (built with it) can be cached.
   EMSDK_VERSION: 6.0.11
 
@@ -31,6 +33,7 @@ env:
 jobs:
   changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
@@ -58,7 +61,7 @@ jobs:
       group: ${{ github.workflow }}-linux-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -72,9 +75,7 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install toolchains
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 csmith binaryen mesa-vulkan-drivers
+        run: tools/ci/apt-install.sh gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 csmith binaryen mesa-vulkan-drivers
       - name: Format
         run: cargo fmt --all --check
       - name: Build
@@ -128,7 +129,7 @@ jobs:
       group: ${{ github.workflow }}-torture-${{ matrix.shard }}-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -147,9 +148,7 @@ jobs:
           shared-key: linux
           save-if: false
       - name: Install toolchains
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686
+        run: tools/ci/apt-install.sh gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686
       # The translator, and the one compiled to WebAssembly that translates
       # what was not translated ahead of time (run.mjs).
       - name: Build
@@ -173,7 +172,7 @@ jobs:
       pull-requests: read
     outputs:
       current: ${{ steps.head.outputs.current != 'false' }}
-    timeout-minutes: 45
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -269,7 +268,7 @@ jobs:
       group: ${{ github.workflow }}-deploy-${{ github.event.pull_request.number || 'production' }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     environment:
       name: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && 'Production' || 'Preview' }}
       url: ${{ steps.vercel.outputs.url }}
@@ -312,7 +311,7 @@ jobs:
       group: ${{ github.workflow }}-wine-${{ matrix.suite }}-${{ matrix.shard }}-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -397,7 +396,7 @@ jobs:
       group: ${{ github.workflow }}-windows-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -422,7 +421,7 @@ jobs:
       group: ${{ github.workflow }}-emscripten-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: mymindstorm/setup-emsdk@v14
@@ -441,6 +440,7 @@ jobs:
     if: always()
     needs: [changes, linux, torture, wine-build, deploy, wine, windows, emscripten]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Every job passed or was skipped
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || needs.wine-build.outputs.current == 'false'

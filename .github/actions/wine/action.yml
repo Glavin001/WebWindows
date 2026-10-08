@@ -20,8 +20,7 @@ runs:
     - name: Install Wine's build tools and MinGW
       shell: bash
       run: |
-        sudo apt-get update
-        sudo apt-get install -y gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 flex bison libfreetype-dev
+        tools/ci/apt-install.sh gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 flex bison libfreetype-dev
     # Next to the checkout (cache paths cannot contain '..'), at the same
     # absolute path in every job: Wine's Makefiles record it.
     - name: Locate the build tree
@@ -32,7 +31,9 @@ runs:
         echo "WINE_BUILD=${{ runner.workspace }}/wine-build" >> "$GITHUB_ENV"
         echo "key=wine-${{ hashFiles('.github/actions/wine/action.yml', 'tools/wine/**', 'native/audio/**', 'native/wined3d-wgpu/**', 'crates/d3dgpu-proto/include/**') }}" >> "$GITHUB_OUTPUT"
     # An older tree is fine: tools/wine/build.sh is incremental (it swaps a
-    # changed wined3d patch and copies only changed sources).
+    # changed wined3d patch and copies only changed sources). A download
+    # that stalls (SEGMENT_DOWNLOAD_TIMEOUT_MINS, set by the workflow) leaves
+    # it to build the tree, about three minutes from scratch.
     - uses: actions/cache/restore@v4
       id: restore
       with:
@@ -44,13 +45,13 @@ runs:
     - name: Build Wine's i386 PE DLLs, programs and conformance tests
       shell: bash
       run: |
+        echo "::group::Wine's build (cache: ${{ steps.restore.outputs.cache-matched-key || 'none' }})"
+        trap 'echo ::endgroup::' EXIT
         sh tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost \
           user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 \
           rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts \
           hid version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d d3d9 dinput dinput8 setupapi \
-          kernel32/tests user32/tests gdi32/tests > "$RUNNER_TEMP/wine-build.log" 2>&1 \
-          || { tail -n 200 "$RUNNER_TEMP/wine-build.log"; exit 1; }
-        tail -n 5 "$RUNNER_TEMP/wine-build.log"
+          kernel32/tests user32/tests gdi32/tests
     - uses: actions/cache/save@v4
       if: inputs.save == 'true' && steps.restore.outputs.cache-hit != 'true'
       with:
