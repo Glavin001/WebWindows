@@ -1330,10 +1330,26 @@ static const struct wined3d_vertex_pipe_ops wgpu_vertex_pipe =
 static void wgpu_fp_apply_draw_state(struct wined3d_context *context, const struct wined3d_state *state) {}
 static void wgpu_fp_disable(const struct wined3d_context *context) {}
 
+/* The fixed-function fragment pipeline is wined3d's generated HLSL
+ * (ffp_hlsl), which implements every texture operation and argument. Games
+ * check these caps before they create a device (Far Cry finds no suitable
+ * device with no texture operations or simultaneous textures). */
 static void wgpu_fp_get_caps(const struct wined3d_adapter *adapter, struct fragment_caps *caps)
 {
     memset(caps, 0, sizeof(*caps));
+    caps->PrimitiveMiscCaps = WINED3DPMISCCAPS_TSSARGTEMP | WINED3DPMISCCAPS_PERSTAGECONSTANT;
+    caps->TextureOpCaps = WINED3DTEXOPCAPS_DISABLE | WINED3DTEXOPCAPS_SELECTARG1 | WINED3DTEXOPCAPS_SELECTARG2
+            | WINED3DTEXOPCAPS_MODULATE4X | WINED3DTEXOPCAPS_MODULATE2X | WINED3DTEXOPCAPS_MODULATE
+            | WINED3DTEXOPCAPS_ADDSIGNED2X | WINED3DTEXOPCAPS_ADDSIGNED | WINED3DTEXOPCAPS_ADD
+            | WINED3DTEXOPCAPS_SUBTRACT | WINED3DTEXOPCAPS_ADDSMOOTH | WINED3DTEXOPCAPS_BLENDCURRENTALPHA
+            | WINED3DTEXOPCAPS_BLENDFACTORALPHA | WINED3DTEXOPCAPS_BLENDTEXTUREALPHA
+            | WINED3DTEXOPCAPS_BLENDDIFFUSEALPHA | WINED3DTEXOPCAPS_BLENDTEXTUREALPHAPM
+            | WINED3DTEXOPCAPS_MODULATEALPHA_ADDCOLOR | WINED3DTEXOPCAPS_MODULATECOLOR_ADDALPHA
+            | WINED3DTEXOPCAPS_MODULATEINVCOLOR_ADDALPHA | WINED3DTEXOPCAPS_MODULATEINVALPHA_ADDCOLOR
+            | WINED3DTEXOPCAPS_DOTPRODUCT3 | WINED3DTEXOPCAPS_MULTIPLYADD | WINED3DTEXOPCAPS_LERP
+            | WINED3DTEXOPCAPS_BUMPENVMAP | WINED3DTEXOPCAPS_BUMPENVMAPLUMINANCE;
     caps->max_blend_stages = WINED3D_MAX_FFP_TEXTURES;
+    caps->max_textures = WINED3D_MAX_FFP_TEXTURES;
 }
 
 static unsigned int wgpu_fp_get_emul_mask(const struct wined3d_adapter *adapter)
@@ -2888,7 +2904,10 @@ static BOOL wgpu_init_format_info(struct wined3d_adapter *adapter)
     {
 #define TEX (WINED3D_FORMAT_CAP_TEXTURE | WINED3D_FORMAT_CAP_FILTERING | WINED3D_FORMAT_CAP_BLIT)
 #define RT (WINED3D_FORMAT_CAP_RENDERTARGET | WINED3D_FORMAT_CAP_FBO_ATTACHABLE | WINED3D_FORMAT_CAP_POSTPIXELSHADER_BLENDING)
-#define DS (WINED3D_FORMAT_CAP_DEPTH_STENCIL | WINED3D_FORMAT_CAP_FBO_ATTACHABLE | WINED3D_FORMAT_CAP_TEXTURE)
+/* Depth formats are plain surfaces too (CheckDeviceFormat with
+ * D3DUSAGE_DEPTHSTENCIL on D3DRTYPE_SURFACE asks for BLIT). */
+#define DS (WINED3D_FORMAT_CAP_DEPTH_STENCIL | WINED3D_FORMAT_CAP_FBO_ATTACHABLE | WINED3D_FORMAT_CAP_TEXTURE \
+        | WINED3D_FORMAT_CAP_BLIT)
         {WINED3DFMT_B8G8R8A8_UNORM, TEX | RT | WINED3D_FORMAT_CAP_SRGB_READ | WINED3D_FORMAT_CAP_SRGB_WRITE},
         {WINED3DFMT_B8G8R8X8_UNORM, TEX | RT | WINED3D_FORMAT_CAP_SRGB_READ | WINED3D_FORMAT_CAP_SRGB_WRITE},
         {WINED3DFMT_R8G8B8A8_UNORM, TEX | RT},

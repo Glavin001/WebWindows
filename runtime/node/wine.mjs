@@ -38,6 +38,8 @@
 //   WWT_TRACE_CALLS=A,B    the first calls of these system calls, with
 //                          arguments and status (WWT_TRACE_LIMIT, default 40)
 //   WWT_FAST_LOG=1         fast mode's run-time translations
+//   WWT_TRACE_FAULTS=N     the first N faults (default 10 when set) with
+//                          where they happened and the frames above
 //   WWT_THREAD_DUMP=MS     the scheduler's thread states after MS, and when
 //                          nothing can run
 

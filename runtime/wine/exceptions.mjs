@@ -286,7 +286,31 @@ function writeRec(h, at, r) {
 /** Installs fault handling for translated code on a Wine host. */
 export function installExceptions(h, ntdllExport) {
   h.kiUserExceptionDispatcher = ntdllExport('KiUserExceptionDispatcher');
-  h.m.onFault = (cpu, code, eip, info) => raiseFault(h, cpu, code, eip, info);
+  // WWT_TRACE_FAULTS=N: the first N faults (default 10) on stderr, where
+  // they happened and the frames above, before the program's handlers run.
+  const traceFaults = Number(globalThis.process?.env?.WWT_TRACE_FAULTS ?? 0);
+  let traced = 0;
+  // The thread's SEH frames (TEB ExceptionList), each with its handler.
+  const sehChain = (cpu) => {
+    const out = [];
+    let f = h.u32(h.m.r32(cpu + h.m.abi.cpu.FS_BASE));
+    for (let i = 0; i < 6 && f !== 0xffffffff && f > 0x10000; i++) {
+      out.push(`${hex(f)}:${h.describeAddress(h.u32(f + 4))}`);
+      f = h.u32(f);
+    }
+    return out.join(' ');
+  };
+  h.m.onFault = (cpu, code, eip, info) => {
+    if (traceFaults && traced++ < traceFaults) {
+      const t = h.threads.current;
+      h.stderr(
+        new TextEncoder().encode(
+          `[fault] ${hex(code >>> 0)} at ${h.describeAddress(eip >>> 0)} info ${hex(info >>> 0)} thread ${hex(t?.tid ?? 0)}; frames ${t ? h.backtrace(t, 12).join(' < ') : '-'}; seh ${sehChain(cpu)} esp ${hex(h.m.reg(cpu, 4))}\n`,
+        ),
+      );
+    }
+    return raiseFault(h, cpu, code, eip, info);
+  };
   // Code runs from committed memory (no-execute protection is not enforced:
   // programs of the era run code from data pages).
   h.m.canExecute = (addr) => addr >= 0x10000 && h.vm.prot[h.vm.pageOf(addr)] !== 0;

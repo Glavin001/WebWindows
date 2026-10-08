@@ -76,6 +76,13 @@ EDITS_X86_64 = [
 ]
 
 EDITS = [
+    # Session objects are packed one after another, and each one's sequence
+    # counter is a 64-bit value updated atomically: an object of a size that
+    # is not a multiple of 8 (a window class with extra bytes) left the next
+    # one misaligned, which x86 tolerates and WebAssembly atomics trap on.
+    ('server/mapping.c',
+     '    mem_size_t size = sizeof(*object) - sizeof(object_shm_t) + max(shm_size, sizeof(object_shm_t));\n',
+     '    mem_size_t size = (sizeof(*object) - sizeof(object_shm_t) + max(shm_size, sizeof(object_shm_t)) + 7) & ~(mem_size_t)7;\n', 1),
     # Linux socket filters need linux/filter.h, which Emscripten lacks.
     ('server/sock.c',
      '#elif defined(IP_UNICAST_IF) && defined(SO_ATTACH_FILTER) && defined(SO_BINDTODEVICE)',

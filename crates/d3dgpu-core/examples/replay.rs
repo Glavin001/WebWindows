@@ -5,7 +5,9 @@
 //! "D3GR", then each batch as a little-endian u32 length and its bytes.
 //!
 //! cargo run --release -p d3dgpu-core --example replay -- FILE [OUT_DIR]
-//! (DUMP=1 also prints the commands)
+//! (DUMP=1 also prints the commands; PRESENTS=N also saves every Nth
+//! presented frame as present-NNNNN.png, as Node has no canvas to show them,
+//! and then saves the recorded readbacks only with READS=1)
 
 use std::io::Write;
 
@@ -43,8 +45,12 @@ fn main() {
     device.on_uncaptured_error(std::sync::Arc::new(move |e: wgpu::Error| e2.lock().unwrap().push(e.to_string())));
 
     let mut core = Core::with_options(device.clone(), queue.clone(), Options::for_device(&device));
-    let mut shared = vec![0u8; SHARED_BYTES];
+    // Room for presented frames too (the recorded readbacks stay in the first SHARED_BYTES).
+    let mut shared = vec![0u8; SHARED_BYTES.max(32 << 20)];
+    let save_reads = std::env::var("PRESENTS").is_err() || std::env::var_os("READS").is_some();
     let (mut p, mut batches, mut frames) = (4, 0, 0);
+    let every_present: usize = std::env::var("PRESENTS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let (mut sizes, mut presents) = (std::collections::HashMap::new(), 0usize);
     while p + 4 <= data.len() {
         let len = u32::from_le_bytes(data[p..p + 4].try_into().unwrap()) as usize;
         let original = &data[p + 4..p + 4 + len];
@@ -72,7 +78,42 @@ fn main() {
         if let Err(e) = core.execute(batch, &shared) {
             eprintln!("batch {batches}: {e:?}");
         }
-        if !reads.is_empty() {
+        // Presented textures, read back into the shared region after the batch.
+        let mut shown = Vec::new();
+        for c in Reader::new(batch).expect("batch header").flatten() {
+            match c {
+                Command::CreateTexture { id, desc } => {
+                    sizes.insert(id.0, (desc.width, desc.height));
+                }
+                Command::Present { texture, .. } => {
+                    presents += 1;
+                    if every_present > 0 && presents % every_present == 0 {
+                        if let Some(&(w, h)) = sizes.get(&texture.0) {
+                            shown.push((texture, w, h, presents));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (texture, w, h, n) in shown {
+            let pitch = w * 4;
+            if (pitch * h) as usize > shared.len() {
+                continue;
+            }
+            let mut wr = d3dgpu_proto::Writer::new();
+            let region = d3dgpu_proto::TextureRegion { texture, face: 0, level: 0, x: 0, y: 0, z: 0, width: w, height: h, depth: 1 };
+            wr.read_texture(&region, 0, pitch, pitch * h, 0);
+            if let Err(e) = core.execute(&wr.finish(), &shared) {
+                eprintln!("present {n}: {e:?}");
+                continue;
+            }
+            core.wait(&mut shared);
+            let file = out.join(format!("present-{n:05}.png"));
+            write_png(&file, w, h, &shared, pitch as usize);
+            println!("batch {batches}: present {n} {w}x{h} -> {}", file.display());
+        }
+        if save_reads && !reads.is_empty() {
             core.wait(&mut shared);
             for (w, h, offset, pitch) in reads {
                 frames += 1;
@@ -89,7 +130,7 @@ fn main() {
     for e in errors.lock().unwrap().iter() {
         println!("webgpu: {e}");
     }
-    println!("{batches} batches, {frames} readbacks; {:?}", core.stats());
+    println!("{batches} batches, {frames} readbacks, {presents} presents; {:?}", core.stats());
 }
 
 /// SKIP=a-b,c drops those commands (0-based, in the whole recording) to

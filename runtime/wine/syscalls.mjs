@@ -492,6 +492,7 @@ export const SYSCALLS = {
         this.w16(buf, this.x64 ? 9 : 0); // PROCESSOR_ARCHITECTURE_AMD64 / _INTEL
         this.w16(buf + 2, 6); // level
         this.w16(buf + 4, 0x0f29);
+        this.w16(buf + 6, 1); // MaximumProcessors (GetSystemInfo's dwNumberOfProcessors)
         this.w32(buf + 8, 0x1 | 0x8 | 0x40); // feature set
         return ret(12);
       }
