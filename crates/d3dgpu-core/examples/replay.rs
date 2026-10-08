@@ -10,7 +10,7 @@
 //! and then saves the recorded readbacks only with READS=1; READ_EVERY=N
 //! saves every Nth readback, BATCHES=N stops after N batches)
 
-use std::io::Write;
+use std::io::{Read, Write};
 
 use d3dgpu_core::{Core, Options};
 use d3dgpu_proto::{Command, Reader};
@@ -23,8 +23,11 @@ fn main() {
     let path = args.get(1).expect("usage: replay FILE [OUT_DIR]");
     let out = std::path::PathBuf::from(args.get(2).map(String::as_str).unwrap_or("target/replay"));
     std::fs::create_dir_all(&out).unwrap();
-    let data = std::fs::read(path).unwrap();
-    assert_eq!(&data[..4], b"D3GR", "not a d3dgpu recording");
+    // Streamed a batch at a time: recordings of long runs are gigabytes.
+    let mut file = std::io::BufReader::new(std::fs::File::open(path).unwrap());
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic).unwrap();
+    assert_eq!(&magic, b"D3GR", "not a d3dgpu recording");
 
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::PRIMARY,
@@ -53,14 +56,18 @@ fn main() {
     let read_every: usize = std::env::var("READ_EVERY").ok().and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
     let max_batches: usize = std::env::var("BATCHES").ok().and_then(|v| v.parse().ok()).unwrap_or(usize::MAX);
     let mut reads_seen = 0usize;
-    let (mut p, mut batches, mut frames) = (4, 0, 0);
+    let (mut batches, mut frames) = (0, 0);
+    let mut original = Vec::new();
     let every_present: usize = std::env::var("PRESENTS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     let (mut sizes, mut presents) = (std::collections::HashMap::new(), 0usize);
-    while p + 4 <= data.len() && batches < max_batches {
-        let len = u32::from_le_bytes(data[p..p + 4].try_into().unwrap()) as usize;
-        let original = &data[p + 4..p + 4 + len];
-        p += 4 + len;
-        let filtered = skip_commands(original);
+    let mut len = [0u8; 4];
+    // A recording cut off mid-batch (the program was stopped) ends at the last whole one.
+    while batches < max_batches && file.read_exact(&mut len).is_ok() {
+        original.resize(u32::from_le_bytes(len) as usize, 0);
+        if file.read_exact(&mut original).is_err() {
+            break;
+        }
+        let filtered = skip_commands(&original);
         let batch = &filtered[..];
         batches += 1;
         // DUMP=1 prints every command.
@@ -83,6 +90,9 @@ fn main() {
         if let Err(e) = core.execute(batch, &shared) {
             eprintln!("batch {batches}: {e:?}");
         }
+        // Finished submissions free their staging memory only when polled
+        // (a browser polls by itself).
+        let _ = device.poll(wgpu::PollType::Poll);
         // Presented textures, read back into the shared region after the batch.
         let mut shown = Vec::new();
         for c in Reader::new(batch).expect("batch header").flatten() {
@@ -118,8 +128,11 @@ fn main() {
             write_png(&file, w, h, &shared, pitch as usize);
             println!("batch {batches}: present {n} {w}x{h} -> {}", file.display());
         }
-        if save_reads && !reads.is_empty() {
+        // Reads complete (and free their staging buffers) whether or not they are saved.
+        if !reads.is_empty() {
             core.wait(&mut shared);
+        }
+        if save_reads && !reads.is_empty() {
             for (w, h, offset, pitch) in reads {
                 reads_seen += 1;
                 if (reads_seen - 1) % read_every != 0 {
