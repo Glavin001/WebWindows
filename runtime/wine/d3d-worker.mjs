@@ -27,6 +27,28 @@ let capture = 'idle'; // 'requested', 'reading'
 const log = (text) => (port ?? self).postMessage({ type: 'log', text });
 // {type: 'stats'} from the page: once a second, how busy this worker was.
 let stats = null;
+// Frame timing for the page's overlay, {type: 'perf'} twice a second:
+// presented frames per second, average and worst time between them, the
+// share of the time spent executing batches, and draws per frame.
+let perf = { since: performance.now(), frames: 0, last: 0, worst: 0, execute: 0, draws: 0 };
+function reportPerf(now) {
+  const dt = now - perf.since;
+  if (dt < 500) return;
+  let draws = perf.draws;
+  try {
+    draws = JSON.parse(renderer.stats_json()).draws ?? 0;
+  } catch {}
+  const f = perf.frames;
+  port.postMessage({
+    type: 'perf',
+    fps: (f * 1000) / dt,
+    frameMs: f ? dt / f : 0,
+    worstMs: perf.worst,
+    busy: perf.execute / dt,
+    drawsPerFrame: f ? (draws - perf.draws) / f : 0,
+  });
+  perf = { since: now, frames: 0, last: perf.last, worst: 0, execute: 0, draws };
+}
 function onPortMessage(e) {
   if (e.data?.type === 'stats') stats = { since: performance.now(), execute: 0, gpuWait: 0, frames: 0, batches: 0 };
   if (e.data?.type !== 'snapshot' || !renderer || capture !== 'idle') return;
@@ -95,6 +117,16 @@ async function loop() {
       renderer.track_gpu();
       await (present & PRESENT_VSYNC ? nextFrame() : nextTask());
       while (renderer.gpu_in_flight() >= MAX_FRAME_LATENCY) await new Promise((r) => setTimeout(r, 1));
+    }
+    if (port) {
+      const now = performance.now();
+      perf.execute += t1 - t0;
+      if (present >= 0) {
+        if (perf.last) perf.worst = Math.max(perf.worst, now - perf.last);
+        perf.last = now;
+        perf.frames++;
+      }
+      reportPerf(now);
     }
     if (stats) {
       const now = performance.now();

@@ -110,6 +110,53 @@ function paint() {
 }
 requestAnimationFrame(paint);
 
+// ---- Frame rate and load --------------------------------------------------
+//
+// Over the screen, since programs rarely show their own: Direct3D's
+// presented frames (the render worker's {type: 'perf'}, twice a second),
+// else how often the screen changed, and the system calls and threads from
+// the latest status sample. The "stats" box (or ?stats=0) hides it.
+let d3dPerf = null; // the latest {type: 'perf'}, with when it came
+const perfBox = $('perf');
+const showPerf = $('showperf');
+try {
+  const saved = params.get('stats') ?? localStorage.getItem('webwindows:stats');
+  if (saved !== null) showPerf.checked = saved !== '0';
+} catch {}
+showPerf.onchange = () => {
+  try {
+    localStorage.setItem('webwindows:stats', showPerf.checked ? '1' : '0');
+  } catch {}
+  updatePerf();
+};
+let perfFrames = { at: performance.now(), shown: 0 };
+const fmt = (n) => (n >= 10000 ? `${(n / 1000).toFixed(0)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${Math.round(n)}`);
+function updatePerf() {
+  const now = performance.now();
+  const shownNow = window.framesShown ?? 0;
+  const screenFps = ((shownNow - perfFrames.shown) * 1000) / Math.max(1, now - perfFrames.at);
+  perfFrames = { at: now, shown: shownNow };
+  perfBox.hidden = !showPerf.checked || canvas.hidden;
+  if (perfBox.hidden) return;
+  const lines = [];
+  // Direct3D's numbers while it presents (a stale report means it stopped).
+  const d = d3dPerf && now - d3dPerf.at < 1500 && d3dPerf.fps > 0 ? d3dPerf : null;
+  if (d) {
+    lines.push(`${d.fps.toFixed(0)} fps  ${d.frameMs.toFixed(1)} ms (worst ${d.worstMs.toFixed(0)})`);
+    lines.push(`Direct3D: ${fmt(d.drawsPerFrame)} draws/frame, GPU worker ${Math.round(d.busy * 100)}% busy`);
+  } else {
+    lines.push(`${screenFps.toFixed(0)} fps (screen updates)`);
+  }
+  const s = statusHistory.at(-1);
+  if (s?.syscalls) {
+    const threads = s.threads?.length ?? 0;
+    const running = s.threads?.filter((t) => t.state === 'running').length ?? 0;
+    lines.push(`CPU: ${fmt(s.syscalls.perSec)} syscalls/s, ${threads} threads (${running} running)`);
+  }
+  perfBox.textContent = lines.join('\n');
+}
+setInterval(updatePerf, 500);
+
 const at = (e) => {
   const r = canvas.getBoundingClientRect();
   return [Math.floor(((e.clientX - r.left) * canvas.width) / r.width), Math.floor(((e.clientY - r.top) * canvas.height) / r.height)];
@@ -211,7 +258,8 @@ function newD3DCanvas() {
   d3dPort = channel.port1;
   const snapshots = [];
   d3dPort.onmessage = (e) => {
-    if (e.data.type === 'log') logEl.textContent += `d3d: ${e.data.text}\n`;
+    if (e.data.type === 'perf') d3dPerf = { ...e.data, at: performance.now() };
+    else if (e.data.type === 'log') logEl.textContent += `d3d: ${e.data.text}\n`;
     else if (e.data.type === 'frame') snapshots.shift()?.(e.data);
   };
   const port = d3dPort;

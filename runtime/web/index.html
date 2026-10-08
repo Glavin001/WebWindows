@@ -26,6 +26,9 @@
   /* Direct3D frames, over the window that shows them (input goes to #screen). */
   #screenbox canvas.d3d { position: absolute; pointer-events: none; }
   #screenbox canvas.d3d[hidden] { display: none; }
+  /* Frame rate and load over the screen, for programs that show none. */
+  #perf { position: absolute; top: 6px; left: 6px; z-index: 2; pointer-events: none; padding: 3px 7px; border-radius: 5px; background: rgba(0, 0, 0, .6); color: #fff; font: 12px/1.4 ui-monospace, monospace; white-space: pre; }
+  #perf[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -41,6 +44,7 @@
     <button id="run" disabled>Run</button>
     <label class="status"><input id="wine" type="checkbox"> on Wine</label>
     <label class="status"><input id="nocache" type="checkbox"> no cache</label>
+    <label class="status"><input id="showperf" type="checkbox" checked> stats</label>
     <label class="status" title="Check every guest memory access explicitly instead of relying on the engine's bounds traps: slower, but an access violation reports every register exactly (docs/memory-traps.md). Safari always does."><input id="faithful" type="checkbox"> faithful memory checks</label>
   </div>
   <div class="row" id="samples" hidden>
@@ -49,7 +53,7 @@
     <button id="runsample">Run</button>
   </div>
   <div id="status" class="status"></div>
-  <div id="screenbox"><canvas id="screen" width="800" height="600" tabindex="0" hidden aria-label="Windows screen"></canvas></div>
+  <div id="screenbox"><canvas id="screen" width="800" height="600" tabindex="0" hidden aria-label="Windows screen"></canvas><div id="perf" hidden aria-live="off"></div></div>
   <pre id="out"></pre>
   <div id="log" class="log"></div>
 </main>
