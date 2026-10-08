@@ -67,7 +67,19 @@ function wwt() {
 }
 
 /** Translates an image with the CLI, caching by content hash. */
+/** The translator compiled to WebAssembly (fast mode), once loaded. */
+let fastTranslator = null;
+
 function translate(path, bytes) {
+  // WWT_TRANSLATOR=wasm: the program translated in place by the WebAssembly
+  // build, as the page does without an ahead-of-time translation (Wine's
+  // DLLs stay ahead of time, as the bundle ships them).
+  if (process.env.WWT_TRANSLATOR === 'wasm' && /\.exe$/i.test(path) && fastTranslator) {
+    const t0 = performance.now();
+    const wasm = fastTranslator.translatePe(bytes, { guestLimit: GUEST_LIMIT });
+    stderr(`[wasm translator] ${path.split('\\').pop()}: ${wasm.length} bytes in ${(performance.now() - t0).toFixed(0)} ms\n`);
+    return wasm;
+  }
   mkdirSync(cacheDir, { recursive: true });
   // Keyed by the image and the translator build, so a rebuilt translator
   // never serves stale translations.
@@ -281,7 +293,8 @@ if (useUnix) {
 // Fast mode: code the ahead-of-time pass missed is translated when reached.
 const tw = join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm');
 if (existsSync(tw)) {
-  enableFastMode(machine, await FastTranslator.load(readFileSync(tw)), {
+  fastTranslator = await FastTranslator.load(readFileSync(tw));
+  enableFastMode(machine, fastTranslator, {
     log: trace ? (s) => stderr(`[fast] ${s}\n`) : undefined,
   });
 }

@@ -15,6 +15,9 @@
 //   emcc       the C source built with Emscripten, in Node: the WebAssembly ceiling
 //   wine       the .exe on Wine running natively (`wine` on PATH): Wine without translation
 //   wwt-wine   the .exe translated, on translated Wine, in Node: what we ship
+//   wwt-fast   wwt-wine with the program translated in place by the translator
+//              compiled to WebAssembly, as the page does without an
+//              ahead-of-time translation (WWT_TRANSLATOR=wasm)
 //   qemu       the Linux build on qemu-i386 (user mode): a native software
 //              translator, so how much of our gap is WebAssembly itself
 //   wine-assembly  the .exe on Wine-Assembly (an x86 interpreter written in
@@ -83,6 +86,7 @@ const available = {
   wine: which('wine'),
   'wwt-wine': which('i686-w64-mingw32-gcc') && existsSync(join(root, 'target/release/wwt')) && existsSync(wineBuild),
   qemu: which('gcc') && which('qemu-i386'),
+  'wwt-fast': which('i686-w64-mingw32-gcc') && existsSync(join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm')) && existsSync(wineBuild),
   'wine-assembly': !!process.env.WINE_ASSEMBLY && existsSync(join(process.env.WINE_ASSEMBLY, 'test/run.js')) && which('i686-w64-mingw32-gcc'),
 };
 const wineAssembly = process.env.WINE_ASSEMBLY;
@@ -254,6 +258,7 @@ function command(tier, files, w, dir) {
           ],
         ]
       );
+    case 'wwt-fast':
     case 'wwt-wine':
       return [
         process.execPath,
@@ -266,7 +271,7 @@ function runOnce(tier, files, w) {
   const dir = mkdtempDir();
   const cmd = command(tier, files, w, dir);
   if (!cmd) return null;
-  const env = { ...process.env, WINEDEBUG: '-all', WINEPREFIX: process.env.WINEPREFIX ?? join(tmpdir(), 'wwt-bench-wineprefix'), WA_DUMP_CONSOLE: '80' };
+  const env = { ...process.env, WINEDEBUG: '-all', WINEPREFIX: process.env.WINEPREFIX ?? join(tmpdir(), 'wwt-bench-wineprefix'), WA_DUMP_CONSOLE: '80', ...(tier === 'wwt-fast' && { WWT_TRANSLATOR: 'wasm' }) };
   const [exe, args] = opts.pin ? ['taskset', ['-c', opts.pin, cmd[0], ...cmd[1]]] : cmd;
   const r = spawnSync(exe, args, { cwd: dir, env, encoding: 'utf8', maxBuffer: 256 << 20, timeout: 60 * 60 * 1000 });
   rmSync(dir, { recursive: true, force: true });
@@ -290,7 +295,7 @@ const median = (xs) => {
   return s.length ? (s[(s.length - 1) >> 1] + s[s.length >> 1]) / 2 : NaN;
 };
 
-const ALL_TIERS = ['native', 'emcc', 'wine', 'qemu', 'wine-assembly', 'wwt-wine'];
+const ALL_TIERS = ['native', 'emcc', 'wine', 'qemu', 'wine-assembly', 'wwt-fast', 'wwt-wine'];
 const TIERS = ALL_TIERS.filter((t) => available[t] && (!opts.tiers || opts.tiers.includes(t)));
 for (const t of ALL_TIERS) if (!available[t]) console.error(`skipping tier ${t} (not installed${t === 'wine-assembly' ? ': set WINE_ASSEMBLY' : ''})`);
 
