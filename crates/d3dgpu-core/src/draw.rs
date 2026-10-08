@@ -182,12 +182,19 @@ impl Caches {
             ],
         });
         let g0 = Self::uniform_group(device, &g0_layout, uniform_ring);
-        let zero_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("d3dgpu zero stream"),
-            size: 64,
-            usage: wgpu::BufferUsages::VERTEX,
-            mapped_at_creation: false,
-        });
+        // Inputs a declaration lacks read (0, 0, 0, 1), as Direct3D gives
+        // them: a missing specular colour has alpha 1, so it does not fog
+        // everything when the fog factor comes from it.
+        let mut zeros = [0u8; 64];
+        zeros[12..16].copy_from_slice(&1.0f32.to_le_bytes());
+        let zero_buffer = wgpu::util::DeviceExt::create_buffer_init(
+            device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("d3dgpu zero stream"),
+                contents: &zeros,
+                usage: wgpu::BufferUsages::VERTEX,
+            },
+        );
         Caches {
             g0_layout,
             g0,
@@ -579,6 +586,7 @@ impl Core {
                     _ => Fog::Vertex,
                 },
             };
+            key.fog_w = matches!(key.fog, Fog::Linear | Fog::Exp | Fog::Exp2) && self.st.r(RenderState::WFog) != 0;
         }
         key.clip = self.clip_mode();
         key.flat_shading = self.st.r(RenderState::ShadeMode) == D3DSHADE_FLAT;

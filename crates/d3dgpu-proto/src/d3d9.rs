@@ -231,6 +231,10 @@ impl PrimitiveType {
 open_enum! {
     /// `D3DRENDERSTATETYPE`.
     RenderState: u32 {
+        /// d3dgpu's own (no Direct3D 9 state is 1): non-zero when table fog
+        /// reads eye depth (W), as Direct3D does under a perspective
+        /// projection; zero for pixel Z (orthographic projections).
+        WFog = 1,
         ZEnable = 7,
         FillMode = 8,
         ShadeMode = 9,

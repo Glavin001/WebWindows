@@ -182,6 +182,8 @@ pub struct PixelKey {
     /// `D3DCMPFUNC` of the alpha test; `cmp::ALWAYS` disables it.
     pub alpha_test: u8,
     pub fog: Fog,
+    /// Table fog reads eye depth (W) rather than pixel Z.
+    pub fog_w: bool,
     pub clip: ClipMode,
     /// `D3DSHADE_FLAT`: colour varyings use flat interpolation.
     pub flat_shading: bool,
@@ -193,6 +195,7 @@ impl Default for PixelKey {
             samplers: [SamplerKey::d2(); 16],
             alpha_test: cmp::ALWAYS,
             fog: Fog::None,
+            fog_w: false,
             clip: ClipMode::None,
             flat_shading: false,
         }

@@ -1216,6 +1216,16 @@ impl<'a> Gen<'a> {
             return "vec4<f32>(0.0)".into();
         }
         let written = self.refl.vs_outputs.contains(&sem);
+        if !written && sem.usage == usage::FOG {
+            // No oFog: the fog factor is the specular alpha, as fixed
+            // function's FOGVERTEXMODE NONE has it (wined3d's vertex
+            // shaders leave the fog output to it), else no fog.
+            return if self.refl.vs_outputs.contains(&Semantic::new(usage::COLOR, 1)) {
+                "vec4<f32>(o_d1.w, 0.0, 0.0, 1.0)".into()
+            } else {
+                "vec4<f32>(1.0, 0.0, 0.0, 1.0)".into()
+            };
+        }
         if !written {
             return "vec4<f32>(0.0)".into();
         }
@@ -1323,9 +1333,16 @@ impl<'a> Gen<'a> {
                 Fog::Vertex => Some(
                     if linkage.iter().any(|v| v.semantic.usage == usage::FOG) { "fog_in" } else { "1.0" }.to_string(),
                 ),
-                Fog::Linear => Some("(drv.fog_params.y - frag_pos.z) * drv.fog_params.w".into()),
-                Fog::Exp => Some("exp(-drv.fog_params.z * frag_pos.z)".into()),
-                Fog::Exp2 => Some("exp(-(drv.fog_params.z * frag_pos.z) * (drv.fog_params.z * frag_pos.z))".into()),
+                // Table fog: eye depth (W; the fragment position's w is
+                // its reciprocal) or pixel Z.
+                Fog::Linear | Fog::Exp | Fog::Exp2 => {
+                    let d = if key.fog_w { "(1.0 / frag_pos.w)" } else { "frag_pos.z" };
+                    Some(match key.fog {
+                        Fog::Linear => format!("(drv.fog_params.y - {d}) * drv.fog_params.w"),
+                        Fog::Exp => format!("exp(-drv.fog_params.z * {d})"),
+                        _ => format!("exp(-(drv.fog_params.z * {d}) * (drv.fog_params.z * {d}))"),
+                    })
+                }
                 Fog::VertexLinear | Fog::VertexExp | Fog::VertexExp2 => {
                     let c = if linkage.iter().any(|v| v.semantic.usage == usage::FOG) { "fog_in" } else { "0.0" };
                     Some(match key.fog {

@@ -1787,6 +1787,9 @@ static void wgpu_apply_render_states(struct wined3d_device_wgpu *device, struct 
      * constants (end, 1 / (end - start)); a zero scale fogs everything. */
     wgpu_set_render_state(device, WINED3D_RS_FOGENABLE, state->extra_ps_args.fog_enable);
     wgpu_set_render_state(device, WINED3D_RS_FOGTABLEMODE, state->extra_ps_args.fog_mode);
+    /* The core's own state 1: table fog reads eye depth (W) under a
+     * perspective projection, pixel Z under an orthographic one. */
+    wgpu_set_render_state(device, 1, !state->extra_vs_args.ortho_fog);
     {
         const struct wined3d_shader *vs = state->shader[WINED3D_SHADER_TYPE_VERTEX];
         bool rhw = state->vertex_declaration && state->vertex_declaration->position_transformed;
