@@ -109,7 +109,7 @@ function translate(path, bytes) {
   // WWT_TRANSLATE_FLAGS: extra `wwt translate` options, for A/B tests
   // (tools/bench/ab.mjs --wine). All are part of the cache key. With a
   // 32-bit memory the guest limit is a constant in the memory checks.
-  const flags = { 'wined3d.dll': ['--no-smc-checks'], 'd3d9.dll': ['--no-smc-checks'] }[path.split('\\').pop().toLowerCase()] ?? [];
+  const flags = { 'wined3d.dll': ['--no-smc-checks'], 'd3d8.dll': ['--no-smc-checks'], 'd3d9.dll': ['--no-smc-checks'] }[path.split('\\').pop().toLowerCase()] ?? [];
   const extra = [
     ...flags,
     ...(mem64 ? ['--mem64'] : ['--guest-limit-mb', String(GUEST_LIMIT >>> 20)]),

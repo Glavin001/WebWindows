@@ -60,17 +60,17 @@ const GUI_DLLS = [
 // time. Winsock has no network behind it (single-player games
 // talk to their own server in memory).
 const MEDIA_DLLS = [
-  'version', 'winmm', 'msacm32', 'dsound', 'mmdevapi', 'winepulse.drv', 'ddraw', 'wined3d', 'd3d9',
+  'version', 'winmm', 'msacm32', 'dsound', 'mmdevapi', 'winepulse.drv', 'ddraw', 'wined3d', 'd3d8', 'd3d9',
   'd3dcompiler_47', 'opengl32', 'dinput', 'dinput8', 'hid', 'setupapi',
   'ws2_32', 'wsock32', 'iphlpapi', 'dnsapi', 'nsi',
 ];
 // Networking and cryptography (PuTTY, curl): likewise fetched only for
 // programs that import one of them.
-const NET_DLLS = ['ws2_32', 'crypt32', 'dnsapi', 'nsi', 'iphlpapi', 'secur32', 'bcrypt', 'normaliz', 'wldap32'];
+const NET_DLLS = ['ws2_32', 'crypt32', 'dnsapi', 'nsi', 'iphlpapi', 'secur32', 'bcrypt', 'normaliz', 'wldap32', 'wininet', 'mpr'];
 // Translator flags per DLL. The Direct3D DLLs never write code, so their
 // stores skip the self-modifying-code check (the C runtime's memcpy, which
 // could copy code for a program, keeps it); the same list is in wine.mjs.
-const TRANSLATE_FLAGS = { wined3d: ['--no-smc-checks'], d3d9: ['--no-smc-checks'] };
+const TRANSLATE_FLAGS = { wined3d: ['--no-smc-checks'], d3d8: ['--no-smc-checks'], d3d9: ['--no-smc-checks'] };
 // MinGW's default DLL base, and where the bundle moves those DLLs to.
 const DEFAULT_BASE = x64 ? 0x1_8000_0000 : 0x10000000;
 const PRELINK_BASE = mem64 ? 0x1_9000_0000 : 0x60000000;
