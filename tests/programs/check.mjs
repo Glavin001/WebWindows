@@ -11,6 +11,8 @@
 //   node tests/programs/check.mjs --opt O0,O2 tests/programs/c/switch.c
 //   node tests/programs/check.mjs --wine          # on translated Wine DLLs
 //   node tests/programs/check.mjs --torture DIR   # gcc.c-torture/execute
+//   node tests/programs/check.mjs --shard 2/3 ... # every third run, from the second
+//                                                 # (CI splits the torture tests)
 //
 // Torture tests check themselves (abort or exit 0). One that MinGW cannot
 // build, or that fails natively (target-specific or extended-precision
@@ -38,6 +40,7 @@ let jobs = 4;
 let wine = false;
 let torture = null;
 let filter = null;
+let shard = [1, 1];
 const files = [];
 while (args.length) {
   const a = args.shift();
@@ -48,6 +51,7 @@ while (args.length) {
   else if (a === '--wine') wine = true;
   else if (a === '--torture') torture = resolve(args.shift());
   else if (a === '--filter') filter = new RegExp(args.shift());
+  else if (a === '--shard') shard = args.shift().split('/').map(Number);
   else files.push(resolve(a));
 }
 if (torture) {
@@ -178,8 +182,9 @@ async function runOne(p, opt) {
 }
 
 const results = [];
-const todo = [];
+let todo = [];
 for (const p of programs) for (const opt of opts) todo.push([p, opt]);
+todo = todo.filter((_, i) => i % shard[1] === shard[0] - 1);
 
 // Builds and runs are subprocesses; overlap `jobs` of them.
 async function pool() {
