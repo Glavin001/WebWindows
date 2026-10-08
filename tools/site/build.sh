@@ -5,7 +5,8 @@
 #   tools/site/build.sh [out dir]          (default: target/site)
 #
 # Needs the translator (cargo build -p wwt-wasm --target wasm32-unknown-unknown
-# --profile release-wasm) and the bundle (node runtime/node/wine-bundle.mjs).
+# --profile release-wasm) and the bundle (node runtime/node/wine-bundle.mjs);
+# takes the benchmark programs (node tools/site/apps.mjs) when built.
 # CI deploys the result to Vercel (tools/site/deploy.sh).
 set -eu
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -34,10 +35,20 @@ node -e 'for (const s of JSON.parse(require("fs").readFileSync(process.argv[1], 
   mkdir -p "$out/$(dirname "$p")"
   cp "$root/$p" "$out/$p"
 done
-# The d3dgpu demo and test page (runtime/d3dgpu/build.sh), when built.
+# The benchmark programs built from source (tools/site/apps.mjs), when
+# built: the page lists them from runtime/web/apps.json.
+if [ -f "$root/target/site-apps/apps.json" ]; then
+  cp -r "$root/target/site-apps/apps" "$out/apps"
+  cp "$root/target/site-apps/apps.json" "$out/runtime/web/apps.json"
+fi
+# The d3dgpu demo and test page (runtime/d3dgpu/build.sh), when built;
+# otherwise its message protocol, which Wine's Direct3D bridge imports.
 if [ -f "$root/runtime/d3dgpu/pkg/d3dgpu_web_bg.wasm" ]; then
   cp -r "$root/runtime/d3dgpu" "$out/runtime/d3dgpu"
   rm -f "$out/runtime/d3dgpu/.gitignore" "$out/runtime/d3dgpu/build.sh"
+else
+  mkdir -p "$out/runtime/d3dgpu"
+  cp "$root/runtime/d3dgpu/protocol.mjs" "$out/runtime/d3dgpu/"
 fi
 cat > "$out/index.html" <<'HTML'
 <!doctype html>

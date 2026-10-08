@@ -385,7 +385,7 @@ jobs:
       group: ${{ github.workflow }}-deploy-${{ github.event.pull_request.number || 'production' }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     environment:
       name: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && 'Production' || 'Preview' }}
       url: ${{ steps.vercel.outputs.url }}
@@ -410,6 +410,18 @@ jobs:
         with:
           path: ~/.npm/_npx
           key: npx-vercel-62
+      # The page's benchmark programs (SQLite, Lua, CoreMark, apibench),
+      # built from their pinned sources for the site, not committed.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            target/bench-src
+            target/coremark-src
+          key: bench-src-${{ hashFiles('tools/bench/sources.mjs') }}
+      - name: Benchmark programs from source (tools/site/apps.mjs)
+        run: |
+          tools/ci/apt-install.sh gcc-mingw-w64-i686 binutils-mingw-w64-i686
+          node tools/site/apps.mjs
       - name: Deploy the site to Vercel
         id: vercel
         env:
