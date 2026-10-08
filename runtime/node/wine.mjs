@@ -261,6 +261,7 @@ const host = new WineHost(machine, {
   unix,
   debug: process.env.WINEDEBUG ?? '',
   nativeHeap,
+  aliasThunks: process.env.WWT_THUNK_ALIAS !== '0',
 });
 host.boot(`${sys32}\\ntdll.dll`, exeDos);
 const r = host.run();

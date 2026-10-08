@@ -6,6 +6,7 @@
 import { ProcessExit, GuestFault, hex } from '../runtime.mjs';
 import { parsePe } from './host.mjs';
 import { WIN32U_UNIXLIB } from './unix.mjs';
+import { aliasImportThunks } from './thunks.mjs';
 
 import L from './layout.json' with { type: 'json' };
 import {
@@ -233,6 +234,12 @@ export const SYSCALLS = {
     const old = this.vm.protect(base, end - base, prot);
     if (old < 0) return STATUS.NOT_MAPPED_VIEW;
     if (pold) this.w32(pold, old);
+    // The loader restores an image's protection after filling its imports.
+    if (this.aliasThunks) {
+      for (const [b, img] of this.images) {
+        if (base >= b && base < b + img.size) aliasImportThunks(this.m, b, b + img.size);
+      }
+    }
     this.w32(pbase, base);
     this.w32(psize, end - base);
     return STATUS.SUCCESS;

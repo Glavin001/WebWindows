@@ -161,6 +161,8 @@ export class WineHost {
     /** Results of NtCallbackReturn, one per user callback in progress. */
     this.callbackResults = [];
     this.images = new Map(); // base -> {path, info}
+    /** Resolve import thunks in the address lookup (./thunks.mjs). */
+    this.aliasThunks = opts.aliasThunks ?? true;
     this.modulesByPath = new Map();
     this.unimplemented = new Map();
     this.counts = new Map();
