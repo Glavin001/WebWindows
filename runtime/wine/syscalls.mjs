@@ -41,6 +41,7 @@ export const STATUS = {
   NOT_MAPPED_VIEW: 0xc0000019,
   UNABLE_TO_FREE_VM: 0xc000001a,
   ACCESS_DENIED: 0xc0000022,
+  ACCESS_VIOLATION: 0xc0000005,
   BUFFER_TOO_SMALL: 0xc0000023,
   OBJECT_TYPE_MISMATCH: 0xc0000024,
   OBJECT_NAME_INVALID: 0xc0000033,
@@ -399,8 +400,9 @@ export const SYSCALLS = {
 
   // -- process, thread, system
   NtQueryInformationProcess(a) {
-    const [, cls, buf, len, pret] = [a(0), a(1), a(2), a(3), a(4)];
+    const [handle, cls, buf, len, pret] = [a(0), a(1), a(2), a(3), a(4)];
     const ret = (n) => (pret && this.w32(pret, n), STATUS.SUCCESS);
+    if (!handle) return STATUS.INVALID_HANDLE;
     switch (cls) {
       case 0: { // ProcessBasicInformation
         const B = this.L.PROCESS_BASIC_INFORMATION;
@@ -436,7 +438,8 @@ export const SYSCALLS = {
       case 43: { // ProcessImageFileNameWin32
         const name = cls === 27 ? '\\Device\\HarddiskVolume1' + this.exePath.slice(2) : this.exePath;
         const us = this.L.UNICODE_STRING.__size;
-        if (len < us + name.length * 2 + 2) return STATUS.INFO_LENGTH_MISMATCH;
+        // Too small: the length needed, for the caller to allocate.
+        if (len < us + name.length * 2 + 2) return (ret(us + name.length * 2 + 2), STATUS.INFO_LENGTH_MISMATCH);
         this.putUstr(buf, buf + us, name);
         return ret(us + name.length * 2 + 2);
       }
@@ -528,6 +531,7 @@ export const SYSCALLS = {
     return STATUS.SUCCESS;
   },
   NtQueryPerformanceCounter(a) {
+    if (!this.writable(a(0), 8) || (a(1) && !this.writable(a(1), 8))) return STATUS.ACCESS_VIOLATION;
     this.w64(a(0), BigInt(Math.floor(performance.now() * 10000)));
     if (a(1)) this.w64(a(1), 10000000n);
     return STATUS.SUCCESS;

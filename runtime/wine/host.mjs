@@ -297,6 +297,12 @@ export class WineHost {
   w64(a, v) {
     this.m.dv.setBigUint64(a, BigInt.asUintN(64, BigInt(v)), true);
   }
+  /** Whether a program's pointer to `size` bytes is committed memory above the null page. */
+  writable(a, size) {
+    if (a < 0x10000 || a + size > this.m.guestLimit) return false;
+    for (let p = this.vm.pageOf(a); p <= this.vm.pageOf(a + size - 1); p++) if (!this.vm.prot[p]) return false;
+    return true;
+  }
   u64(a) {
     return this.m.dv.getBigUint64(a, true);
   }
@@ -904,7 +910,14 @@ export class WineHost {
       this.unimplemented.set(name, (this.unimplemented.get(name) ?? 0) + 1);
       status = STATUS.NOT_IMPLEMENTED;
     } else {
-      status = impl.call(this, a, cpu, argBase);
+      try {
+        status = impl.call(this, a, cpu, argBase);
+      } catch (e) {
+        // A pointer outside memory: Windows checks the program's pointers
+        // and fails the call.
+        if (!(e instanceof RangeError)) throw e;
+        status = STATUS.ACCESS_VIOLATION;
+      }
     }
     if (status && typeof status === 'object') {
       if (status.jump !== undefined) {
