@@ -47,7 +47,7 @@
 //                          input); WWT_STATUS=json prints the whole sample
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -378,11 +378,25 @@ if (existsSync(tw)) {
     log: trace || process.env.WWT_FAST_LOG ? (s) => stderr(`[fast] ${s}\n`) : undefined,
   });
 }
-const d3d = d3dRecord ? new D3DRecorder() : null;
+// The recording streams to the file ("D3GR", then each batch as a u32
+// length and its bytes), so a long game session does not fill memory.
+let recordFd = null;
+const d3d = d3dRecord
+  ? new D3DRecorder((batch) => {
+      if (recordFd === null) {
+        recordFd = openSync(d3dRecord, 'w');
+        writeSync(recordFd, Uint8Array.of(0x44, 0x33, 0x47, 0x52));
+      }
+      const len = new Uint8Array(4);
+      new DataView(len.buffer).setUint32(0, batch.length, true);
+      writeSync(recordFd, len);
+      writeSync(recordFd, batch);
+    })
+  : null;
 const saveRecording = () => {
   if (!d3d) return;
-  writeFileSync(d3dRecord, d3d.bytes());
-  stderr(`recorded ${d3d.batches.length} Direct3D batches in ${d3dRecord}\n`);
+  if (recordFd === null) writeFileSync(d3dRecord, Uint8Array.of(0x44, 0x33, 0x47, 0x52));
+  stderr(`recorded ${d3d.count} Direct3D batches in ${d3dRecord}\n`);
 };
 /** What the program plays, kept for --audio-out (float stereo at 48 kHz). */
 const audioCapture = {

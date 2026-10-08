@@ -113,13 +113,14 @@ function safe(f, fallback) {
   }
 }
 
-/** How much of the composed screen is not black, and its mean brightness,
- * from a 32x24 grid of samples. */
+/** How much of the composed screen is not black, its mean brightness and
+ * how many colours it has, from a 32x24 grid of samples. */
 function screenStats(d) {
   const { width, height } = d.size;
   const px = d.screen;
   let lit = 0;
   let sum = 0;
+  const colours = new Set();
   const n = 32 * 24;
   for (let gy = 0; gy < 24; gy++) {
     const y = Math.floor(((gy + 0.5) * height) / 24);
@@ -129,9 +130,12 @@ function screenStats(d) {
       const l = (px[i] * 2 + px[i + 1] * 5 + px[i + 2]) / 8;
       sum += l;
       if (l > 8) lit++;
+      colours.add(((px[i] >> 4) << 8) | ((px[i + 1] >> 4) << 4) | (px[i + 2] >> 4));
     }
   }
-  return { nonBlack: Math.round((100 * lit) / n) / 100, brightness: Math.round(sum / n) };
+  // Distinct colours (4 bits a channel): about 1 for a cleared screen or a
+  // bare desktop, tens for a picture.
+  return { nonBlack: Math.round((100 * lit) / n) / 100, brightness: Math.round(sum / n), colours: colours.size };
 }
 
 /** One line for a log: time, frames, busiest thread, system calls, input. */
@@ -139,7 +143,7 @@ export function formatStatus(s) {
   if (s.error) return `[status] error: ${s.error}`;
   const run = s.threads.find((t) => t.state === 'running') ?? s.threads[0];
   const where = run ? `${run.tid} ${run.state}${run.call ? ` in ${run.call}` : ''} ${run.frames.slice(0, 3).join('<')}` : '-';
-  const scr = s.screen ? ` screen ${s.screen.updatesPerSec}/s lit ${Math.round(s.screen.nonBlack * 100)}%` : '';
+  const scr = s.screen ? ` screen ${s.screen.updatesPerSec}/s lit ${Math.round(s.screen.nonBlack * 100)}% ${s.screen.colours}c` : '';
   const d3d = s.d3d ? ` d3d ${s.d3d.batchesPerSec}/s` : '';
   const inp = s.input ? ` input ${s.input.taken}/${s.input.queued}` : '';
   return `[${s.t}s]${scr}${d3d} sys ${s.syscalls.perSec}/s (${s.syscalls.top.map(([n]) => n).slice(0, 2).join(',')})${inp} | ${where}`;

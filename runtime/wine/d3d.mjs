@@ -127,8 +127,12 @@ export class D3DBridge {
  * and readbacks return zeros.
  */
 export class D3DRecorder {
-  constructor() {
+  /** @param {(batch: Uint8Array) => void} [sink]  takes each batch as it comes (a
+   *   long recording streamed to a file); without one they are kept for bytes() */
+  constructor(sink = null) {
     this.batches = [];
+    this.sink = sink;
+    this.count = 0;
   }
 
   unixCall(machine, code, args) {
@@ -144,7 +148,9 @@ export class D3DRecorder {
         u8.set(new TextEncoder().encode('d3dgpu recorder'), args + 12);
         return STATUS_SUCCESS;
       case 1:
-        this.batches.push(u8.slice(u32(args), u32(args) + u32(args + 4)));
+        this.count++;
+        if (this.sink) this.sink(u8.subarray(u32(args), u32(args) + u32(args + 4)));
+        else this.batches.push(u8.slice(u32(args), u32(args) + u32(args + 4)));
         return STATUS_SUCCESS;
       case 2:
         u8.fill(0, u32(args + 16), u32(args + 16) + u32(args + 12));
