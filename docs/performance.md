@@ -319,6 +319,15 @@ Wine tier when they are (`tools/wine/build.sh`).
 * Inlining small functions that make calls (up to 150 IR instructions):
   Wine's string functions +9%, but kernelbase's module 48% larger, which
   costs compile time; at 60 instructions, no change.
+* Re-entry at nested loops too (`osr.rs` re-enters only at outermost
+  loops). Lua's `tables` stays in V8's baseline code for its whole run,
+  because its hot loop is the interpreter's dispatch loop, nested in the
+  loop around calls; re-entry there needs a dispatcher in front of every
+  enclosing loop header (to keep loops single-entry) and a counter in
+  every nested loop. `tables` +21-30%, but the counters and dispatchers
+  cost everywhere else: `fib` -6-12%, SQLite -6%, CoreMark -1.4% (counter
+  in a local or in the CPU struct, resume number in a local or read from
+  memory: all alike).
 * Replacing the address lookup with direct calls: a cross-module call
   costs its state traffic, not the lookup (forcing in-module calls through
   the lookup changed a microbenchmark by under 1 ns per call).
