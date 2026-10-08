@@ -1,8 +1,9 @@
 /* What games read to size themselves to the processor: the number of
  * processors, the affinity masks (Far Cry measures each processor on a
  * thread pinned to it), the time stamp counter's rate (timed against the
- * performance counter) and the speed in the registry (~MHz, which wineboot
- * writes).
+ * performance counter), the speed in the registry (~MHz, which wineboot
+ * writes) and the machine status word (smsw, which processor identification
+ * code reads to see protected mode).
  * Prints only what holds on any machine, so the output is the same natively.
  */
 #include <windows.h>
@@ -26,6 +27,7 @@ int main(void)
     LARGE_INTEGER f, q0, q1;
     unsigned long long t0, t1;
     double rate;
+    unsigned int msw = 0;
 
     GetSystemInfo(&si);
     printf("processors: %d\n", si.dwNumberOfProcessors >= 1);
@@ -47,6 +49,9 @@ int main(void)
     rate = (double)(t1 - t0) / ((double)(q1.QuadPart - q0.QuadPart) / f.QuadPart) / 1e6;
     printf("rdtsc runs at 100 MHz or more: %d\n", rate >= 100);
     printf("rdtsc moves between reads: %d\n", __rdtsc() != __rdtsc());
+
+    __asm__ volatile ("smsw %0" : "=r" (msw));
+    printf("smsw reports protected mode: %d\n", msw & 1);
 
     printf("CentralProcessor\\0: %ld\n",
            RegOpenKeyExA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", 0, KEY_READ, &key));
