@@ -232,6 +232,11 @@ come right after the registers are written back, which is not always so.
 Before the memory operand was recorded, the fault address was reported
 as 0.
 
+`timers` (in the Windows test programs) can fail its "periodic ticks in
+300 ms" line when the machine is busy: it did once in each mode while
+the benchmark programs were building on every core, and passed when
+rerun.
+
 Wine's conformance tests, per suite. "The same" counts units with the
 same outcome and failure count in both modes; failures are summed over
 all units, including those that crash or time out:
