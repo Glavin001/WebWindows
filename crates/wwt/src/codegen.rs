@@ -35,6 +35,12 @@ pub struct CodegenConfig {
     pub guest_limit: Option<u32>,
     /// Let long-running loops re-enter their function (see `crate::osr`).
     pub osr: bool,
+    /// Lower `lock`-prefixed read-modify-writes and `cmpxchg` to WebAssembly
+    /// atomics. Without, they are a plain load and store: equivalent while
+    /// guest threads never run in parallel (the runtimes run one at a time,
+    /// and never in the middle of an instruction), and far cheaper than
+    /// sequentially consistent atomics on shared memory.
+    pub atomics: bool,
 }
 
 impl Default for CodegenConfig {
@@ -44,6 +50,7 @@ impl Default for CodegenConfig {
             smc_checks: true,
             guest_limit: None,
             osr: true,
+            atomics: false,
         }
     }
 }
@@ -1527,11 +1534,14 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     self.check_addr(la, mem.offset, dirty, inst.eip);
                 }
                 let ty = ty.unwrap_or(Ty::I32);
-                // Misaligned: plain load + op + store (not atomic).
-                self.emit(W::LocalGet(la));
-                self.emit(W::I32Const(mem.size as i32 - 1));
-                self.emit(W::I32And);
-                self.emit(W::If(BlockType::Result(val_type(ty))));
+                // Misaligned, or no atomics wanted: plain load + op + store.
+                let atomics = self.m.cfg.atomics;
+                if atomics {
+                    self.emit(W::LocalGet(la));
+                    self.emit(W::I32Const(mem.size as i32 - 1));
+                    self.emit(W::I32And);
+                    self.emit(W::If(BlockType::Result(val_type(ty))));
+                }
                 {
                     self.emit(W::LocalGet(la));
                     self.emit(load_instr(ty, mem, false));
@@ -1554,11 +1564,13 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     self.emit(store_instr(Ty::I32, mem, false));
                     self.emit(W::LocalGet(self.tmp_i32));
                 }
-                self.emit(W::Else);
-                self.emit(W::LocalGet(la));
-                self.get(*val);
-                self.emit(rmw_instr(*op, mem));
-                self.emit(W::End);
+                if atomics {
+                    self.emit(W::Else);
+                    self.emit(W::LocalGet(la));
+                    self.get(*val);
+                    self.emit(rmw_instr(*op, mem));
+                    self.emit(W::End);
+                }
                 if mem.space == Space::Guest && self.m.cfg.smc_checks {
                     if let Some(d) = inst.dst {
                         self.set(d);
@@ -1586,10 +1598,13 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     (self.tmp_i32, W::I32Eq, ())
                 };
                 let _ = sel;
-                self.emit(W::LocalGet(la));
-                self.emit(W::I32Const(mem.size as i32 - 1));
-                self.emit(W::I32And);
-                self.emit(W::If(BlockType::Result(val_type(ty))));
+                let atomics = self.m.cfg.atomics;
+                if atomics {
+                    self.emit(W::LocalGet(la));
+                    self.emit(W::I32Const(mem.size as i32 - 1));
+                    self.emit(W::I32And);
+                    self.emit(W::If(BlockType::Result(val_type(ty))));
+                }
                 {
                     // old = [a]; [a] = old == expected ? new : old
                     self.emit(W::LocalGet(la));
@@ -1605,12 +1620,14 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     self.emit(store_instr(ty, mem, false));
                     self.emit(W::LocalGet(tmp));
                 }
-                self.emit(W::Else);
-                self.emit(W::LocalGet(la));
-                self.get(*expected);
-                self.get(*new);
-                self.emit(cmpxchg_instr(ty, mem));
-                self.emit(W::End);
+                if atomics {
+                    self.emit(W::Else);
+                    self.emit(W::LocalGet(la));
+                    self.get(*expected);
+                    self.get(*new);
+                    self.emit(cmpxchg_instr(ty, mem));
+                    self.emit(W::End);
+                }
             }
             Op::MemCopy { dst, src, len } => {
                 if self.m.cfg.mem_checks {

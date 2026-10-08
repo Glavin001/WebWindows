@@ -58,6 +58,10 @@ struct TranslateOpts {
     /// No re-entry at loop headers (see `wwt::osr`).
     #[arg(long)]
     no_osr: bool,
+    /// Lower lock-prefixed instructions to WebAssembly atomics, for a
+    /// runtime that runs guest threads in parallel.
+    #[arg(long)]
+    atomics: bool,
     /// Whether the image is compiled C, whose code never reads the flags
     /// across calls and returns, so they need not be written back there:
     /// `auto` (Wine's own modules), `on` or `off`.
@@ -79,6 +83,7 @@ impl TranslateOpts {
         c.builtins = !self.no_builtins;
         c.native_heap = self.native_heap;
         c.codegen.osr = !self.no_osr;
+        c.codegen.atomics = self.atomics;
         c.c_abi = match self.c_abi.as_str() {
             "on" => Some(true),
             "off" => Some(false),

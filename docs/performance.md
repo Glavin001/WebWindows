@@ -138,6 +138,30 @@ What running real programs found that CoreMark could not:
     apibench all pass. Liveness had to become strong liveness (a dead
     `shl eax, cl` no longer keeps the old flags alive), and flag-setting
     instructions now define all of the lazy flag state.
+  - **Import thunks are resolved in the lookup** (`runtime/wine/thunks.mjs`):
+    once the loader has filled an image's import table, each
+    `jmp [import]` thunk's lookup entry names its target's translation, so
+    a call through kernel32's `HeapFree` lands in ntdll directly (a
+    hot-patch of the thunk clears the entry like any code write). And a
+    program's direct calls to its own import stubs call through the slot.
+    apibench heap +30%, sync +25%, Lua +4%; Lua +3% more for the stubs.
+  - **Interlocked instructions are plain loads and stores**: guest threads
+    never run in parallel, so `lock xadd`/`lock cmpxchg` need not be
+    sequentially consistent WebAssembly atomics (`wwt translate --atomics`
+    restores them). apibench sync +13%.
+- **Debug information made functions of every statement.** The data scan
+  for code pointers read DWARF line tables (an address per statement) as
+  function entries in programs built with `-g`, splitting functions at
+  every statement with a full write-back at each split (Wine's
+  `kernel32_test.exe`: 116,143 functions, now 1,324). Images with
+  relocations are no longer scanned at all (their relocations list every
+  code pointer), and discardable sections never are.
+- **Memory checks** cost 13% of Lua (38% of `tables`; measured with
+  `--no-mem-checks`). Check elimination now follows a base plus a bounded
+  index (an interpreter's `base + (insn >> 3 & 0xff0)`), values copied
+  into registers across blocks, and a 32 KB window (a load near a checked
+  address can only land in the 64 KB null region or the 4 MB lookup table
+  above the guest limit): Lua's module has 14% fewer checks, Lua +4%.
 - **Wine's heap** (`RtlAllocateHeap` and friends) was 15–17% of Lua's time:
   handle checks, the LFH front end, critical sections and free lists, all
   as translated x86 with a register write-back at every internal call. It
@@ -288,6 +312,16 @@ Wine tier when they are (`tools/wine/build.sh`).
   unchanged. +8% on CoreMark. `wwt translate --no-inline` turns it off.
 
 ### What didn't help (measured with `ab.mjs`)
+
+* Simplifying masks by known zero bits (`setg al; movzx eax, al` lifts to
+  `((eax & ~0xff) | flag) & 0xff`): cleaner IR, but V8 already folds it
+  (CoreMark, Lua, apibench all within noise).
+* Inlining small functions that make calls (up to 150 IR instructions):
+  Wine's string functions +9%, but kernelbase's module 48% larger, which
+  costs compile time; at 60 instructions, no change.
+* Replacing the address lookup with direct calls: a cross-module call
+  costs its state traffic, not the lookup (forcing in-module calls through
+  the lookup changed a microbenchmark by under 1 ns per call).
 
 * Running Binaryen's `wasm-opt` over the output (`wwt translate
   --wasm-opt`): V8 already does the local cleanups it would.
