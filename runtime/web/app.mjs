@@ -301,7 +301,9 @@ async function run(exeName, exeBytes, files, exePath) {
         d3dOffscreen: d3dOffscreen?.offscreen,
         d3dPort: d3dOffscreen?.port,
       },
-      [exeBytes, d3dOffscreen?.canvas, d3dOffscreen?.port].filter(Boolean),
+      // The folder's files move to the worker rather than being copied
+      // (a game's data is hundreds of megabytes).
+      [exeBytes, ...Object.values(files), d3dOffscreen?.canvas, d3dOffscreen?.port].filter(Boolean),
     );
   });
 }
@@ -309,7 +311,7 @@ async function run(exeName, exeBytes, files, exePath) {
 $('run').onclick = async () => {
   const name = $('exe').value;
   const files = {};
-  for (const [k, f] of folder) if (f.size < 64 << 20) files[k] = await f.arrayBuffer();
+  for (const [k, f] of folder) files[k] = await f.arrayBuffer();
   const exe = await folder.get(name).arrayBuffer();
   run(name.split('/').pop(), exe, files, name);
 };
