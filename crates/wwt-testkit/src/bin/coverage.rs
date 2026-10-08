@@ -50,7 +50,7 @@ fn main() -> Result<()> {
             &Default::default(),
             &Default::default(),
         )?;
-        let refused: BTreeSet<u32> = t.report.unsupported.iter().map(|(va, _)| *va).collect();
+        let refused: BTreeSet<u64> = t.report.unsupported.iter().map(|(va, _)| *va).collect();
         for (va, i) in &d.insts {
             let form = format!("{:?}", i.code());
             if refused.contains(va) || wwt::lift::only_faults(i) {

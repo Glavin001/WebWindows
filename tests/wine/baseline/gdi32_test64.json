@@ -1,0 +1,70 @@
+{
+  "bitmap": {
+    "status": "done",
+    "tests": 1548973,
+    "failures": 0
+  },
+  "brush": {
+    "status": "done",
+    "tests": 699,
+    "failures": 0
+  },
+  "clipping": {
+    "status": "done",
+    "tests": 129,
+    "failures": 2
+  },
+  "dc": {
+    "status": "done",
+    "tests": 1651,
+    "failures": 13
+  },
+  "dib": {
+    "status": "crash",
+    "failures": 0
+  },
+  "font": {
+    "status": "done",
+    "tests": 73587,
+    "failures": 82
+  },
+  "gdiobj": {
+    "status": "timeout",
+    "failures": 1
+  },
+  "generated": {
+    "status": "done",
+    "tests": 0,
+    "failures": 0
+  },
+  "icm": {
+    "status": "done",
+    "tests": 53,
+    "failures": 0
+  },
+  "mapping": {
+    "status": "done",
+    "tests": 477,
+    "failures": 0
+  },
+  "metafile": {
+    "status": "done",
+    "tests": 33851,
+    "failures": 33
+  },
+  "palette": {
+    "status": "done",
+    "tests": 1618,
+    "failures": 0
+  },
+  "path": {
+    "status": "done",
+    "tests": 2152,
+    "failures": 0
+  },
+  "pen": {
+    "status": "done",
+    "tests": 907,
+    "failures": 0
+  }
+}

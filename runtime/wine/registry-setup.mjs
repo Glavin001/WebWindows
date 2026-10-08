@@ -161,21 +161,22 @@ export function parseScript(text, replace) {
 
 /** Writes the registrations of every system DLL that has some; returns how many keys. */
 export function installRegistrations(h, files) {
-  const M = h.unix.M;
-  const call = (name, ...args) => h.unix.syscalls.get(name)(...args) >>> 0;
-  const mem = M._malloc(0x10000) >>> 0;
+  const call = (name, ...args) => h.unix.syscalls.get(name)(args) >>> 0;
+  const mem = h.unix.malloc(0x10000);
   const enc = (at, s) => {
     for (let k = 0; k < s.length; k++) h.m.u16[(at >>> 1) + k] = s.charCodeAt(k);
     h.m.u16[(at >>> 1) + s.length] = 0;
     return s.length * 2;
   };
-  // Scratch layout: [0] handle, [8] UNICODE_STRING, [16] OBJECT_ATTRIBUTES,
-  // [64] name text, [0x8000] value data.
+  // Scratch layout: [0] handle, [16] UNICODE_STRING, [32] OBJECT_ATTRIBUTES
+  // (the process's architecture's layouts), [128] name text, [0x8000] value data.
+  const U = h.L.UNICODE_STRING;
+  const O = h.L.OBJECT_ATTRIBUTES;
   const ustr = (s, buf) => {
     const n = enc(buf, s);
-    h.w32(mem + 8, n | ((n + 2) << 16));
-    h.w32(mem + 12, buf);
-    return mem + 8;
+    h.w32(mem + 16, n | ((n + 2) << 16));
+    h.wptr(mem + 16 + U.Buffer, buf);
+    return mem + 16;
   };
   // Creates a key and the keys above it (the registry starts empty);
   // returns an open handle, or 0.
@@ -187,19 +188,19 @@ export function installRegistrations(h, files) {
       const sub = parts.slice(0, n).join('\\');
       if (n < parts.length && made.has(sub.toLowerCase())) continue;
       // OBJECT_ATTRIBUTES {Length, RootDirectory, ObjectName, Attributes, sd, qos}
-      const oa = mem + 16;
-      h.m.u8.fill(0, oa, oa + 24);
-      h.w32(oa, 24);
-      h.w32(oa + 8, ustr(sub, mem + 64));
-      h.w32(oa + 12, 0x40); // OBJ_CASE_INSENSITIVE
+      const oa = mem + 32;
+      h.m.u8.fill(0, oa, oa + O.__size);
+      h.w32(oa, O.__size);
+      h.wptr(oa + O.ObjectName, ustr(sub, mem + 128));
+      h.w32(oa + O.Attributes, 0x40); // OBJ_CASE_INSENSITIVE
       const st = call('NtCreateKey', mem, 0xf003f, oa, 0, 0, 0, 0);
       if (st) {
         h.log(`registry: creating ${sub} failed: ${st.toString(16)}`);
         return 0;
       }
       made.add(sub.toLowerCase());
-      if (n < parts.length) call('NtClose', h.u32(mem));
-      else handle = h.u32(mem);
+      if (n < parts.length) call('NtClose', h.ptr(mem));
+      else handle = h.ptr(mem);
     }
     return handle;
   };
@@ -219,7 +220,7 @@ export function installRegistrations(h, files) {
         const handle = createKey(key);
         if (!handle) continue;
         for (const v of values) {
-          const name = ustr(v.name, mem + 64);
+          const name = ustr(v.name, mem + 128);
           let size;
           if (v.type === 1) size = enc(mem + 0x8000, v.data) + 2;
           else (h.w32(mem + 0x8000, v.data), (size = 4));
@@ -230,6 +231,6 @@ export function installRegistrations(h, files) {
       }
     }
   }
-  M._free(mem);
+  h.unix.free(mem);
   return count;
 }

@@ -1,7 +1,9 @@
-/* Prints the 32-bit layouts of the Windows structures the runtime builds or
- * reads, computed by the compiler from Wine's headers.
+/* Prints the layouts of the Windows structures the runtime builds or reads,
+ * computed by the compiler from Wine's headers: 32-bit when built with
+ * i686 MinGW, 64-bit with x86_64 MinGW.
  *
  *   tools/wine-layout/gen.sh > runtime/wine/layout.json
+ *   ARCH=x86_64 tools/wine-layout/gen.sh > runtime/wine/layout64.json
  */
 #include <stdarg.h>
 #include <stddef.h>
@@ -64,10 +66,23 @@ void start(void) {
     F(RTL_USER_PROCESS_PARAMETERS, EnvironmentSize); F(RTL_USER_PROCESS_PARAMETERS, ProcessGroupId);
     END();
     BEGIN(CONTEXT);
+#ifdef _WIN64
+    F(CONTEXT, P1Home); F(CONTEXT, P2Home); F(CONTEXT, P3Home); F(CONTEXT, P4Home);
+    F(CONTEXT, ContextFlags); F(CONTEXT, MxCsr); F(CONTEXT, SegCs); F(CONTEXT, SegDs); F(CONTEXT, SegEs);
+    F(CONTEXT, SegFs); F(CONTEXT, SegGs); F(CONTEXT, SegSs); F(CONTEXT, EFlags);
+    F(CONTEXT, Rax); F(CONTEXT, Rcx); F(CONTEXT, Rdx); F(CONTEXT, Rbx); F(CONTEXT, Rsp); F(CONTEXT, Rbp);
+    F(CONTEXT, Rsi); F(CONTEXT, Rdi); F(CONTEXT, R8); F(CONTEXT, R9); F(CONTEXT, R10); F(CONTEXT, R11);
+    F(CONTEXT, R12); F(CONTEXT, R13); F(CONTEXT, R14); F(CONTEXT, R15); F(CONTEXT, Rip);
+    F(CONTEXT, FltSave); F(CONTEXT, FltSave.ControlWord); F(CONTEXT, FltSave.MxCsr); F(CONTEXT, Xmm0);
+#else
     F(CONTEXT, ContextFlags); F(CONTEXT, FloatSave); F(CONTEXT, SegGs); F(CONTEXT, SegFs); F(CONTEXT, SegEs);
     F(CONTEXT, SegDs); F(CONTEXT, Edi); F(CONTEXT, Esi); F(CONTEXT, Ebx); F(CONTEXT, Edx); F(CONTEXT, Ecx);
     F(CONTEXT, Eax); F(CONTEXT, Ebp); F(CONTEXT, Eip); F(CONTEXT, SegCs); F(CONTEXT, EFlags);
     F(CONTEXT, Esp); F(CONTEXT, SegSs); F(CONTEXT, ExtendedRegisters);
+#endif
+    END();
+    BEGIN(UNICODE_STRING);
+    F(UNICODE_STRING, Length); F(UNICODE_STRING, MaximumLength); F(UNICODE_STRING, Buffer);
     END();
     BEGIN(OBJECT_ATTRIBUTES);
     F(OBJECT_ATTRIBUTES, RootDirectory); F(OBJECT_ATTRIBUTES, ObjectName); F(OBJECT_ATTRIBUTES, Attributes);
@@ -95,6 +110,7 @@ void start(void) {
     F(KUSER_SHARED_DATA, NtMinorVersion); F(KUSER_SHARED_DATA, ProcessorFeatures); F(KUSER_SHARED_DATA, NumberOfPhysicalPages);
     F(KUSER_SHARED_DATA, NtBuildNumber); F(KUSER_SHARED_DATA, ActiveProcessorCount); F(KUSER_SHARED_DATA, TickCount);
     F(KUSER_SHARED_DATA, TickCountQuad); F(KUSER_SHARED_DATA, QpcFrequency); F(KUSER_SHARED_DATA, XState);
+    F(KUSER_SHARED_DATA, SystemCall);
     END();
     BEGIN(IO_STATUS_BLOCK);
     F(IO_STATUS_BLOCK, Status); F(IO_STATUS_BLOCK, Information);

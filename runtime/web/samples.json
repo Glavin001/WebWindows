@@ -11,5 +11,6 @@
   { "group": "Windows basics", "path": "tests/programs/samples/timers.exe", "label": "timers.exe: clocks, Sleep, multimedia and waitable timers" },
   { "group": "Windows basics", "path": "tests/programs/samples/seh.exe", "label": "seh.exe: structured exception handling" },
   { "group": "Windows basics", "path": "tests/programs/samples/unhandled.exe", "label": "unhandled.exe: an unhandled exception (exits with c0000094)" },
-  { "group": "Windows basics", "path": "tests/programs/hello.exe", "label": "hello.exe: console hello world" }
+  { "group": "Windows basics", "path": "tests/programs/hello.exe", "label": "hello.exe: console hello world" },
+  { "group": "Windows basics", "path": "tests/programs/hello64.exe", "label": "hello64.exe: 64-bit console hello world" }
 ]

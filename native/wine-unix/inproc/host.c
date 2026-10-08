@@ -28,20 +28,27 @@
 
 #include <emscripten.h>
 
-/* The module lives above 2 GB, so pointers reach JavaScript as negative
- * 32-bit integers: each one is made unsigned (>>> 0). */
-EM_JS( NTSTATUS, host_nt_call, (const char *name, const ULONG *args, int count), {
-    const view = new Uint32Array(HEAPU8.buffer, args >>> 0, count);
-    return Module.hostNtCall(UTF8ToString(name >>> 0), Array.from(view));
+/* The guest region's size (build.sh): 2 GB for i386 Wine, 8 GB for x86_64. */
+#ifndef GUEST_LIMIT
+#define GUEST_LIMIT 0x80000000
+#endif
+
+/* The module lives above 2 GB, so on wasm32 pointers reach JavaScript as
+ * negative 32-bit integers, and on wasm64 as BigInts: ptr() (pre.js) makes
+ * either an address. Arguments are pointer-sized slots: 32-bit values on
+ * wasm32, 64-bit ones (BigInts) on wasm64. */
+EM_JS( NTSTATUS, host_nt_call, (const char *name, const ULONG_PTR *args, int count, int slot), {
+    const view = slot === 8 ? new BigUint64Array(HEAPU8.buffer, ptr(args), count) : new Uint32Array(HEAPU8.buffer, ptr(args), count);
+    return Module.hostNtCall(UTF8ToString(ptr(name)), Array.from(view));
 });
 
 EM_JS( NTSTATUS, host_user_callback, (ULONG id, const void *args, ULONG len, void **ret_ptr, ULONG *ret_len), {
-    return Module.hostUserCallback(id >>> 0, args >>> 0, len >>> 0, ret_ptr >>> 0, ret_len >>> 0);
+    return Module.hostUserCallback(id >>> 0, ptr(args), len >>> 0, ptr(ret_ptr), ptr(ret_len));
 });
 
-#define A(x) ((ULONG)(ULONG_PTR)(x))
+#define A(x) ((ULONG_PTR)(x))
 #define FORWARD(name, ...) \
-    do { const ULONG args[] = { __VA_ARGS__ }; return host_nt_call( #name, args, ARRAY_SIZE(args) ); } while (0)
+    do { const ULONG_PTR args[] = { __VA_ARGS__ }; return host_nt_call( #name, args, ARRAY_SIZE(args), sizeof(ULONG_PTR) ); } while (0)
 
 /* ---- Drive Z: (the module's own file system, e.g. Wine's fonts) --------
  * Directories on Z: are listed here; their handles are numbered from
@@ -154,7 +161,7 @@ NTSTATUS WINAPI NtMapViewOfSection( HANDLE handle, HANDLE process, PVOID *addr_p
 NTSTATUS WINAPI NtUnmapViewOfSection( HANDLE process, PVOID addr )
 {
     /* Views of server memory (above the guest region) are not mappings. */
-    if ((ULONG_PTR)addr >= 0x80000000) return STATUS_SUCCESS;
+    if ((ULONG_PTR)addr >= GUEST_LIMIT) return STATUS_SUCCESS;
     FORWARD( NtUnmapViewOfSection, A(process), A(addr) );
 }
 

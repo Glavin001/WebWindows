@@ -4,519 +4,519 @@ expression: "ir_of(&t, f.entry)"
 ---
 function 0x4013e0:
   b0 @0x4013e0:
-    v48 = const 0x0
-    v49 = const 0x40d064
-    store4.trusted [v49], v48
+    v56 = const 0x0
+    v57 = const 0x40d064
+    store4.trusted [v57], v56
     jump b1
   b1 @0x401150:
-    v51 = const 0x4
-    v52 = I32Add esp, v51
-    ecx = v52
-    v53 = const 0xfffffff0
-    v55 = I32And esp, v53
-    esp = v55
-    v57 = const 0xfffffffc
-    v58 = I32Add v52, v57
-    v59 = load4 [v58]
-    v60 = const 0x4
-    v61 = I32Sub v55, v60
-    store4.trusted [v61], v59
-    v63 = const 0x4
-    v64 = I32Sub v61, v63
-    store4.trusted [v64], ebp
-    ebp = v64
-    v67 = const 0x4
-    v68 = I32Sub v64, v67
-    store4.trusted [v68], edi
-    v70 = const 0x4
-    v71 = I32Sub v68, v70
-    store4.trusted [v71], esi
-    v73 = const 0x4
-    v74 = I32Sub v71, v73
-    store4.trusted [v74], ebx
-    ebx = const 0x0
+    v59 = const 0x4
+    v60 = I32Add esp, v59
+    ecx = v60
+    v61 = const 0xfffffff0
+    v63 = I32And esp, v61
+    esp = v63
+    v65 = const 0xfffffffc
+    v66 = I32Add v60, v65
+    v67 = load4 [v66]
+    v68 = const 0x4
+    v69 = I32Sub v63, v68
+    store4.trusted [v69], v67
+    v71 = const 0x4
+    v72 = I32Sub v69, v71
+    store4.trusted [v72], ebp
+    ebp = v72
+    v75 = const 0x4
+    v76 = I32Sub v72, v75
+    store4.trusted [v76], edi
     v78 = const 0x4
-    v79 = I32Sub v74, v78
-    store4.trusted [v79], v52
-    v80 = const 0x28
-    v82 = I32Sub v79, v80
-    esp = v82
-    v83 = const 0x40e14c
-    v84 = load4.trusted [v83]
-    esi = v84
-    v85 = const 0x18
-    v86 = I32Add v85, fsbase
-    v87 = load4.trusted [v86]
-    eax = v87
-    v91 = load4+0x4 [v87]
-    edi = v91
+    v79 = I32Sub v76, v78
+    store4.trusted [v79], esi
+    v81 = const 0x4
+    v82 = I32Sub v79, v81
+    store4.trusted [v82], ebx
+    ebx = const 0x0
+    v86 = const 0x4
+    v87 = I32Sub v82, v86
+    store4.trusted [v87], v60
+    v88 = const 0x28
+    v90 = I32Sub v87, v88
+    esp = v90
+    v91 = const 0x40e14c
+    v92 = load4.trusted [v91]
+    esi = v92
+    v93 = const 0x18
+    v94 = I32Add v93, fsbase
+    v95 = load4.trusted [v94]
+    eax = v95
+    v99 = load4+0x4 [v95]
+    edi = v99
     jump b2
   b2 @0x401194:
-    v93 = const 0x40d040
-    v96 = cmpxchg4.trusted.atomic [v93], ebx, edi
-    eax = v96
-    v457 = const 0x0
-    v458 = I32Ne v96, v457
-    br v458 ? b3 : b4
+    v101 = const 0x40d040
+    v104 = cmpxchg4.trusted.atomic [v101], ebx, edi
+    eax = v104
+    v465 = const 0x0
+    v466 = I32Ne v104, v465
+    br v466 ? b3 : b4
   b3 @0x401180:
-    v459 = I32Eq edi, v96
-    br v459 ? b5 : b6
+    v467 = I32Eq edi, v104
+    br v467 ? b5 : b6
   b4 @0x4011a2:
-    v106 = const 0x40d044
-    v107 = load4.trusted [v106]
-    eax = v107
-    ebx = const 0x0
-    v110 = const 0x1
-    v460 = I32Eq v107, v110
-    br v460 ? b7 : b8
-  b5 @0x401310:
     v114 = const 0x40d044
     v115 = load4.trusted [v114]
     eax = v115
+    ebx = const 0x0
+    v118 = const 0x1
+    v468 = I32Eq v115, v118
+    br v468 ? b7 : b8
+  b5 @0x401310:
+    v122 = const 0x40d044
+    v123 = load4.trusted [v122]
+    eax = v123
     ebx = const 0x1
-    v117 = const 0x1
-    v461 = I32Ne v115, v117
-    br v461 ? b8 : b7
+    v125 = const 0x1
+    v469 = I32Ne v123, v125
+    br v469 ? b8 : b7
   b6 @0x401188:
-    v121 = const 0x3e8
-    store4.trusted [esp], v121
-    v124 = const 0x401191
-    v125 = const 0x4
-    v126 = I32Sub esp, v125
-    store4.trusted [v126], v124
-    esp = v126
+    v129 = const 0x3e8
+    store4.trusted [esp], v129
+    v132 = const 0x401191
+    v133 = const 0x4
+    v134 = I32Sub esp, v133
+    store4.trusted [v134], v132
+    esp = v134
     call [esi] ret=0x401191 -> b9
   b7 @0x401323:
-    v127 = const 0x1f
-    store4.trusted [esp], v127
-    v129 = const 0x40132f
-    v130 = const 0x4
-    v131 = I32Sub esp, v130
-    store4.trusted [v131], v129
-    esp = v131
-    v439 = const 0x40e180
-    v440 = load4.trusted [v439]
-    call [v440] ret=0x40132f -> b10
-  b8 @0x4011b2:
-    v132 = const 0x40d044
-    v133 = load4.trusted [v132]
-    eax = v133
-    v462 = I32Eqz v133
-    br v462 ? b11 : b12
-  b9 @0x401191:
+    v135 = const 0x1f
+    store4.trusted [esp], v135
+    v137 = const 0x40132f
     v138 = const 0x4
-    v140 = I32Sub esp, v138
-    esp = v140
+    v139 = I32Sub esp, v138
+    store4.trusted [v139], v137
+    esp = v139
+    v447 = const 0x40e180
+    v448 = load4.trusted [v447]
+    call [v448] ret=0x40132f -> b10
+  b8 @0x4011b2:
+    v140 = const 0x40d044
+    v141 = load4.trusted [v140]
+    eax = v141
+    v470 = I32Eqz v141
+    br v470 ? b11 : b12
+  b9 @0x401191:
+    v146 = const 0x4
+    v148 = I32Sub esp, v146
+    esp = v148
     jump b2
   b10 @0x40132f:
-    v141 = const 0x40d044
-    v142 = load4.trusted [v141]
-    eax = v142
-    v143 = const 0x1
-    v463 = I32Ne v142, v143
-    br v463 ? b13 : b14
+    v149 = const 0x40d044
+    v150 = load4.trusted [v149]
+    eax = v150
+    v151 = const 0x1
+    v471 = I32Ne v150, v151
+    br v471 ? b13 : b14
   b11 @0x401390:
-    v147 = const 0x1
-    v148 = const 0x40d044
-    store4.trusted [v148], v147
-    v149 = const 0x40f014
-    v151 = const 0x4
-    v152 = I32Add esp, v151
-    store4.trusted [v152], v149
-    v153 = const 0x40f00c
-    store4.trusted [esp], v153
-    v155 = const 0x4013ae
-    v156 = const 0x4
-    v157 = I32Sub esp, v156
-    store4.trusted [v157], v155
-    esp = v157
-    v441 = const 0x40e18c
-    v442 = load4.trusted [v441]
-    call [v442] ret=0x4013ae -> b15
+    v155 = const 0x1
+    v156 = const 0x40d044
+    store4.trusted [v156], v155
+    v157 = const 0x40f014
+    v159 = const 0x4
+    v160 = I32Add esp, v159
+    store4.trusted [v160], v157
+    v161 = const 0x40f00c
+    store4.trusted [esp], v161
+    v163 = const 0x4013ae
+    v164 = const 0x4
+    v165 = I32Sub esp, v164
+    store4.trusted [v165], v163
+    esp = v165
+    v449 = const 0x40e18c
+    v450 = load4.trusted [v449]
+    call [v450] ret=0x4013ae -> b15
   b12 @0x4011bf:
-    v158 = const 0x1
-    v159 = const 0x40d008
-    store4.trusted [v159], v158
+    v166 = const 0x1
+    v167 = const 0x40d008
+    store4.trusted [v167], v166
     jump b16
   b13 @0x4011d7:
-    v464 = I32Eqz ebx
-    br v464 ? b17 : b18
+    v472 = I32Eqz ebx
+    br v472 ? b17 : b18
   b14 @0x40133d:
-    v164 = const 0x40f008
-    v166 = const 0x4
-    v167 = I32Add esp, v166
-    store4.trusted [v167], v164
-    v168 = const 0x40f000
-    store4.trusted [esp], v168
-    v170 = const 0x401351
-    v171 = const 0x4
-    v172 = I32Sub esp, v171
-    store4.trusted [v172], v170
-    esp = v172
-    v443 = const 0x40e18c
-    v444 = load4.trusted [v443]
-    call [v444] ret=0x401351 -> b19
+    v172 = const 0x40f008
+    v174 = const 0x4
+    v175 = I32Add esp, v174
+    store4.trusted [v175], v172
+    v176 = const 0x40f000
+    store4.trusted [esp], v176
+    v178 = const 0x401351
+    v179 = const 0x4
+    v180 = I32Sub esp, v179
+    store4.trusted [v180], v178
+    esp = v180
+    v451 = const 0x40e18c
+    v452 = load4.trusted [v451]
+    call [v452] ret=0x401351 -> b19
   b15 @0x4013ae:
     jump b16
   b16 @0x4011c9:
-    v173 = const 0x40d044
-    v174 = load4.trusted [v173]
-    eax = v174
-    v175 = const 0x1
-    v465 = I32Eq v174, v175
-    br v465 ? b14 : b13
+    v181 = const 0x40d044
+    v182 = load4.trusted [v181]
+    eax = v182
+    v183 = const 0x1
+    v473 = I32Eq v182, v183
+    br v473 ? b14 : b13
   b17 @0x401363:
-    v179 = const 0x40d040
-    v181 = rmw.Xchg4.trusted.atomic [v179], ebx
-    ebx = v181
+    v187 = const 0x40d040
+    v189 = rmw.Xchg4.trusted.atomic [v187], ebx
+    ebx = v189
     jump b18
   b18 @0x4011df:
-    v182 = const 0x40a128
-    v183 = load4.trusted [v182]
-    eax = v183
-    v466 = I32Eqz v183
-    br v466 ? b20 : b21
+    v190 = const 0x40a128
+    v191 = load4.trusted [v190]
+    eax = v191
+    v474 = I32Eqz v191
+    br v474 ? b20 : b21
   b19 @0x401351:
-    v188 = const 0x2
-    v189 = const 0x40d044
-    store4.trusted [v189], v188
-    v467 = const 0x0
-    v468 = I32Ne ebx, v467
-    br v468 ? b18 : b17
+    v196 = const 0x2
+    v197 = const 0x40d044
+    store4.trusted [v197], v196
+    v475 = const 0x0
+    v476 = I32Ne ebx, v475
+    br v476 ? b18 : b17
   b20 @0x401204:
-    v194 = const 0x401209
-    v195 = const 0x4
-    v196 = I32Sub esp, v195
-    store4.trusted [v196], v194
-    esp = v196
+    v202 = const 0x401209
+    v203 = const 0x4
+    v204 = I32Sub esp, v203
+    store4.trusted [v204], v202
+    esp = v204
     call 0x401bb0 ret=0x401209 -> b22
   b21 @0x4011e8:
-    v197 = const 0x0
-    v199 = const 0x8
-    v200 = I32Add esp, v199
-    store4.trusted [v200], v197
-    v201 = const 0x2
-    v203 = const 0x4
-    v204 = I32Add esp, v203
-    store4.trusted [v204], v201
     v205 = const 0x0
-    store4.trusted [esp], v205
-    v208 = const 0x401201
-    v209 = const 0x4
-    v210 = I32Sub esp, v209
-    store4.trusted [v210], v208
-    esp = v210
-    call [v183] ret=0x401201 -> b23
+    v207 = const 0x8
+    v208 = I32Add esp, v207
+    store4.trusted [v208], v205
+    v209 = const 0x2
+    v211 = const 0x4
+    v212 = I32Add esp, v211
+    store4.trusted [v212], v209
+    v213 = const 0x0
+    store4.trusted [esp], v213
+    v216 = const 0x401201
+    v217 = const 0x4
+    v218 = I32Sub esp, v217
+    store4.trusted [v218], v216
+    esp = v218
+    call [v191] ret=0x401201 -> b23
   b22 @0x401209:
-    v211 = const 0x401f10
-    store4.trusted [esp], v211
-    v213 = const 0x40e148
-    v214 = load4.trusted [v213]
-    v215 = const 0x401216
-    v216 = const 0x4
-    v217 = I32Sub esp, v216
-    store4.trusted [v217], v215
-    esp = v217
-    call [v214] ret=0x401216 -> b24
+    v219 = const 0x401f10
+    store4.trusted [esp], v219
+    v221 = const 0x40e148
+    v222 = load4.trusted [v221]
+    v223 = const 0x401216
+    v224 = const 0x4
+    v225 = I32Sub esp, v224
+    store4.trusted [v225], v223
+    esp = v225
+    call [v222] ret=0x401216 -> b24
   b23 @0x401201:
-    v218 = const 0xc
-    v220 = I32Sub esp, v218
-    esp = v220
+    v226 = const 0xc
+    v228 = I32Sub esp, v226
+    esp = v228
     jump b20
   b24 @0x401216:
-    v221 = const 0x4
-    v223 = I32Sub esp, v221
-    v225 = const 0x40d07c
-    store4.trusted [v225], eax
-    v226 = const 0x401000
-    store4.trusted [v223], v226
-    v228 = const 0x40122a
     v229 = const 0x4
-    v230 = I32Sub v223, v229
-    store4.trusted [v230], v228
+    v231 = I32Sub esp, v229
+    v233 = const 0x40d07c
+    store4.trusted [v233], eax
+    v234 = const 0x401000
+    store4.trusted [v231], v234
+    v236 = const 0x40122a
+    v237 = const 0x4
+    v238 = I32Sub v231, v237
+    store4.trusted [v238], v236
     jump b44
   b25 @0x40122a:
-    v231 = const 0x40122f
-    v232 = const 0x4
-    v233 = I32Sub v490, v232
-    store4.trusted [v233], v231
+    v239 = const 0x40122f
+    v240 = const 0x4
+    v241 = I32Sub v498, v240
+    store4.trusted [v241], v239
     jump b46
   b26 @0x40122f:
-    v234 = const 0x40d01c
-    v235 = load4.trusted [v234]
-    esi = v235
-    v237 = const 0x2
-    v238 = I32Shl v235, v237
-    v239 = const 0x4
-    v240 = I32Add v238, v239
-    edi = v240
-    store4.trusted+0x4 [v233], v240
-    v243 = const 0x401244
-    v244 = const 0x4
-    v245 = I32Sub v496, v244
-    store4.trusted [v245], v243
-    esp = v245
-    v445 = const 0x40e1c4
-    v446 = load4.trusted [v445]
-    call [v446] ret=0x401244 -> b27
+    v242 = const 0x40d01c
+    v243 = load4.trusted [v242]
+    esi = v243
+    v245 = const 0x2
+    v246 = I32Shl v243, v245
+    v247 = const 0x4
+    v248 = I32Add v246, v247
+    edi = v248
+    store4.trusted+0x4 [v241], v248
+    v251 = const 0x401244
+    v252 = const 0x4
+    v253 = I32Sub v504, v252
+    store4.trusted [v253], v251
+    esp = v253
+    v453 = const 0x40e1c4
+    v454 = load4.trusted [v453]
+    call [v454] ret=0x401244 -> b27
   b27 @0x401244:
-    v246 = const 0x40d018
-    v247 = load4.trusted [v246]
-    ebx = v247
+    v254 = const 0x40d018
+    v255 = load4.trusted [v254]
+    ebx = v255
     ecx = eax
-    v469 = const 0x0
-    v470 = I32LeS esi, v469
-    br v470 ? b28 : b29
+    v477 = const 0x0
+    v478 = I32LeS esi, v477
+    br v478 ? b28 : b29
   b28 @0x4013b8:
     edx = eax
     jump b30
   b29 @0x401254:
-    v255 = const 0xfffffffc
-    v256 = I32Add edi, v255
-    edx = v256
+    v263 = const 0xfffffffc
+    v264 = I32Add edi, v263
+    edx = v264
     esi = eax
-    v260 = const 0xffffffe0
-    v261 = I32Add ebp, v260
-    store4.trusted [v261], ecx
-    v264 = I32Add v247, v256
-    eax = v264
-    v267 = const 0xffffffdc
-    v268 = I32Add ebp, v267
-    store4.trusted [v268], v256
-    v271 = const 0xffffffe4
-    v272 = I32Add ebp, v271
-    store4.trusted [v272], v264
+    v268 = const 0xffffffe0
+    v269 = I32Add ebp, v268
+    store4.trusted [v269], ecx
+    v272 = I32Add v255, v264
+    eax = v272
+    v275 = const 0xffffffdc
+    v276 = I32Add ebp, v275
+    store4.trusted [v276], v264
+    v279 = const 0xffffffe4
+    v280 = I32Add ebp, v279
+    store4.trusted [v280], v272
     jump b31
   b30 @0x4012a6:
-    v274 = const 0x0
-    store4 [edx], v274
-    v277 = const 0x40d018
-    store4.trusted [v277], ecx
-    v278 = const 0x4012b7
-    v279 = const 0x4
-    v280 = I32Sub esp, v279
-    store4.trusted [v280], v278
-    esp = v280
+    v282 = const 0x0
+    store4 [edx], v282
+    v285 = const 0x40d018
+    store4.trusted [v285], ecx
+    v286 = const 0x4012b7
+    v287 = const 0x4
+    v288 = I32Sub esp, v287
+    store4.trusted [v288], v286
+    esp = v288
     call 0x401840 ret=0x4012b7 -> b32
   b31 @0x401268:
-    v282 = load4 [ebx]
-    eax = v282
-    v283 = const 0x4
-    v285 = I32Add esi, v283
-    esi = v285
-    v286 = const 0x4
-    v288 = I32Add ebx, v286
-    ebx = v288
-    store4.trusted [esp], v282
-    v291 = const 0x401278
-    v292 = const 0x4
-    v293 = I32Sub esp, v292
-    store4.trusted [v293], v291
-    esp = v293
-    v447 = const 0x40e1e0
-    v448 = load4.trusted [v447]
-    call [v448] ret=0x401278 -> b33
+    v290 = load4 [ebx]
+    eax = v290
+    v291 = const 0x4
+    v293 = I32Add esi, v291
+    esi = v293
+    v294 = const 0x4
+    v296 = I32Add ebx, v294
+    ebx = v296
+    store4.trusted [esp], v290
+    v299 = const 0x401278
+    v300 = const 0x4
+    v301 = I32Sub esp, v300
+    store4.trusted [v301], v299
+    esp = v301
+    v455 = const 0x40e1e0
+    v456 = load4.trusted [v455]
+    call [v456] ret=0x401278 -> b33
   b32 @0x4012b7:
-    v294 = const 0x40d014
-    v295 = load4.trusted [v294]
-    eax = v295
-    v296 = const 0x40e168
-    v297 = load4.trusted [v296]
-    edx = v297
-    store4 [v297], v295
-    v302 = const 0x8
-    v303 = I32Add esp, v302
-    store4.trusted [v303], v295
-    v304 = const 0x40d018
+    v302 = const 0x40d014
+    v303 = load4.trusted [v302]
+    eax = v303
+    v304 = const 0x40e168
     v305 = load4.trusted [v304]
-    v308 = const 0x4
-    v309 = I32Add esp, v308
-    store4.trusted [v309], v305
-    v310 = const 0x40d01c
-    v311 = load4.trusted [v310]
-    eax = v311
-    store4.trusted [esp], v311
-    v314 = const 0x4012de
-    v315 = const 0x4
-    v316 = I32Sub esp, v315
-    store4.trusted [v316], v314
-    esp = v316
-    call 0x40150e ret=0x4012de -> b34
-  b33 @0x401278:
-    v318 = const 0x1
-    v319 = I32Add eax, v318
-    edi = v319
+    edx = v305
+    store4 [v305], v303
+    v310 = const 0x8
+    v311 = I32Add esp, v310
+    store4.trusted [v311], v303
+    v312 = const 0x40d018
+    v313 = load4.trusted [v312]
+    v316 = const 0x4
+    v317 = I32Add esp, v316
+    store4.trusted [v317], v313
+    v318 = const 0x40d01c
+    v319 = load4.trusted [v318]
+    eax = v319
     store4.trusted [esp], v319
-    v322 = const 0x401283
+    v322 = const 0x4012de
     v323 = const 0x4
     v324 = I32Sub esp, v323
     store4.trusted [v324], v322
     esp = v324
-    v449 = const 0x40e1c4
-    v450 = load4.trusted [v449]
-    call [v450] ret=0x401283 -> b35
+    call 0x40150e ret=0x4012de -> b34
+  b33 @0x401278:
+    v326 = const 0x1
+    v327 = I32Add eax, v326
+    edi = v327
+    store4.trusted [esp], v327
+    v330 = const 0x401283
+    v331 = const 0x4
+    v332 = I32Sub esp, v331
+    store4.trusted [v332], v330
+    esp = v332
+    v457 = const 0x40e1c4
+    v458 = load4.trusted [v457]
+    call [v458] ret=0x401283 -> b35
   b34 @0x4012de:
-    v325 = const 0x40d00c
-    v326 = load4.trusted [v325]
-    ecx = v326
-    v328 = const 0x40d010
-    store4.trusted [v328], eax
-    v471 = I32Eqz v326
-    br v471 ? b36 : b37
+    v333 = const 0x40d00c
+    v334 = load4.trusted [v333]
+    ecx = v334
+    v336 = const 0x40d010
+    store4.trusted [v336], eax
+    v479 = I32Eqz v334
+    br v479 ? b36 : b37
   b35 @0x401283:
-    v335 = const 0xfffffffc
-    v336 = I32Add esi, v335
-    store4 [v336], eax
-    v338 = const 0xfffffffc
-    v339 = I32Add ebx, v338
-    v340 = load4 [v339]
-    ecx = v340
-    v343 = const 0x8
-    v344 = I32Add esp, v343
-    store4.trusted [v344], edi
-    v347 = const 0x4
-    v348 = I32Add esp, v347
-    store4.trusted [v348], v340
+    v343 = const 0xfffffffc
+    v344 = I32Add esi, v343
+    store4 [v344], eax
+    v346 = const 0xfffffffc
+    v347 = I32Add ebx, v346
+    v348 = load4 [v347]
+    ecx = v348
+    v351 = const 0x8
+    v352 = I32Add esp, v351
+    store4.trusted [v352], edi
+    v355 = const 0x4
+    v356 = I32Add esp, v355
+    store4.trusted [v356], v348
     store4.trusted [esp], eax
-    v351 = const 0x401299
-    v352 = const 0x4
-    v353 = I32Sub esp, v352
-    store4.trusted [v353], v351
-    esp = v353
-    v451 = const 0x40e1c8
-    v452 = load4.trusted [v451]
-    call [v452] ret=0x401299 -> b38
+    v359 = const 0x401299
+    v360 = const 0x4
+    v361 = I32Sub esp, v360
+    store4.trusted [v361], v359
+    esp = v361
+    v459 = const 0x40e1c8
+    v460 = load4.trusted [v459]
+    call [v460] ret=0x401299 -> b38
   b36 @0x4013bf:
     store4.trusted [esp], eax
-    v356 = const 0x4013c7
-    v357 = const 0x4
-    v358 = I32Sub esp, v357
-    store4.trusted [v358], v356
-    esp = v358
-    v453 = const 0x40e1ac
-    v454 = load4.trusted [v453]
-    call [v454] ret=0x4013c7 -> b39
+    v364 = const 0x4013c7
+    v365 = const 0x4
+    v366 = I32Sub esp, v365
+    store4.trusted [v366], v364
+    esp = v366
+    v461 = const 0x40e1ac
+    v462 = load4.trusted [v461]
+    call [v462] ret=0x4013c7 -> b39
   b37 @0x4012f1:
-    v359 = const 0x40d008
-    v360 = load4.trusted [v359]
-    edx = v360
-    v472 = I32Eqz v360
-    br v472 ? b40 : b41
+    v367 = const 0x40d008
+    v368 = load4.trusted [v367]
+    edx = v368
+    v480 = I32Eqz v368
+    br v480 ? b40 : b41
   b38 @0x401299:
-    v366 = const 0xffffffe4
-    v367 = I32Add ebp, v366
-    v369 = load4.trusted [v367]
-    v473 = I32Ne v369, ebx
-    br v473 ? b31 : b42
+    v374 = const 0xffffffe4
+    v375 = I32Add ebp, v374
+    v377 = load4.trusted [v375]
+    v481 = I32Ne v377, ebx
+    br v481 ? b31 : b42
   b39 @0x4013c7:
-    v373 = const 0x1
-    v374 = const 0x40d064
-    store4.trusted [v374], v373
+    v381 = const 0x1
+    v382 = const 0x40d064
+    store4.trusted [v382], v381
     jump b1
   b40 @0x401370:
-    v375 = const 0x401375
-    v376 = const 0x4
-    v377 = I32Sub esp, v376
-    store4.trusted [v377], v375
-    esp = v377
-    v455 = const 0x40e184
-    v456 = load4.trusted [v455]
-    call [v456] ret=0x401375 -> b43
+    v383 = const 0x401375
+    v384 = const 0x4
+    v385 = I32Sub esp, v384
+    store4.trusted [v385], v383
+    esp = v385
+    v463 = const 0x40e184
+    v464 = load4.trusted [v463]
+    call [v464] ret=0x401375 -> b43
   b41 @0x4012fb:
-    v379 = const 0xfffffff0
-    v380 = I32Add ebp, v379
-    v381 = load4.trusted [v380]
-    v382 = const 0x4
-    v383 = I32Add v380, v382
-    ecx = v381
-    v384 = load4.trusted+0x4 [v380]
-    v385 = const 0x4
-    v386 = I32Add v383, v385
-    ebx = v384
-    v387 = load4.trusted+0x8 [v380]
-    esi = v387
-    v390 = load4.trusted+0x8 [v383]
-    edi = v390
-    v393 = load4.trusted+0x8 [v386]
-    ebp = v393
-    v397 = const 0xfffffffc
-    v398 = I32Add v381, v397
-    v399 = load4.trusted [v398]
-    v400 = const 0x4
-    v401 = I32Add v398, v400
-    esp = v401
-    ret v399
+    v387 = const 0xfffffff0
+    v388 = I32Add ebp, v387
+    v389 = load4.trusted [v388]
+    v390 = const 0x4
+    v391 = I32Add v388, v390
+    ecx = v389
+    v392 = load4.trusted+0x4 [v388]
+    v393 = const 0x4
+    v394 = I32Add v391, v393
+    ebx = v392
+    v395 = load4.trusted+0x8 [v388]
+    esi = v395
+    v398 = load4.trusted+0x8 [v391]
+    edi = v398
+    v401 = load4.trusted+0x8 [v394]
+    ebp = v401
+    v405 = const 0xfffffffc
+    v406 = I32Add v389, v405
+    v407 = load4.trusted [v406]
+    v408 = const 0x4
+    v409 = I32Add v406, v408
+    esp = v409
+    ret v407
   b42 @0x40129e:
-    v403 = const 0xffffffe0
-    v404 = I32Add ebp, v403
-    v405 = load4.trusted [v404]
-    ecx = v405
-    v407 = const 0xffffffdc
-    v408 = I32Add ebp, v407
-    v409 = load4.trusted [v408]
-    v412 = I32Add v409, v405
-    edx = v412
+    v411 = const 0xffffffe0
+    v412 = I32Add ebp, v411
+    v413 = load4.trusted [v412]
+    ecx = v413
+    v415 = const 0xffffffdc
+    v416 = I32Add ebp, v415
+    v417 = load4.trusted [v416]
+    v420 = I32Add v417, v413
+    edx = v420
     jump b30
   b43 @0x401375:
-    v413 = const 0x40d010
-    v414 = load4.trusted [v413]
-    eax = v414
-    v416 = const 0xfffffff0
-    v417 = I32Add ebp, v416
-    v418 = load4.trusted [v417]
-    v419 = const 0x4
-    v420 = I32Add v417, v419
-    ecx = v418
-    v421 = load4.trusted+0x4 [v417]
-    v422 = const 0x4
-    v423 = I32Add v420, v422
-    ebx = v421
-    v424 = load4.trusted+0x8 [v417]
-    esi = v424
-    v427 = load4.trusted+0x8 [v420]
-    edi = v427
-    v430 = load4.trusted+0x8 [v423]
-    ebp = v430
-    v434 = const 0xfffffffc
-    v435 = I32Add v418, v434
-    v436 = load4.trusted [v435]
-    v437 = const 0x4
-    v438 = I32Add v435, v437
-    esp = v438
-    ret v436
+    v421 = const 0x40d010
+    v422 = load4.trusted [v421]
+    eax = v422
+    v424 = const 0xfffffff0
+    v425 = I32Add ebp, v424
+    v426 = load4.trusted [v425]
+    v427 = const 0x4
+    v428 = I32Add v425, v427
+    ecx = v426
+    v429 = load4.trusted+0x4 [v425]
+    v430 = const 0x4
+    v431 = I32Add v428, v430
+    ebx = v429
+    v432 = load4.trusted+0x8 [v425]
+    esi = v432
+    v435 = load4.trusted+0x8 [v428]
+    edi = v435
+    v438 = load4.trusted+0x8 [v431]
+    ebp = v438
+    v442 = const 0xfffffffc
+    v443 = I32Add v426, v442
+    v444 = load4.trusted [v443]
+    v445 = const 0x4
+    v446 = I32Add v443, v445
+    esp = v446
+    ret v444
   b44 @0x407950:
-    v475 = const 0x4
-    v476 = I32Sub v230, v475
-    store4.trusted [v476], ebp
-    v481 = load4.trusted+0x8 [v476]
-    v482 = const 0x40da60
-    v484 = rmw.Xchg4.trusted.atomic [v482], v481
-    eax = v484
-    v485 = load4.trusted [v476]
-    v486 = const 0x4
-    v487 = I32Add v476, v486
-    ebp = v485
-    v488 = load4.trusted+0x4 [v476]
-    v489 = const 0x4
-    v490 = I32Add v487, v489
-    esp = v490
-    v491 = const 0x40122a
-    v492 = I32Eq v488, v491
-    br v492 ? b25 : b45
+    v483 = const 0x4
+    v484 = I32Sub v238, v483
+    store4.trusted [v484], ebp
+    v489 = load4.trusted+0x8 [v484]
+    v490 = const 0x40da60
+    v492 = rmw.Xchg4.trusted.atomic [v490], v489
+    eax = v492
+    v493 = load4.trusted [v484]
+    v494 = const 0x4
+    v495 = I32Add v484, v494
+    ebp = v493
+    v496 = load4.trusted+0x4 [v484]
+    v497 = const 0x4
+    v498 = I32Add v495, v497
+    esp = v498
+    v499 = const 0x40122a
+    v500 = I32Eq v496, v499
+    br v500 ? b25 : b45
   b45 @0x407950:
-    jmp v488
+    jmp v496
   b46 @0x4019e0:
     fcw = const 0x37f
     fsw = const 0x0
     ftop = const 0x0
-    v493 = const 0x0
-    store1.native+0x5c [cpu], v493
-    v494 = load4.trusted [v233]
-    v495 = const 0x4
-    v496 = I32Add v233, v495
-    esp = v496
-    v497 = const 0x40122f
-    v498 = I32Eq v494, v497
-    br v498 ? b26 : b47
+    v501 = const 0x0
+    store1.native+0x5c [cpu], v501
+    v502 = load4.trusted [v241]
+    v503 = const 0x4
+    v504 = I32Add v241, v503
+    esp = v504
+    v505 = const 0x40122f
+    v506 = I32Eq v502, v505
+    br v506 ? b26 : b47
   b47 @0x4019e0:
-    jmp v494
+    jmp v502

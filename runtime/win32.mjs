@@ -2,6 +2,11 @@
 // TEB/PEB, TLS) and JavaScript implementations of the kernel32 and msvcrt
 // functions small test programs import. From Milestone 2 on, translated Wine
 // DLLs replace these shims; they remain as a test harness.
+//
+// The same shims serve x86-64 programs (a machine with `arch: 'x64'`): they
+// see the Windows x64 calling convention through `Args` with 8-byte slots
+// (the register arguments are spilled to their home space first), and the
+// TEB, PEB, msvcrt FILE and jmp_buf take their 64-bit layouts.
 
 import { mapImage } from './pe.mjs';
 import { ProcessExit, hex } from './runtime.mjs';
@@ -9,23 +14,45 @@ import { ProcessExit, hex } from './runtime.mjs';
 const EAX = 0, EDX = 2, ESP = 4;
 const MEM_COMMIT = 0x1000;
 
-/** Reads 32-bit stack arguments starting at `addr`. */
+/**
+ * Reads stack arguments starting at `addr`: 4-byte slots on x86, 8-byte
+ * slots on x86-64.
+ *
+ * On x86-64 `u32` and `next` serve both pointer and 32-bit integer
+ * arguments: a slot holding a guest address (below the guest limit) reads
+ * as that whole address, anything else as its low 32 bits. An `int` in a
+ * 64-bit slot normally has zero upper bits (32-bit register writes clear
+ * them), and callers that need exact 32-bit semantics apply `| 0` or
+ * `>>> 0`, as printf does.
+ */
 class Args {
-  constructor(m, addr) {
+  constructor(m, addr, slot = 4) {
     this.m = m;
     this.p = addr;
     this.base = addr;
+    this.slot = slot;
+  }
+  read(at) {
+    if (this.slot === 4) return this.m.dv.getUint32(at, true);
+    const hi = this.m.dv.getUint32(at + 4, true);
+    const lo = this.m.dv.getUint32(at, true);
+    const v = hi * 0x1_0000_0000 + lo;
+    return hi !== 0 && v < this.m.guestLimit ? v : lo;
   }
   u32(i) {
-    return this.m.u32[(this.base + i * 4) >>> 2];
+    return this.read(this.base + i * this.slot);
   }
   i32(i) {
-    return this.m.i32[(this.base + i * 4) >>> 2];
+    return this.m.dv.getInt32(this.base + i * this.slot, true);
+  }
+  /** The arguments from index `k` on (varargs after fixed arguments). */
+  from(k) {
+    return new Args(this.m, this.base + k * this.slot, this.slot);
   }
   // Sequential reads for varargs.
   next() {
-    const v = this.m.dv.getUint32(this.p, true);
-    this.p += 4;
+    const v = this.read(this.p);
+    this.p += this.slot;
     return v;
   }
   nextI64() {
@@ -39,6 +66,16 @@ class Args {
     return v;
   }
 }
+
+// TEB and PEB field offsets.
+const TEB = {
+  x86: { stackBase: 0x04, stackLimit: 0x08, self: 0x18, pid: 0x20, tid: 0x24, tlsPointer: 0x2c, peb: 0x30, lastError: 0x34, tlsSlots: 0xe10 },
+  x64: { stackBase: 0x08, stackLimit: 0x10, self: 0x30, pid: 0x40, tid: 0x48, tlsPointer: 0x58, peb: 0x60, lastError: 0x68, tlsSlots: 0x1480 },
+};
+const PEB = {
+  x86: { imageBase: 0x08, processHeap: 0x18 },
+  x64: { imageBase: 0x10, processHeap: 0x30 },
+};
 
 /** Address-space manager for the guest region (64 KB granularity). */
 class VirtualMemory {
@@ -130,6 +167,10 @@ export class Process {
     this.stderr = opts.stderr ?? (() => {});
     this.files = opts.files ?? new Map();
     this.trace = opts.trace ?? false;
+    this.x64 = machine.x64;
+    this.ptrSize = this.x64 ? 8 : 4;
+    this.tebOff = TEB[machine.arch];
+    this.pebOff = PEB[machine.arch];
     this.vm = new VirtualMemory(0x10000, machine.thunkBase - 0x40000);
     this.handles = new Map([
       [0xfffffff6, { kind: 'stdin' }],
@@ -162,23 +203,32 @@ export class Process {
     this.stackTop = this.stackBase + stackSize;
 
     const teb = this.teb;
-    const w32 = (a, v) => (m.u32[a >>> 2] = v >>> 0);
-    w32(teb + 0x00, 0xffffffff); // no SEH frames yet
-    w32(teb + 0x04, this.stackTop);
-    w32(teb + 0x08, this.stackBase);
-    w32(teb + 0x18, teb);
-    w32(teb + 0x20, 0x10); // process id
-    w32(teb + 0x24, 0x14); // thread id
-    w32(teb + 0x30, this.peb);
-    w32(this.peb + 0x08, image.image_base);
-    w32(this.peb + 0x18, this.processHeap);
+    const t = this.tebOff;
+    const p = this.pebOff;
+    // No SEH frames yet (x86; x86-64 exceptions are table-based).
+    if (!this.x64) m.setPtr(teb + 0x00, 0xffffffff);
+    m.setPtr(teb + t.stackBase, this.stackTop);
+    m.setPtr(teb + t.stackLimit, this.stackBase);
+    m.setPtr(teb + t.self, teb);
+    m.setPtr(teb + t.pid, 0x10);
+    m.setPtr(teb + t.tid, 0x14);
+    m.setPtr(teb + t.peb, this.peb);
+    m.setPtr(this.peb + p.imageBase, image.image_base);
+    m.setPtr(this.peb + p.processHeap, this.processHeap);
 
     this.cpu = m.newCpu();
-    m.u32[(this.cpu + m.abi.cpu.FS_BASE) >>> 2] = teb;
-    // Flat selectors as Windows uses them.
-    const sel = this.cpu + m.abi.cpu.SEG_SEL;
-    [0x23, 0x1b, 0x23, 0x23, 0x3b, 0x00].forEach((v, i) => m.dv.setUint16(sel + i * 2, v, true));
-    m.setReg(this.cpu, ESP, this.stackTop - 16);
+    if (this.x64) {
+      // The TEB is at gs:0; flat selectors as 64-bit Windows uses them.
+      m.dv.setBigUint64(this.cpu + m.abi.cpu64.GS_BASE, BigInt(teb), true);
+      const sel = this.cpu + m.abi.cpu.SEG_SEL;
+      [0x2b, 0x33, 0x2b, 0x2b, 0x53, 0x2b].forEach((v, i) => m.dv.setUint16(sel + i * 2, v, true));
+    } else {
+      m.w32(this.cpu + m.abi.cpu.FS_BASE, teb);
+      // Flat selectors as Windows uses them.
+      const sel = this.cpu + m.abi.cpu.SEG_SEL;
+      [0x23, 0x1b, 0x23, 0x23, 0x3b, 0x00].forEach((v, i) => m.dv.setUint16(sel + i * 2, v, true));
+    }
+    m.setSp(this.cpu, this.stackTop - 16);
 
     this.setupTls(image);
     this.resolveImports(image);
@@ -187,15 +237,15 @@ export class Process {
   setupTls(image) {
     const m = this.m;
     const tls = image.tls;
-    const array = this.heap.alloc(64 * 4);
-    m.u32[(this.teb + 0x2c) >>> 2] = array;
+    const array = this.heap.alloc(64 * this.ptrSize);
+    m.setPtr(this.teb + this.tebOff.tlsPointer, array);
     if (!tls) return;
     const size = tls.raw_data_end - tls.raw_data_start + tls.zero_fill;
     const block = this.heap.alloc(Math.max(size, 4));
     m.u8.fill(0, block, block + size);
     m.u8.copyWithin(block, tls.raw_data_start, tls.raw_data_end);
-    m.u32[array >>> 2] = block;
-    if (tls.index_address) m.u32[tls.index_address >>> 2] = 0;
+    m.setPtr(array, block);
+    if (tls.index_address) m.w32(tls.index_address, 0);
     this.tlsSlots = 0;
   }
 
@@ -207,7 +257,7 @@ export class Process {
       const dll = imp.dll.toLowerCase();
       const name = imp.name.Name ? imp.name.Name.name : `#${imp.name.Ordinal}`;
       const addr = this.importAddress(dll, name);
-      this.m.u32[(image.image_base + imp.iat_rva) >>> 2] = addr;
+      this.m.setPtr(image.image_base + imp.iat_rva, addr);
     }
   }
 
@@ -228,9 +278,10 @@ export class Process {
   }
 
   invoke(cpu, dll, name, def, stdcall) {
+    if (this.x64) return this.invoke64(cpu, dll, name, def);
     const m = this.m;
     const esp = m.reg(cpu, ESP);
-    const ret = m.u32[esp >>> 2];
+    const ret = m.r32(esp);
     if (!def) {
       throw new Error(`unimplemented API ${dll}!${name} (called from ${hex(ret)})`);
     }
@@ -251,6 +302,38 @@ export class Process {
     const pop = stdcall ? (def.argc ?? 0) * 4 : 0;
     m.setReg(cpu, ESP, esp + 4 + pop);
     return ret;
+  }
+
+  /**
+   * The Windows x64 convention: arguments in rcx, rdx, r8, r9 (spilled here
+   * to their home space so all arguments read as 8-byte stack slots), the
+   * caller pops, results in rax. 32-bit results are sign-extended so `int`
+   * and pseudo-handle results (-1) compare as 64-bit values do on Windows.
+   */
+  invoke64(cpu, dll, name, def) {
+    const m = this.m;
+    const rsp = m.sp(cpu);
+    const ret = m.ptr(rsp);
+    if (!def) {
+      throw new Error(`unimplemented API ${dll}!${name} (called from ${hex(ret)})`);
+    }
+    if (this.trace) this.stderr(new TextEncoder().encode(`[api] ${dll}!${name}\n`));
+    [1, 2, 8, 9].forEach((r, i) => m.dv.setBigUint64(rsp + 8 + i * 8, m.reg64(cpu, r), true));
+    const args = new Args(m, rsp + 8, 8);
+    const r = def.fn.call(this, args, cpu);
+    if (r && typeof r === 'object' && r.jump !== undefined) {
+      return r.jump;
+    }
+    if (typeof r === 'bigint') m.setReg64(cpu, EAX, r);
+    // Addresses above 4 GB stay whole; 32-bit values sign-extend.
+    else if (r !== undefined) m.setReg64(cpu, EAX, BigInt(r > 0xffff_ffff ? r : r | 0));
+    m.setSp(cpu, rsp + 8);
+    return ret;
+  }
+
+  /** A va_list argument: a pointer to argument slots. */
+  vaList(p) {
+    return new Args(this.m, p, this.ptrSize);
   }
 
   // ---- Running ---------------------------------------------------------------
@@ -279,7 +362,7 @@ export class Process {
   }
 
   setLastError(v) {
-    this.m.u32[(this.teb + 0x34) >>> 2] = v >>> 0;
+    this.m.w32(this.teb + this.tebOff.lastError, v >>> 0);
   }
 
   write(handle, bytes) {
@@ -412,7 +495,7 @@ export function formatPrintf(m, fmt, args, wide = false) {
         break;
       }
       case 'p': {
-        out += pad(args.next().toString(16).toUpperCase().padStart(8, '0'), false);
+        out += pad(args.next().toString(16).toUpperCase().padStart(m.x64 ? 16 : 8, '0'), false);
         break;
       }
       case 'c': {
@@ -442,7 +525,7 @@ export function formatPrintf(m, fmt, args, wide = false) {
       }
       case 'n': {
         const p = args.next();
-        m.u32[p >>> 2] = out.length;
+        m.w32(p, out.length);
         break;
       }
       case '%':
@@ -508,20 +591,20 @@ const kernel32 = {
   WriteFile: fn(5, function (a) {
     const [h, buf, n, written] = [a.u32(0), a.u32(1), a.u32(2), a.u32(3)];
     const ok = this.write(h, this.m.u8.slice(buf, buf + n));
-    if (written) this.m.u32[written >>> 2] = ok ? n : 0;
+    if (written) this.m.w32(written, ok ? n : 0);
     return ok ? 1 : 0;
   }),
   WriteConsoleA: fn(5, function (a) {
     const [h, buf, n, written] = [a.u32(0), a.u32(1), a.u32(2), a.u32(3)];
     this.write(h, this.m.u8.slice(buf, buf + n));
-    if (written) this.m.u32[written >>> 2] = n;
+    if (written) this.m.w32(written, n);
     return 1;
   }),
   ExitProcess: fn(1, function (a) {
     this.exit(a.u32(0));
   }),
   GetLastError: fn(0, function () {
-    return this.m.u32[(this.teb + 0x34) >>> 2];
+    return this.m.r32(this.teb + this.tebOff.lastError);
   }),
   SetLastError: fn(1, function (a) {
     this.setLastError(a.u32(0));
@@ -562,10 +645,10 @@ const kernel32 = {
   }),
   TlsGetValue: fn(1, function (a) {
     this.setLastError(0);
-    return this.m.u32[(this.teb + 0xe10 + a.u32(0) * 4) >>> 2];
+    return this.m.ptr(this.teb + this.tebOff.tlsSlots + a.u32(0) * this.ptrSize);
   }),
   TlsSetValue: fn(2, function (a) {
-    this.m.u32[(this.teb + 0xe10 + a.u32(0) * 4) >>> 2] = a.u32(1);
+    this.m.setPtr(this.teb + this.tebOff.tlsSlots + a.u32(0) * this.ptrSize, a.u32(1));
     return 1;
   }),
   TlsFree: fn(1, () => 1),
@@ -601,18 +684,18 @@ const kernel32 = {
   }),
   GetStartupInfoA: fn(1, function (a) {
     this.m.u8.fill(0, a.u32(0), a.u32(0) + 68);
-    this.m.u32[a.u32(0) >>> 2] = 68;
+    this.m.w32(a.u32(0), 68);
   }),
   GetStartupInfoW: fn(1, function (a) {
     this.m.u8.fill(0, a.u32(0), a.u32(0) + 68);
-    this.m.u32[a.u32(0) >>> 2] = 68;
+    this.m.w32(a.u32(0), 68);
   }),
   VirtualAlloc: fn(4, function (a) {
     const [addr, size] = [a.u32(0), a.u32(1)];
     if (addr) {
       const r = this.vm.find(addr);
       if (r) return addr; // committing inside a reservation
-      return this.vm.reserve(addr & ~0xffff, size, 'virtual') ? addr : 0;
+      return this.vm.reserve(addr - (addr % 0x10000), size, 'virtual') ? addr : 0;
     }
     const p = this.vm.alloc(size, 'virtual');
     if (p) this.m.u8.fill(0, p, p + size);
@@ -622,23 +705,27 @@ const kernel32 = {
     return this.vm.free(a.u32(0)) ? 1 : 1;
   }),
   VirtualProtect: fn(4, function (a) {
-    if (a.u32(3)) this.m.u32[a.u32(3) >>> 2] = 0x40;
+    if (a.u32(3)) this.m.w32(a.u32(3), 0x40);
     return 1;
   }),
   VirtualQuery: fn(3, function (a) {
     const [addr, buf, len] = [a.u32(0), a.u32(1), a.u32(2)];
     const r = this.vm.find(addr);
-    const w = (o, v) => (this.m.u32[(buf + o) >>> 2] = v >>> 0);
-    this.m.u8.fill(0, buf, buf + Math.min(len, 28));
-    const page = addr & ~0xfff;
-    w(0, page);
-    w(4, r ? r.base : page);
-    w(8, 0x40);
-    w(12, r ? r.base + r.size - page : 0x1000);
-    w(16, r ? MEM_COMMIT : 0x10000);
-    w(20, r ? 0x40 : 1);
-    w(24, r ? (r.tag === 'image' ? 0x1000000 : 0x20000) : 0);
-    return 28;
+    const page = addr - (addr % 0x1000);
+    // MEMORY_BASIC_INFORMATION: 28 bytes, or 48 with 8-byte pointers and sizes.
+    const ps = this.ptrSize;
+    const size = ps === 8 ? 48 : 28;
+    const w = (o, v) => this.m.w32(buf + o, v);
+    this.m.u8.fill(0, buf, buf + Math.min(len, size));
+    this.m.setPtr(buf, page);
+    this.m.setPtr(buf + ps, r ? r.base : page);
+    w(ps * 2, 0x40);
+    const at = ps === 8 ? 24 : 12;
+    this.m.setPtr(buf + at, r ? r.base + r.size - page : 0x1000);
+    w(at + ps, r ? MEM_COMMIT : 0x10000);
+    w(at + ps + 4, r ? 0x40 : 1);
+    w(at + ps + 8, r ? (r.tag === 'image' ? 0x1000000 : 0x20000) : 0);
+    return size;
   }),
   GetProcessHeap: fn(0, function () {
     return this.processHeap;
@@ -684,7 +771,7 @@ const kernel32 = {
   GetCPInfo: fn(2, function (a) {
     const p = a.u32(1);
     this.m.u8.fill(0, p, p + 20);
-    this.m.u32[p >>> 2] = 1;
+    this.m.w32(p, 1);
     this.m.u8[p + 4] = 0x3f;
     return 1;
   }),
@@ -718,7 +805,7 @@ const kernel32 = {
     const k = Math.max(0, Math.min(n, f.file.size - f.pos));
     this.m.u8.set(f.file.data.subarray(f.pos, f.pos + k), buf);
     f.pos += k;
-    if (read) this.m.u32[read >>> 2] = k;
+    if (read) this.m.w32(read, k);
     return 1;
   }),
   SetFilePointer: fn(4, function (a) {
@@ -731,7 +818,7 @@ const kernel32 = {
   }),
   GetFileSize: fn(2, function (a) {
     const f = this.handles.get(a.u32(0));
-    if (a.u32(1)) this.m.u32[a.u32(1) >>> 2] = 0;
+    if (a.u32(1)) this.m.w32(a.u32(1), 0);
     return f?.file ? f.file.size : 0xffffffff;
   }),
   FlushFileBuffers: fn(1, () => 1),
@@ -782,20 +869,43 @@ Process.prototype.loadLibrary = function (name) {
   return h;
 };
 
-function saveJmp(proc, a, cpu) {
+// x86-64 jmp_buf (_JUMP_BUFFER): Frame Rbx Rsp Rbp Rsi Rdi R12-R15 Rip.
+const JMP64 = [3, 4, 5, 6, 7, 12, 13, 14, 15];
+
+function saveJmp64(proc, a, cpu) {
   const m = proc.m;
   const buf = a.u32(0);
-  const esp = m.reg(cpu, ESP);
-  const vals = [m.reg(cpu, 5), m.reg(cpu, 3), m.reg(cpu, 7), m.reg(cpu, 6), esp + 4, m.u32[esp >>> 2], m.u32[proc.teb >>> 2], 0xffffffff];
-  vals.forEach((v, i) => (m.u32[(buf >>> 2) + i] = v >>> 0));
+  const rsp = m.sp(cpu);
+  m.dv.setBigUint64(buf, BigInt(a.u32(1)), true);
+  JMP64.forEach((r, i) => m.dv.setBigUint64(buf + 8 + i * 8, r === 4 ? BigInt(rsp + 8) : m.reg64(cpu, r), true));
+  m.dv.setBigUint64(buf + 80, BigInt(m.ptr(rsp)), true);
   return 0;
 }
 
-// msvcrt: FILE structures are 32 bytes; stdin/stdout/stderr are _iob[0..2].
-const FILE_SIZE = 32;
+function longJmp64(proc, a, cpu) {
+  const m = proc.m;
+  const buf = a.u32(0);
+  JMP64.forEach((r, i) => m.setReg64(cpu, r, m.dv.getBigUint64(buf + 8 + i * 8, true)));
+  m.setReg64(cpu, EAX, BigInt(a.u32(1) || 1));
+  return { jump: Number(m.dv.getBigUint64(buf + 80, true)) };
+}
+
+function saveJmp(proc, a, cpu) {
+  if (proc.x64) return saveJmp64(proc, a, cpu);
+  const m = proc.m;
+  const buf = a.u32(0);
+  const esp = m.reg(cpu, ESP);
+  const vals = [m.reg(cpu, 5), m.reg(cpu, 3), m.reg(cpu, 7), m.reg(cpu, 6), esp + 4, m.r32(esp), m.r32(proc.teb), 0xffffffff];
+  vals.forEach((v, i) => m.w32(buf + i * 4, v));
+  return 0;
+}
+
+// msvcrt: FILE structures are 32 bytes (48 on x86-64, where `_file` is at
+// 24 instead of 16); stdin/stdout/stderr are _iob[0..2].
+const fileSize = (proc) => (proc.x64 ? 48 : 32);
 
 function fileHandle(proc, fp) {
-  const i = (fp - proc.iob) / FILE_SIZE;
+  const i = (fp - proc.iob) / fileSize(proc);
   if (i >= 0 && i < 3) return 0xfffffff6 - i;
   return proc.fileHandles?.get(fp) ?? 0;
 }
@@ -811,47 +921,68 @@ const msvcrt = {
   _iob: {
     data() {
       if (!this.iob) {
-        this.iob = this.heap.alloc(FILE_SIZE * 20);
-        this.m.u8.fill(0, this.iob, this.iob + FILE_SIZE * 20);
-        for (let i = 0; i < 3; i++) this.m.u32[(this.iob + i * FILE_SIZE + 16) >>> 2] = i;
+        const size = fileSize(this);
+        this.iob = this.heap.alloc(size * 20);
+        this.m.u8.fill(0, this.iob, this.iob + size * 20);
+        const file = this.x64 ? 24 : 16;
+        for (let i = 0; i < 3; i++) this.m.w32(this.iob + i * size + file, i);
       }
       return this.iob;
     },
   },
   __initenv: {
     data() {
-      return (this.initenv ??= this.heap.alloc(4));
+      return (this.initenv ??= this.heap.alloc(8));
     },
   },
   _environ: {
     data() {
-      return (this.initenv ??= this.heap.alloc(4));
+      return (this.initenv ??= this.heap.alloc(8));
     },
   },
   __mb_cur_max: {
     data() {
       const p = this.heap.alloc(4);
-      this.m.u32[p >>> 2] = 1;
+      this.m.w32(p, 1);
       return p;
     },
   },
+  ___mb_cur_max_func: fn(0, () => 1),
+  ___lc_codepage_func: fn(0, () => 0),
+  // x86-64 MinGW imports these as data (the 32-bit CRT calls __p__fmode).
+  _fmode: {
+    data() {
+      return (this.fmode ??= this.heap.alloc(4));
+    },
+  },
+  _commode: {
+    data() {
+      return (this.commode ??= this.heap.alloc(4));
+    },
+  },
+  // The x86-64 language-specific handler; reached only through exception
+  // dispatch, which the shims do not implement.
+  __C_specific_handler: fn(4, function () {
+    throw new Error('__C_specific_handler: exceptions are not supported by the shims');
+  }),
   _acmdln: {
     data() {
-      const p = this.heap.alloc(4);
-      this.m.u32[p >>> 2] = this.allocString(this.commandLine());
+      const p = this.heap.alloc(8);
+      this.m.setPtr(p, this.allocString(this.commandLine()));
       return p;
     },
   },
   __getmainargs: fn(5, function (a) {
-    const argv = this.heap.alloc((this.argv.length + 1) * 4);
-    this.argv.forEach((s, i) => (this.m.u32[(argv >>> 2) + i] = this.allocString(s)));
-    this.m.u32[(argv >>> 2) + this.argv.length] = 0;
-    const env = this.heap.alloc(4);
-    this.m.u32[env >>> 2] = 0;
-    this.m.u32[a.u32(0) >>> 2] = this.argv.length;
-    this.m.u32[a.u32(1) >>> 2] = argv;
-    this.m.u32[a.u32(2) >>> 2] = env;
-    if (this.initenv) this.m.u32[this.initenv >>> 2] = env;
+    const ps = this.ptrSize;
+    const argv = this.heap.alloc((this.argv.length + 1) * ps);
+    this.argv.forEach((s, i) => this.m.setPtr(argv + i * ps, this.allocString(s)));
+    this.m.setPtr(argv + this.argv.length * ps, 0);
+    const env = this.heap.alloc(ps);
+    this.m.setPtr(env, 0);
+    this.m.w32(a.u32(0), this.argv.length);
+    this.m.setPtr(a.u32(1), argv);
+    this.m.setPtr(a.u32(2), env);
+    if (this.initenv) this.m.setPtr(this.initenv, env);
     return 0;
   }),
   __p__fmode: fn(0, function () {
@@ -862,7 +993,7 @@ const msvcrt = {
   }),
   __p___argc: fn(0, function () {
     const p = (this.pargc ??= this.heap.alloc(4));
-    this.m.u32[p >>> 2] = this.argv.length;
+    this.m.w32(p, this.argv.length);
     return p;
   }),
   __set_app_type: fn(1, () => {}),
@@ -872,8 +1003,8 @@ const msvcrt = {
     throw new Error(`_amsg_exit(${a.u32(0)})`);
   }),
   _initterm: fn(2, function (a) {
-    for (let p = a.u32(0); p < a.u32(1); p += 4) {
-      const f = this.m.u32[p >>> 2];
+    for (let p = a.u32(0); p < a.u32(1); p += this.ptrSize) {
+      const f = this.m.ptr(p);
       if (f) this.m.callGuest(this.cpu, f, []);
     }
   }),
@@ -894,15 +1025,16 @@ const msvcrt = {
     return saveJmp(this, a, cpu);
   }),
   longjmp: fn(2, function (a, cpu) {
+    if (this.x64) return longJmp64(this, a, cpu);
     const m = this.m;
     const buf = a.u32(0);
-    const at = (i) => m.u32[(buf >>> 2) + i];
+    const at = (i) => m.r32(buf + i * 4);
     m.setReg(cpu, 5, at(0));
     m.setReg(cpu, 3, at(1));
     m.setReg(cpu, 7, at(2));
     m.setReg(cpu, 6, at(3));
     m.setReg(cpu, ESP, at(4));
-    m.u32[this.teb >>> 2] = at(6);
+    m.w32(this.teb, at(6));
     m.setReg(cpu, EAX, a.u32(1) || 1);
     return { jump: at(5) };
   }),
@@ -945,11 +1077,12 @@ const msvcrt = {
   }),
   localeconv: fn(0, function () {
     if (!this.lconv) {
-      this.lconv = this.heap.alloc(64);
-      this.m.u8.fill(0, this.lconv, this.lconv + 64);
+      this.lconv = this.heap.alloc(128);
+      this.m.u8.fill(0, this.lconv, this.lconv + 128);
       const dot = this.allocString('.');
       const empty = this.allocString('');
-      for (let i = 0; i < 10; i++) this.m.u32[(this.lconv >>> 2) + i] = i === 0 ? dot : empty;
+      // The ten string pointers that start struct lconv.
+      for (let i = 0; i < 10; i++) this.m.setPtr(this.lconv + i * this.ptrSize, i === 0 ? dot : empty);
     }
     return this.lconv;
   }),
@@ -1067,32 +1200,32 @@ const msvcrt = {
     return parseInt(this.m.readCString(a.u32(0)), 10) | 0;
   }),
   printf: fn(1, function (a) {
-    const s = formatPrintf(this.m, this.m.readCString(a.u32(0)), new Args(this.m, a.base + 4));
+    const s = formatPrintf(this.m, this.m.readCString(a.u32(0)), a.from(1));
     this.stdout(enc(s));
     return s.length;
   }),
   vprintf: fn(2, function (a) {
-    const s = formatPrintf(this.m, this.m.readCString(a.u32(0)), new Args(this.m, a.u32(1)));
+    const s = formatPrintf(this.m, this.m.readCString(a.u32(0)), this.vaList(a.u32(1)));
     this.stdout(enc(s));
     return s.length;
   }),
   fprintf: fn(2, function (a) {
-    const s = formatPrintf(this.m, this.m.readCString(a.u32(1)), new Args(this.m, a.base + 8));
+    const s = formatPrintf(this.m, this.m.readCString(a.u32(1)), a.from(2));
     cwrite(this, a.u32(0), enc(s));
     return s.length;
   }),
   vfprintf: fn(3, function (a) {
-    const s = formatPrintf(this.m, this.m.readCString(a.u32(1)), new Args(this.m, a.u32(2)));
+    const s = formatPrintf(this.m, this.m.readCString(a.u32(1)), this.vaList(a.u32(2)));
     cwrite(this, a.u32(0), enc(s));
     return s.length;
   }),
   sprintf: fn(2, function (a) {
-    const s = formatPrintf(this.m, this.m.readCString(a.u32(1)), new Args(this.m, a.base + 8));
+    const s = formatPrintf(this.m, this.m.readCString(a.u32(1)), a.from(2));
     this.m.writeCString(a.u32(0), s);
     return s.length;
   }),
   _snprintf: fn(3, function (a) {
-    const s = formatPrintf(this.m, this.m.readCString(a.u32(2)), new Args(this.m, a.base + 12));
+    const s = formatPrintf(this.m, this.m.readCString(a.u32(2)), a.from(3));
     const n = a.u32(1);
     const t = s.slice(0, n);
     for (let i = 0; i < t.length; i++) this.m.u8[a.u32(0) + i] = t.charCodeAt(i);
@@ -1100,7 +1233,7 @@ const msvcrt = {
     return s.length <= n ? s.length : -1;
   }),
   _vsnprintf: fn(4, function (a) {
-    const s = formatPrintf(this.m, this.m.readCString(a.u32(2)), new Args(this.m, a.u32(3)));
+    const s = formatPrintf(this.m, this.m.readCString(a.u32(2)), this.vaList(a.u32(3)));
     const n = a.u32(1);
     const t = s.slice(0, n);
     for (let i = 0; i < t.length; i++) this.m.u8[a.u32(0) + i] = t.charCodeAt(i);
@@ -1131,7 +1264,7 @@ const msvcrt = {
   fflush: fn(1, () => 0),
   _isatty: fn(1, () => 0),
   _fileno: fn(1, function (a) {
-    return (a.u32(0) - this.iob) / FILE_SIZE;
+    return (a.u32(0) - this.iob) / fileSize(this);
   }),
   _setmode: fn(2, () => 0x4000),
   __iob_func: fn(0, function () {

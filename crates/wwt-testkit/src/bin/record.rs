@@ -36,7 +36,7 @@ fn main() -> Result<()> {
             let mut rng = Rng::new(0x5757_5454 ^ g.name().len() as u64);
             let mut cases = vec![];
             for code in forms(g) {
-                cases.extend(cases_for(code, per_form, &mut rng));
+                cases.extend(cases_for(g, code, per_form, &mut rng));
             }
             cases.extend(extra_cases(g, &mut rng));
             cases

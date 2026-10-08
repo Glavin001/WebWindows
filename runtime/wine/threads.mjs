@@ -69,8 +69,8 @@ export class Scheduler {
     this.m = h.m;
     this.threads = [];
     this.current = null;
-    this.yieldAddr = h.m.abi.yield_address >>> 0;
-    this.stopAddr = h.m.abi.stop_address >>> 0;
+    this.yieldAddr = h.m.yieldAddress;
+    this.stopAddr = h.m.stopAddress;
     this.keyed = new Map(); // keyed events: key -> releases not yet waited for
     this.realWait = null; // blocks for real (input or time); set by the host
     this.next = 0;
@@ -117,7 +117,7 @@ export class Scheduler {
     this.current = t;
     this.h.cpu = t.cpu;
     this.h.teb = t.teb;
-    this.h.unix?.M._wasm_switch_thread(t.teb);
+    this.h.unix?.call('wasm_switch_thread', 'p', t.teb);
   }
 
   runnable(t) {
@@ -160,7 +160,7 @@ export class Scheduler {
     const p = t.pending;
     t.pending = null;
     this.m.setReg(t.cpu, 0, status >>> 0);
-    this.m.setReg(t.cpu, 4, p.espAfter);
+    this.m.setSp(t.cpu, p.espAfter);
     t.resume = p.ret;
     t.state = 'ready';
   }
@@ -432,8 +432,8 @@ export class Scheduler {
    * tick count the ticker keeps in KUSER_SHARED_DATA): the end of the slice.
    */
   armSlice(t) {
-    const tick = this.m.u32[this.m.tickAddr >>> 2];
-    this.m.u32[(t.cpu + this.m.abi.cpu.PREEMPT_AT) >>> 2] = (tick + SLICE_MS) >>> 0;
+    const tick = this.m.r32(this.m.tickAddr);
+    this.m.w32(t.cpu + this.m.abi.cpu.PREEMPT_AT, tick + SLICE_MS);
   }
 
   /**

@@ -1,0 +1,152 @@
+{
+  "actctx": {
+    "status": "crash",
+    "failures": 0
+  },
+  "atom": {
+    "status": "done",
+    "tests": 1049715,
+    "failures": 0
+  },
+  "change": {
+    "status": "done",
+    "tests": 301,
+    "failures": 180
+  },
+  "codepage": {
+    "status": "done",
+    "tests": 394761,
+    "failures": 0
+  },
+  "comm": {
+    "status": "done",
+    "tests": 8842,
+    "failures": 1
+  },
+  "console": {
+    "status": "done",
+    "tests": 4,
+    "failures": 2
+  },
+  "debugger": {
+    "status": "timeout",
+    "failures": 68
+  },
+  "directory": {
+    "status": "done",
+    "tests": 107,
+    "failures": 29
+  },
+  "drive": {
+    "status": "done",
+    "tests": 174,
+    "failures": 172
+  },
+  "environ": {
+    "status": "done",
+    "tests": 426,
+    "failures": 24
+  },
+  "fiber": {
+    "status": "timeout",
+    "failures": 1
+  },
+  "file": {
+    "status": "crash",
+    "failures": 202
+  },
+  "format_msg": {
+    "status": "done",
+    "tests": 1551,
+    "failures": 0
+  },
+  "generated": {
+    "status": "done",
+    "tests": 0,
+    "failures": 0
+  },
+  "heap": {
+    "status": "timeout",
+    "failures": 1
+  },
+  "loader": {
+    "status": "crash",
+    "failures": 1
+  },
+  "locale": {
+    "status": "done",
+    "tests": 2306042,
+    "failures": 1431
+  },
+  "mailslot": {
+    "status": "done",
+    "tests": 126,
+    "failures": 82
+  },
+  "module": {
+    "status": "crash",
+    "failures": 32
+  },
+  "path": {
+    "status": "done",
+    "tests": 202624,
+    "failures": 602
+  },
+  "pipe": {
+    "status": "timeout",
+    "failures": 445
+  },
+  "power": {
+    "status": "done",
+    "tests": 1,
+    "failures": 0
+  },
+  "process": {
+    "status": "crash",
+    "failures": 4
+  },
+  "profile": {
+    "status": "done",
+    "tests": 572,
+    "failures": 31
+  },
+  "resource": {
+    "status": "crash",
+    "failures": 0
+  },
+  "sync": {
+    "status": "crash",
+    "failures": 1
+  },
+  "thread": {
+    "status": "crash",
+    "failures": 9
+  },
+  "time": {
+    "status": "timeout",
+    "failures": 26
+  },
+  "timer": {
+    "status": "done",
+    "tests": 4,
+    "failures": 0
+  },
+  "toolhelp": {
+    "status": "crash",
+    "failures": 16
+  },
+  "version": {
+    "status": "done",
+    "tests": 143,
+    "failures": 19
+  },
+  "virtual": {
+    "status": "timeout",
+    "failures": 9441
+  },
+  "volume": {
+    "status": "done",
+    "tests": 387,
+    "failures": 103
+  }
+}

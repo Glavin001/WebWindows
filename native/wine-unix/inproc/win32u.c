@@ -2,7 +2,8 @@
  * Entry points into win32u's Unix side, for the host (runtime/wine/unix.mjs).
  *
  * user32 and gdi32 reach win32u through system calls numbered from 0x1000;
- * the host passes the number and the caller's stack arguments, and the
+ * the host passes the number and the caller's arguments (its stack slots on
+ * i386, a copy of the registers and stack slots on x86_64), and the
  * generated thunks (gen-syscalls.py) call each function with its own
  * signature. win32u.dll's DllMain makes one Unix call, init, which
  * registers the table with ntdll; here the table is static, so registering
@@ -22,12 +23,12 @@
 #include <emscripten.h>
 
 extern const unsigned int win32u_syscall_first, win32u_syscall_count;
-extern ULONG_PTR (*const win32u_syscall_thunks[])( const ULONG * );
+extern ULONG_PTR (*const win32u_syscall_thunks[])( const ULONG_PTR * );
 extern const unixlib_entry_t win32u_unix_call_funcs[];
 
 static BOOL win32u_started;
 
-EMSCRIPTEN_KEEPALIVE ULONG_PTR wasm_win32u_syscall( unsigned int id, const ULONG *args )
+EMSCRIPTEN_KEEPALIVE ULONG_PTR wasm_win32u_syscall( unsigned int id, const ULONG_PTR *args )
 {
     unsigned int index = id - win32u_syscall_first;
     if (index >= win32u_syscall_count) return STATUS_INVALID_SYSTEM_SERVICE;

@@ -16,11 +16,22 @@ in a page. See [docs/milestone-1.md](docs/milestone-1.md) to
 [docs/milestone-4.md](docs/milestone-4.md) for status, measurements and
 known limitations.
 
+64-bit (x86-64) programs have started on a second stack alongside the
+32-bit one ([the plan](docs/plan.md#64-bit-programs)): the translator, the
+runtime and the instruction and program tests handle x86-64 code, on a 32-bit
+or a 64-bit (memory64) WebAssembly memory, and 64-bit programs run
+at their own 64-bit addresses (`0x1_4000_0000` for an .exe), on the
+Milestone 1 shims and on Wine's own x86_64 DLLs, translated, with Wine's
+Unix side built for wasm64: 64-bit Notepad and Minesweeper run in the
+browser page next to their 32-bit builds. See
+[docs/milestone-9.md](docs/milestone-9.md).
+
 ## Quick start
 
 Requirements: Rust (stable, with the `wasm32-unknown-unknown` target),
 Node 22. To build test programs and record instruction fixtures you also need
-`gcc-multilib` and `gcc-mingw-w64-i686` (Debian/Ubuntu).
+`gcc-multilib` and `gcc-mingw-w64-i686` (Debian/Ubuntu), plus
+`gcc-mingw-w64-x86-64` for 64-bit programs.
 
 ```sh
 cargo build -p wwt-cli                    # the `wwt` translator CLI
@@ -29,12 +40,22 @@ cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
 # Translate and run a Windows console program in Node:
 node runtime/node/run.mjs tests/programs/hello.exe
 
+# 64-bit programs (needs gcc-mingw-w64-x86-64) are detected from the PE
+# header and run at their preferred base on a 64-bit (memory64) WebAssembly
+# memory (--mem32 moves them below 4 GB in a 32-bit one):
+x86_64-w64-mingw32-gcc -O2 -nostdlib -o hello64.exe tests/programs/hello.c -lkernel32 -Wl,-e,start
+node runtime/node/run.mjs hello64.exe
+
 # On translated Wine (build Wine's i386 PE DLLs first; needs flex, bison):
 tools/wine/build.sh
 cargo build --release -p wwt-cli
 cargo build -p wwt-heap --target wasm32-unknown-unknown --profile release-wasm  # ntdll's heap, native
 cargo build -p wwt-strings --target wasm32-unknown-unknown --profile release-wasm  # string functions, native
 node runtime/node/wine.mjs tests/programs/hello.exe
+
+# 64-bit programs on translated x86_64 Wine (a second build tree):
+ARCH=x86_64 tools/wine/build.sh
+node runtime/node/wine.mjs hello64.exe
 
 # Windowed programs: Wine's Unix side with Emscripten (emcc on PATH), the
 # DLLs, fonts and programs, then a program with a screenshot of its screen:
@@ -46,10 +67,21 @@ sh native/wine-unix/build.sh
 node runtime/node/wine.mjs --screenshot mine.png --run-for 5000 \
   --input "500:click 60,120" /opt/wine-build/programs/winemine/i386-windows/winemine.exe
 
+# 64-bit windowed programs: the same DLLs and programs for x86_64, and
+# Wine's Unix side for wasm64 (its 64-bit table needs Node 24):
+ARCH=x86_64 tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost user32 \
+  gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 rpcrt4 uxtheme \
+  comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts
+ARCH=x86_64 sh native/wine-unix/build.sh
+node runtime/node/wine.mjs --screenshot notepad64.png --run-for 6000 --input "1500:text Hello" \
+  /opt/wine-build64/programs/notepad/x86_64-windows/notepad.exe
+
 # Or in the browser (Chromium): serve with the required headers, open the
-# page and pick a folder that contains an .exe, or try Wine's Minesweeper
-# and Notepad. For "on Wine", build the bundle first.
+# page and pick a folder that contains an .exe, or try a sample: hello as
+# a 32-bit and a 64-bit console program, and Wine's Minesweeper and Notepad
+# as 32-bit and 64-bit programs. For "on Wine", build the bundles first.
 node runtime/node/wine-bundle.mjs
+node runtime/node/wine-bundle.mjs --arch x64
 node runtime/web/serve.mjs 8080
 # http://localhost:8080/runtime/web/
 ```
