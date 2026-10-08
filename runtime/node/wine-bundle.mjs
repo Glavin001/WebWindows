@@ -23,9 +23,11 @@
 // Most of Wine's DLLs are linked at the same default base (0x10000000), so
 // all but one would be relocated at load time and translated again; the
 // bundle gives each its own base first (prelinking), from PRELINK_BASE up.
+// Their debug information is stripped first (most of each file; the browser
+// would download it and map it for nothing).
 
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -48,15 +50,21 @@ const GUI_DLLS = [
   'advapi32', 'sechost', 'user32', 'gdi32', 'win32u', 'imm32', 'combase', 'comctl32', 'coml2', 'cryptbase',
   'ole32', 'rpcrt4', 'uxtheme', 'comdlg32', 'shcore', 'shell32', 'shlwapi', 'comctl32_v6', 'oleaut32',
 ];
-// Sound, DirectDraw and DirectInput (Milestone 5): fetched only for programs that
-// import one of them (wined3d alone is megabytes), see runtime/web/worker.mjs.
+// Sound, DirectDraw, Direct3D and DirectInput (Milestone 5): fetched only
+// for programs that use one of them (wined3d alone is megabytes), see
+// runtime/web/worker.mjs. wined3d draws Direct3D with its WebGPU backend
+// and needs no opengl32.
 const MEDIA_DLLS = [
-  'version', 'winmm', 'msacm32', 'dsound', 'mmdevapi', 'winepulse.drv', 'ddraw', 'wined3d', 'opengl32',
+  'version', 'winmm', 'msacm32', 'dsound', 'mmdevapi', 'winepulse.drv', 'ddraw', 'wined3d', 'd3d9',
   'dinput', 'dinput8', 'hid', 'setupapi',
 ];
 // Networking and cryptography (PuTTY, curl): likewise fetched only for
 // programs that import one of them.
 const NET_DLLS = ['ws2_32', 'crypt32', 'dnsapi', 'nsi', 'iphlpapi', 'secur32', 'bcrypt', 'normaliz', 'wldap32'];
+// Translator flags per DLL. The Direct3D DLLs never write code, so their
+// stores skip the self-modifying-code check (the C runtime's memcpy, which
+// could copy code for a program, keeps it); the same list is in wine.mjs.
+const TRANSLATE_FLAGS = { wined3d: ['--no-smc-checks'], d3d9: ['--no-smc-checks'] };
 // MinGW's default DLL base, and where the bundle moves those DLLs to.
 const DEFAULT_BASE = x64 ? 0x1_8000_0000 : 0x10000000;
 const PRELINK_BASE = mem64 ? 0x1_9000_0000 : 0x60000000;
@@ -67,6 +75,21 @@ const wwt = ['target/release/wwt', 'target/debug/wwt']
   .map((p) => join(root, p))
   .filter((p) => existsSync(p))
   .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
+
+/** The image without its debug sections (binutils' strip, when installed;
+ * loaded sections keep their addresses). */
+function stripped(path) {
+  const tmp = join(out, '.strip.tmp');
+  const strip = x64 ? 'x86_64-w64-mingw32-strip' : 'i686-w64-mingw32-strip';
+  try {
+    execFileSync(strip, ['--strip-debug', '-o', tmp, path], { stdio: 'ignore' });
+    return readFileSync(tmp);
+  } catch {
+    if (!stripped.warned) console.warn(`${strip} not found: the bundle keeps debug information`);
+    stripped.warned = true;
+    return readFileSync(path);
+  }
+}
 
 const unixDir = join(root, mem32 ? 'target/wine-unix64-m32' : x64 ? 'target/wine-unix64' : 'target/wine-unix');
 const withUnix = existsSync(join(unixDir, 'wine_unix.mjs'));
@@ -83,7 +106,7 @@ for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS, ...NET_DLL
     console.error(`missing ${pe}; run tools/wine/build.sh ${d}`);
     process.exit(1);
   }
-  let bytes = readFileSync(pe);
+  let bytes = stripped(pe);
   const info = parsePe(bytes);
   // On a 32-bit memory every x86_64 DLL moves into the guest region (Wine
   // links its core DLLs above 4 GB).
@@ -96,15 +119,8 @@ for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS, ...NET_DLL
   }
   writeFileSync(join(out, name), bytes);
   const group = MEDIA_DLLS.includes(d) ? 'media' : NET_DLLS.includes(d) ? 'network' : null;
-  // Without debug information (most of wined3d's size), when MinGW is here.
-  if (group === 'media') {
-    try {
-      execFileSync(x64 ? 'x86_64-w64-mingw32-strip' : 'i686-w64-mingw32-strip', ['--strip-debug', join(out, name)]);
-    } catch {}
-  }
-  execFileSync(wwt, ['translate', join(out, name), '-o', join(out, `${name}.wasm`), ...(mem64 ? ['--mem64'] : [])], {
-    stdio: ['ignore', 'ignore', 'inherit'],
-  });
+  const flags = [...(TRANSLATE_FLAGS[d] ?? []), ...(mem64 ? ['--mem64'] : [])];
+  execFileSync(wwt, ['translate', ...flags, join(out, name), '-o', join(out, `${name}.wasm`)], { stdio: ['ignore', 'ignore', 'inherit'] });
   manifest.dlls[name] = { pe: name, wasm: `${name}.wasm`, ...(group && { group }) };
 }
 for (const n of NLS) {
@@ -153,7 +169,7 @@ if (withUnix) {
       console.warn(`skipping ${p}: ${exe} not built (${x64 ? 'ARCH=x86_64 ' : ''}tools/wine/build.sh programs/${p})`);
       continue;
     }
-    copyFileSync(exe, join(out, 'programs', `${p}.exe`));
+    writeFileSync(join(out, 'programs', `${p}.exe`), stripped(exe));
     manifest.programs.push(`programs/${p}.exe`);
   }
 }
@@ -170,4 +186,5 @@ if (missing.size) {
   process.exit(1);
 }
 writeFileSync(join(out, 'manifest.json'), JSON.stringify(manifest, null, 2));
+rmSync(join(out, '.strip.tmp'), { force: true });
 console.log(`Wine bundle in ${out}${withUnix ? ' (with the Unix side, for windowed programs)' : ''}`);

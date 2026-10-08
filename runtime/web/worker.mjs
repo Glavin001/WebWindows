@@ -15,6 +15,7 @@ import { WineHost, parsePe, peImports, rebaseImage } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
 import { InputRing } from '../wine/input-ring.mjs';
+import { startD3D } from '../wine/d3d.mjs';
 import { ringWriter } from '../wine/audio-sink.mjs';
 
 const log = (text) => postMessage({ type: 'log', text });
@@ -62,7 +63,7 @@ async function cacheWrite(dir, name, bytes) {
  * its 32-bit-memory variant: the same DLLs below 2 GB, translated for a
  * 32-bit memory, and the Unix side lowered to one.
  */
-async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, key, bundleUrl, bundle64Url, bundle64m32Url, memory64, display: shared }) {
+async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, key, bundleUrl, bundle64Url, bundle64m32Url, memory64, display: shared, debug, d3dCanvas, d3dOffscreen, d3dPort }) {
   const x64 = peArch(exe) === 'x64';
   const mem64 = x64 && memory64;
   const base = new URL(mem64 ? bundle64Url : x64 ? bundle64m32Url : bundleUrl, self.location.href);
@@ -93,9 +94,25 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
   const files = new Map();
   const compiled = new Map();
   const sys32 = 'c:\\windows\\system32';
-  // The optional groups (sound and DirectDraw; networking) only for a
-  // program that imports one of their DLLs, itself or through a DLL of its
-  // folder.
+  // Direct3D 8/9 programs (imports or LoadLibrary, so by name): they get
+  // wined3d's WebGPU backend. DirectDraw keeps wined3d without 3D. (The
+  // backend's bridge serves i386 Wine so far.)
+  const wantsD3D = !x64 && /d3d[89]\.dll/i.test(new TextDecoder('latin1').decode(exe));
+  // wined3d's WebGPU backend executes on a render worker of its own, which
+  // presents to the page's canvas over the screen. It starts now, loading
+  // its core and setting up WebGPU while Wine's DLLs load.
+  const d3dStarting =
+    manifest.unix && shared && wantsD3D
+      ? startD3D(new URL('../wine/d3d-worker.mjs', import.meta.url), log, {
+          canvas: d3dCanvas,
+          offscreen: d3dOffscreen,
+          port: d3dPort,
+          onWindow: (w) => postMessage({ type: 'd3d-window', ...w }),
+        })
+      : null;
+  // The optional groups (sound, DirectDraw and Direct3D; networking) only
+  // for a program that imports one of their DLLs, itself or through a DLL
+  // of its folder (Direct3D also when it names one).
   const groupOf = new Map(Object.entries(manifest.dlls).filter(([, f]) => f.group).map(([n, f]) => [n.toLowerCase(), f.group]));
   const wanted = new Set();
   {
@@ -117,6 +134,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
       }
     };
     visit(exe);
+    if (wantsD3D) wanted.add('media');
   }
   await Promise.all([
     ...Object.entries(manifest.dlls).filter(([, f]) => !f.group || wanted.has(f.group)).map(async ([name, f]) => {
@@ -208,8 +226,11 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
     });
     log(`loaded Wine's Unix side (wineserver, win32u) in ${(performance.now() - t0).toFixed(0)} ms`);
   }
+  const d3d = layout && d3dStarting ? await d3dStarting : null;
   const host = new WineHost(machine, {
     translate,
+    d3d,
+    debug,
     files,
     argv: [exeWin, ...argv],
     exePath: exeWin,
@@ -227,7 +248,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
 }
 
 onmessage = async (e) => {
-  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, bundle64Url, bundle64m32Url, display, audio } = e.data;
+  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, bundle64Url, bundle64m32Url, display, audio, debug, d3dCanvas, d3dOffscreen, d3dPort } = e.data;
   // The page tests for 64-bit WebAssembly memory once (hasMemory64).
   const memory64 = e.data.memory64 ?? hasMemory64();
   const enc = new TextEncoder();
@@ -239,7 +260,7 @@ onmessage = async (e) => {
     const key = `${await sha256(exe)}-abi${abi.version}`;
     const dir = noCache ? null : await cacheDir();
     if (wine) {
-      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, bundle64Url, bundle64m32Url, memory64, display: display && { ...display, audio } });
+      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, bundle64Url, bundle64m32Url, memory64, display: display && { ...display, audio }, debug, d3dCanvas, d3dOffscreen, d3dPort });
       if (r.error) postMessage({ type: 'stderr', bytes: enc.encode(`\n*** ${r.error.message}\n`) });
       postMessage({ type: 'exit', code: r.error ? null : r.exitCode, translated: false, runMs: r.runMs, wine: true });
       return;

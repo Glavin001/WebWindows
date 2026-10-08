@@ -25,6 +25,7 @@ import { mapImage } from '../pe.mjs';
 import { VirtualMemory, MEM_IMAGE, MEM_MAPPED, MEM_PRIVATE, PAGE_READWRITE, PAGE_EXECUTE_READ, PAGE_READONLY } from './vm.mjs';
 import { SYSCALLS, SYSCALLS64, STATUS, STUB_UNIXLIB } from './syscalls.mjs';
 import { HANDLE_ROUTED, WIN32U_UNIXLIB } from './unix.mjs';
+import { WINED3D_UNIXLIB } from './d3d.mjs';
 
 /** opengl32's Unix side: a stub without OpenGL (see unixCall). */
 export const GL_UNIXLIB = 0x4000;
@@ -214,6 +215,8 @@ export class WineHost {
     /** The audio driver (./audio.mjs); opts.audioSink receives what plays. */
     this.audio = new BrowserAudio(this, opts.audioSink ?? null);
     this.unix?.attach(this);
+    /** wined3d's WebGPU bridge (./d3d.mjs), or null: Direct3D without 3D */
+    this.d3d = opts.d3d ?? null;
     /** Results of NtCallbackReturn, one per user callback in progress. */
     this.callbackResults = [];
     this.images = new Map(); // base -> {path, info}
@@ -680,10 +683,11 @@ export class WineHost {
       TMP: 'C:\\windows\\temp',
       USERPROFILE: 'C:\\users\\wine',
       WINEDLLPATH: 'C:\\windows\\system32',
-      // DirectDraw without OpenGL underneath: wined3d presents through GDI,
-      // on the program's thread (its command stream thread would spin
-      // between the cooperative scheduler's switches).
-      WINE_D3D_CONFIG: 'renderer=no3d,csmt=0',
+      // wined3d on the program's thread (its command stream thread would
+      // spin between the cooperative scheduler's switches). With a WebGPU
+      // bridge (./d3d.mjs) it renders through that; without one, DirectDraw
+      // runs without 3D and presents through GDI.
+      WINE_D3D_CONFIG: this.d3d && !this.x64 ? 'csmt=0' : 'renderer=no3d,csmt=0',
       ...this.env,
     })
       .map(([k, v]) => `${k}=${v}`)
@@ -1004,6 +1008,8 @@ export class WineHost {
       } finally {
         t.nest--;
       }
+    } else if (handle === WINED3D_UNIXLIB) {
+      status = this.d3d ? this.d3d.unixCall(m, code, args) : 0xc00000bb; // STATUS_NOT_SUPPORTED
     } else if (handle === AUDIO_UNIXLIB && this.audio) {
       // The audio driver's timer and main loops block in the scheduler.
       this.sys = { name: 'audio', ret, esp, espAfter: esp + 20 };
@@ -1055,8 +1061,27 @@ export class WineHost {
     const args = Number(m.reg64(cpu, 8));
     let status = STATUS.NOT_IMPLEMENTED;
     if (handle === 0x1000) status = this.ntdllUnixCall(code, args);
-    else if (handle === WIN32U_UNIXLIB && this.unix) status = this.unix.win32uUnixCall(code, args);
-    else if (handle !== STUB_UNIXLIB) this.log(`unix call to unknown library ${hex(handle)} code ${code}`);
+    else if (handle === WIN32U_UNIXLIB && this.unix) {
+      const t = this.threads.current;
+      t.nest++;
+      try {
+        status = this.unix.win32uUnixCall(code, args);
+      } finally {
+        t.nest--;
+      }
+    } else if (handle === WINED3D_UNIXLIB) {
+      // wined3d's WebGPU bridge (./d3d.mjs) serves i386 so far: x86-64
+      // DirectDraw runs without 3D (WINE_D3D_CONFIG, d3d is null here).
+      status = 0xc00000bb; // STATUS_NOT_SUPPORTED
+    } else if (handle === GL_UNIXLIB) {
+      // opengl32 without OpenGL, as on i386: it attaches, GL calls fail.
+      if (code <= 2) status = STATUS.SUCCESS;
+    } else if (handle === AUDIO_UNIXLIB) {
+      // The audio driver (./audio.mjs) reads i386 structures so far: x86-64
+      // programs see no audio device.
+      if (!this.audioWarned) this.log('audio: no x86-64 audio driver yet');
+      this.audioWarned = true;
+    } else if (handle !== STUB_UNIXLIB) this.log(`unix call to unknown library ${hex(handle)} code ${code}`);
     m.setReg(cpu, EAX, status >>> 0);
     m.setSp(cpu, rsp + 8);
     return ret;

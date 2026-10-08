@@ -32,14 +32,21 @@ jobs:
       - name: Install toolchains
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 gcc-mingw-w64-x86-64 csmith binaryen
+          sudo apt-get install -y gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 gcc-mingw-w64-x86-64 csmith binaryen mesa-vulkan-drivers
       - name: Format
         run: cargo fmt --all --check
       - name: Build
         run: |
           cargo build --workspace
           cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
-      - name: Unit, instruction (layer 1) and snapshot (layer 5) tests
+          cargo build -p d3dgpu-core --target wasm32-unknown-unknown
+      - name: Wine's Direct3D 8/9/10/11 test shaders (corpora for the shader translators)
+        run: |
+          tools/dxbc/fetch-wine-shaders.sh
+          tools/dxbc/fetch-wine-d3d9-shaders.sh
+      - name: Unit, instruction (layer 1) and snapshot (layer 5) tests; d3dgpu scenes on lavapipe
+        env:
+          D3DGPU_REQUIRE_GPU: 1
         run: cargo test --workspace
       - name: Committed fixtures match this CPU
         run: cargo run -p wwt-testkit --bin record -- --check
@@ -73,6 +80,10 @@ jobs:
           node tests/web/browser.mjs tests/fixtures/binaries/jumps-O2.exe "longjmp returned 50 at depth 25"
           node tests/web/browser.mjs target/programs-x64/jumps-O2.exe "longjmp returned 50 at depth 25"
           node tests/web/nomemory64.mjs
+      - name: d3dgpu scenes in the browser (headless Chromium WebGPU)
+        run: |
+          runtime/d3dgpu/build.sh
+          node tests/web/d3dgpu.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -118,7 +129,7 @@ jobs:
           sh tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost \
             user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 \
             rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts \
-            hid version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d opengl32 dinput dinput8 setupapi \
+            hid version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d d3d9 dinput dinput8 setupapi \
             apisetschema ws2_32 crypt32 dnsapi nsi iphlpapi secur32 bcrypt normaliz wldap32 \
             kernel32/tests user32/tests gdi32/tests
       - uses: mymindstorm/setup-emsdk@v14
@@ -127,6 +138,7 @@ jobs:
           cargo build --release -p wwt-cli
           cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
           sh native/wine-unix/build.sh
+          runtime/d3dgpu/build.sh
       - name: Wine bundle (for the site)
         run: node runtime/node/wine-bundle.mjs
       - uses: actions/upload-artifact@v4
@@ -207,7 +219,7 @@ jobs:
           ARCH=x86_64 WINE_BUILD=$WINE_BUILD64 sh tools/wine/build.sh ntdll kernelbase kernel32 msvcrt ucrtbase \
             advapi32 sechost user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 \
             oleaut32 rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi hid programs/winemine programs/notepad fonts \
-            version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d opengl32 dinput dinput8 setupapi \
+            version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d d3d9 dinput dinput8 setupapi \
             apisetschema ws2_32 crypt32 dnsapi nsi iphlpapi secur32 bcrypt normaliz wldap32 \
             kernel32/tests user32/tests gdi32/tests
       - uses: mymindstorm/setup-emsdk@v14
@@ -286,8 +298,10 @@ jobs:
         with:
           node-version: 22
       - uses: Swatinem/rust-cache@v2
-      - name: Build the translator for the browser
-        run: cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
+      - name: Build the translator and the d3dgpu page for the browser
+        run: |
+          cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
+          runtime/d3dgpu/build.sh
       - uses: actions/download-artifact@v4
         with:
           name: wine-bundle

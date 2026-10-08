@@ -28,13 +28,23 @@ cp -r "$bundle" "$out/target/wine-bundle"
 for b in wine-bundle64 wine-bundle64-m32; do
   if [ -f "$root/target/$b/manifest.json" ]; then cp -r "$root/target/$b" "$out/target/$b"; fi
 done
-cp "$root/tests/programs/hello.exe" "$root/tests/programs/hello64.exe" "$out/tests/programs/"
+# The sample programs the page lists (runtime/web/samples.json).
+node -e 'for (const s of JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))) console.log(s.path)' \
+  "$root/runtime/web/samples.json" | while read -r p; do
+  mkdir -p "$out/$(dirname "$p")"
+  cp "$root/$p" "$out/$p"
+done
+# The d3dgpu demo and test page (runtime/d3dgpu/build.sh), when built.
+if [ -f "$root/runtime/d3dgpu/pkg/d3dgpu_web_bg.wasm" ]; then
+  cp -r "$root/runtime/d3dgpu" "$out/runtime/d3dgpu"
+  rm -f "$out/runtime/d3dgpu/.gitignore" "$out/runtime/d3dgpu/build.sh"
+fi
 cat > "$out/index.html" <<'HTML'
 <!doctype html>
 <meta charset="utf-8">
 <title>WebWindows</title>
 <meta http-equiv="refresh" content="0; url=runtime/web/">
-<p><a href="runtime/web/">WebWindows</a></p>
+<p><a href="runtime/web/">WebWindows</a> · <a href="runtime/d3dgpu/">d3dgpu</a></p>
 HTML
 git -C "$root" rev-parse HEAD > "$out/version.txt" 2>/dev/null || true
 du -sh "$out"

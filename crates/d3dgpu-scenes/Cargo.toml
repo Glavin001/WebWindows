@@ -1,0 +1,10 @@
+[package]
+name = "d3dgpu-scenes"
+description = "Direct3D 9 test scenes written against the d3dgpu protocol, with expected pixels"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+d3dgpu-proto = { path = "../d3dgpu-proto" }
+d3dgpu-shader = { path = "../d3dgpu-shader" }

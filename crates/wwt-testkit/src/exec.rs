@@ -221,6 +221,8 @@ impl Executor {
         let math = Func::wrap(&mut store, |op: i32, a: f64, b: f64| -> f64 {
             host_math(op as u32, a, b)
         });
+        let sin = Func::wrap(&mut store, |a: f64| -> f64 { a.sin() });
+        let cos = Func::wrap(&mut store, |a: f64| -> f64 { a.cos() });
         // Address-typed globals (i64 with a 64-bit memory).
         let g = |store: &mut Store<State>, v: u32, wide: bool| {
             let (ty, val) = if wide {
@@ -252,6 +254,8 @@ impl Executor {
                     "fault" => fault_fn.into(),
                     "code_write" => code_write.into(),
                     "math" => math.into(),
+                    "sin" => sin.into(),
+                    "cos" => cos.into(),
                     n => return Err(anyhow!("unexpected import {n}")),
                 })
             })

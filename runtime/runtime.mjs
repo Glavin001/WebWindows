@@ -365,6 +365,9 @@ export class Machine {
       fault: (cpu, code, eip, info) => this.code(this.fault(this.addr(cpu), code, this.addr(eip), this.addr(info))),
       code_write: (cpu, addr) => this.codeWrite(this.addr(cpu), this.addr(addr)),
       math: hostMath,
+      // The builtins themselves, so engines call them directly.
+      sin: Math.sin,
+      cos: Math.cos,
     };
     if (this.code64) env.code_pages = BigInt(this.codePages);
     const finish = (instance) => {

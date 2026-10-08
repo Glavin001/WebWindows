@@ -199,6 +199,8 @@ pub mod imports {
     pub const FAULT: &str = "fault";
     pub const CODE_WRITE: &str = "code_write";
     pub const MATH: &str = "math";
+    pub const SIN: &str = "sin";
+    pub const COS: &str = "cos";
 }
 
 /// Custom section listing the x86 address of each translated function, in
@@ -210,7 +212,7 @@ pub const FUNCS64_SECTION: &str = "wwt.funcs64";
 /// Custom section with JSON metadata about the translation.
 pub const META_SECTION: &str = "wwt.meta";
 /// Bumped whenever generated code changes incompatibly, to invalidate caches.
-pub const ABI_VERSION: u32 = 4;
+pub const ABI_VERSION: u32 = 5;
 /// Every translated module exports its lazy-flags evaluator under this
 /// name: `(fk, fr, fa, fb, fc) -> eflags` (the arithmetic flags).
 pub const EFLAGS_EXPORT: &str = "eflags";

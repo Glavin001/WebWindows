@@ -1,0 +1,11 @@
+[package]
+name = "d3dgpu-dxbc"
+description = "Direct3D 10/11 shader bytecode (DXBC, shader model 4.0-5.0) to WGSL, with reflection and variant keys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+naga = { version = "30", features = ["wgsl-in"] }

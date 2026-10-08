@@ -19,9 +19,13 @@
   pre { background: var(--term-bg); color: var(--term-fg); padding: 12px; border-radius: 8px; min-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 13px/1.45 ui-monospace, monospace; }
   .log { color: var(--muted); font-size: 13px; white-space: pre-wrap; }
   .status { font-size: 13px; color: var(--muted); }
-  #screen { display: block; width: 100%; max-width: 800px; height: auto; aspect-ratio: 4 / 3; margin-bottom: 12px; border-radius: 8px; background: #3a6ea5; cursor: default; outline: none; image-rendering: pixelated; }
+  #screenbox { position: relative; max-width: 800px; margin-bottom: 12px; border-radius: 8px; overflow: hidden; }
+  #screen { display: block; width: 100%; height: auto; aspect-ratio: 4 / 3; border-radius: 8px; background: #3a6ea5; cursor: default; outline: none; image-rendering: pixelated; }
   #screen:focus-visible { box-shadow: 0 0 0 3px var(--accent); }
   #screen[hidden] { display: none; }
+  /* Direct3D frames, over the window that shows them (input goes to #screen). */
+  #screenbox canvas.d3d { position: absolute; pointer-events: none; }
+  #screenbox canvas.d3d[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -39,12 +43,12 @@
     <label class="status"><input id="nocache" type="checkbox"> no cache</label>
   </div>
   <div class="row" id="samples" hidden>
-    <span class="status">Or try a sample:</span>
+    <span class="status">Or try one of these:</span>
     <select id="sample"></select>
     <button id="runsample">Run</button>
   </div>
   <div id="status" class="status"></div>
-  <canvas id="screen" width="800" height="600" tabindex="0" hidden aria-label="Windows screen"></canvas>
+  <div id="screenbox"><canvas id="screen" width="800" height="600" tabindex="0" hidden aria-label="Windows screen"></canvas></div>
   <pre id="out"></pre>
   <div id="log" class="log"></div>
 </main>

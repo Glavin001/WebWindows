@@ -1,0 +1,3 @@
+# Same settings the other d3dgpu crates are formatted with.
+max_width = 120
+use_small_heuristics = "Max"

@@ -25,6 +25,13 @@ use crate::ir::*;
 pub fn only_faults(i: &Instruction) -> bool {
     use Mnemonic as M;
     i.is_privileged()
+        // Far transfers and far pointers in memory: a general protection
+        // fault (see `lift_inst`).
+        || matches!(i.op0_kind(), OpKind::FarBranch16 | OpKind::FarBranch32)
+        || matches!(
+            i.memory_size(),
+            MemorySize::SegPtr16 | MemorySize::SegPtr32 | MemorySize::Fword6 | MemorySize::Fword10
+        )
         || matches!(
             i.mnemonic(),
             M::Int

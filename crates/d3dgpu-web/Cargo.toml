@@ -1,0 +1,19 @@
+[package]
+name = "d3dgpu-web"
+description = "The d3dgpu render core and scene library for the browser render worker (wasm-bindgen)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+d3dgpu-core = { path = "../d3dgpu-core" }
+d3dgpu-proto = { path = "../d3dgpu-proto" }
+d3dgpu-scenes = { path = "../d3dgpu-scenes" }
+wgpu = { version = "30", default-features = false, features = ["wgsl", "std", "webgpu"] }
+wasm-bindgen = "0.2.129"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["OffscreenCanvas"] }
