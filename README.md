@@ -152,6 +152,7 @@ The plan's verification pipeline, as implemented:
 | 4. Real software (start) | The browser front end in headless Chromium: the cache and profile loop, the folder picker, Wine's Minesweeper and Notepad driven with mouse and keyboard, and Direct3D 9 test programs on WebGPU; the same windowed programs headless in Node with screenshots; a Direct3D 9 benchmark | `node tests/web/browser.mjs`, `tests/web/picker.mjs`, `tests/web/gui.mjs`, `tests/wine/gui.mjs`, `tests/web/d3d9bench.mjs` |
 | 5. Own output | Snapshots of IR and WAT for committed binaries | `cargo test -p wwt --test snapshots` |
 | Speed | CoreMark native vs. Emscripten vs. translated, with checksum check; profiles by function | `node tools/bench/coremark.mjs`, see [docs/performance.md](docs/performance.md) |
+| Comparison | SQLite, Lua, CoreMark and Windows API workloads on native, Emscripten, Wine, qemu-i386, Wine-Assembly and ours; first-launch costs | `node tools/bench/suite.mjs`, `tools/bench/firstlaunch.mjs`, see [docs/comparison.md](docs/comparison.md) |
 
 Instruction fixtures (`tests/fixtures/instructions/*.jsonl.gz`) are recorded
 on x86 hardware and replayed anywhere:

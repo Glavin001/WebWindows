@@ -432,8 +432,11 @@ impl<'a> ModuleGen<'a> {
             };
             code.function(&gen_helper(h, eflags));
         }
+        let mut residue = Vec::with_capacity(funcs.len());
         for f in funcs {
-            code.function(&self.gen_function(f));
+            let (body, r) = self.gen_function_counted(f);
+            code.function(&body);
+            residue.push(r);
         }
         module.section(&code);
 
@@ -476,10 +479,20 @@ impl<'a> ModuleGen<'a> {
             name: Cow::Borrowed(abi::META_SECTION),
             data: Cow::Borrowed(meta_json.as_bytes()),
         });
+        // Per function, in table order (see `Residue`).
+        module.section(&CustomSection {
+            name: Cow::Borrowed(abi::RESIDUE_SECTION),
+            data: Cow::Owned(serde_json::to_vec(&residue).unwrap()),
+        });
         module.finish()
     }
 
     pub fn gen_function(&self, f: &Function) -> wasm_encoder::Function {
+        self.gen_function_counted(f).0
+    }
+
+    /// The function and the emulation left in it.
+    pub fn gen_function_counted(&self, f: &Function) -> (wasm_encoder::Function, Residue) {
         let fixed;
         // Blocks from here on are made by the passes below, not lifted.
         let lifted = f.blocks.len();
@@ -506,7 +519,8 @@ impl<'a> ModuleGen<'a> {
         g.preempt = preempt;
         g.irreducible = irreducible;
         g.run();
-        g.finish()
+        let r = g.residue;
+        (g.finish(), r)
     }
 }
 
@@ -521,8 +535,33 @@ enum Ctx {
     Dispatch,
 }
 
+/// Emulation left in a translated function, counted as emitted (outside
+/// the shared fault blocks, which run only on a fault): what an optimizer
+/// would remove, listed per function in the `wwt.residue` section.
+#[derive(Default, Clone, Copy, Debug, serde::Serialize)]
+pub struct Residue {
+    /// x86 registers written back to the CPU state (at calls, exits, ...).
+    pub state_stores: u32,
+    /// ... of which lazy-flag state.
+    pub flag_stores: u32,
+    /// x86 registers loaded from the CPU state (at entry, after calls).
+    pub state_loads: u32,
+    /// Guest-limit checks on memory accesses.
+    pub checks: u32,
+    /// Store-map lookups (taken while code is writable).
+    pub store_maps: u32,
+    /// Calls and jumps through the address lookup (indirect, or to code
+    /// outside the module).
+    pub lookups: u32,
+    /// Direct calls between translated functions.
+    pub calls: u32,
+}
+
 struct FnGen<'g, 'a> {
     m: &'g ModuleGen<'a>,
+    residue: Residue,
+    /// Emitting a fault block: not counted in `residue`.
+    in_fault: bool,
     f: &'g Function,
     a: &'g Analysis,
     out: Vec<W<'static>>,
@@ -597,6 +636,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let n = f.blocks.len();
         let mut g = FnGen {
             m,
+            residue: Residue::default(),
+            in_fault: false,
             f,
             a,
             out: vec![],
@@ -789,6 +830,12 @@ impl<'g, 'a> FnGen<'g, 'a> {
             if self.local_of[v as usize] == UNASSIGNED {
                 continue;
             }
+            if !self.in_fault {
+                self.residue.state_stores += 1;
+                if FLAG_STATE.contains(&v) {
+                    self.residue.flag_stores += 1;
+                }
+            }
             let (off, ty) = self.f.state_home(v).unwrap();
             self.emit(W::LocalGet(0));
             self.get(v);
@@ -808,6 +855,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             if self.local_of[v as usize] == UNASSIGNED {
                 continue;
+            }
+            if !self.in_fault {
+                self.residue.state_loads += 1;
             }
             let (off, ty) = self.f.state_home(v).unwrap();
             self.emit(W::LocalGet(0));
@@ -922,6 +972,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
     /// and calls the host, which returns where to continue (a Windows
     /// exception dispatcher, with the guest stack set up for it).
     fn fault_block(&mut self, mask: StateMask, code: u32) {
+        self.in_fault = true;
         self.sync(mask);
         self.emit(W::LocalGet(0));
         self.emit(W::LocalGet(self.fault_eip));
@@ -1025,6 +1076,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     /// Calls (or tail-calls) the x86 address in local `t` through the table.
     fn call_lookup(&mut self, t: u32, tail: bool) {
+        self.residue.lookups += 1;
         self.emit(W::LocalGet(0));
         self.emit(W::LocalGet(t));
         self.store_eip();
@@ -1443,6 +1495,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 match target {
                     CallTarget::Direct(addr) => match self.m.direct_target(addr) {
                         Some(fi) => {
+                            self.residue.calls += 1;
                             self.emit(W::LocalGet(0));
                             self.emit(W::Call(fi));
                         }
@@ -1681,8 +1734,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
     // interpreter's `base + (insn >> 3 & 0xff0)`), so a check of one such
     // address covers the others within the window. The cost is precision:
     // a load there reads memory instead of faulting, which only a pointer
-    // within 32 KB of those boundaries can notice. Stores are never skipped
-    // (the store map has to see every page they touch).
+    // within 32 KB of those boundaries can notice. Stores share checks the
+    // same way: the 64 KB above the guest limit hold nothing
+    // (`native_layout::GUARD`). While code may be written they go through
+    // the store map regardless (it has to see every page they touch).
 
     /// `v + off` as `root + off' + x` for some x in [0, r], following this
     /// block's aliases.
@@ -1807,6 +1862,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     /// Emits an address check for the access at vreg `v` + `off`.
     fn check_addr(&mut self, v: V, off: u32, write: bool, dirty: StateMask, eip: u64) {
+        self.residue.checks += 1;
         let addr = self.local_of[v as usize];
         if self.f.ty(v) == Ty::I64 || self.mem64() {
             self.emit(W::LocalGet(addr));
@@ -1948,13 +2004,17 @@ impl<'g, 'a> FnGen<'g, 'a> {
     /// The host hears about a code write before the store happens, which is
     /// equivalent: it only drops translations, which are redone on demand.
     ///
+    /// The store map is consulted only while the runtime says code may be
+    /// written (`cpu::CODE_WRITABLE`); otherwise a store needs just the
+    /// guest-limit check, skipped when a nearby check `covered` it.
     /// 64-bit addresses (x86-64 code, or a 64-bit memory) have no fast
     /// path: the map covers only the guest region, so the address is
     /// checked first, then the map's CODE bit.
-    fn check_store(&mut self, v: V, off: u32, dirty: StateMask, eip: u64) {
+    fn check_store(&mut self, v: V, off: u32, covered: bool, dirty: StateMask, eip: u64) {
         let (mem, smc) = (self.m.cfg.mem_checks, self.m.cfg.smc_checks);
+        let plain = mem && !covered;
         if !smc {
-            if mem {
+            if plain {
                 self.check_addr(v, off, true, dirty, eip);
             }
             return;
@@ -1967,6 +2027,27 @@ impl<'g, 'a> FnGen<'g, 'a> {
             self.check_code_write(la, off);
             return;
         }
+        self.code_writable();
+        self.emit(W::If(BlockType::Empty));
+        self.check_store_map(v, off, dirty, eip);
+        if plain {
+            self.emit(W::Else);
+            self.check_addr(v, off, true, dirty, eip);
+        }
+        self.emit(W::End);
+    }
+
+    /// Pushes `cpu.CODE_WRITABLE`.
+    fn code_writable(&mut self) {
+        self.emit(W::LocalGet(0));
+        self.emit(W::I32Load(memarg(cpu::CODE_WRITABLE, 2)));
+    }
+
+    /// The store-map path of a 32-bit store: one lookup; pages that need
+    /// more get the precise address check and the code-write notification.
+    fn check_store_map(&mut self, v: V, off: u32, dirty: StateMask, eip: u64) {
+        self.residue.store_maps += 1;
+        let mem = self.m.cfg.mem_checks;
         let addr = self.local_of[v as usize];
         let a = self.tmp_i32b;
         self.emit(W::LocalGet(addr));
@@ -1979,6 +2060,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(W::If(BlockType::Empty));
         if mem {
             self.check_addr(v, off, true, dirty, eip);
+            // It runs only on the slow path: not a check.
+            self.residue.checks -= 1;
         }
         self.check_code_write(addr, off);
         self.emit(W::End);
@@ -2047,7 +2130,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             Op::Store { addr, val, mem } => {
                 if mem.space == Space::Guest {
-                    self.check_store(*addr, mem.offset, dirty, inst.eip);
+                    let covered = self.check_covered(*addr, mem.offset);
+                    self.check_store(*addr, mem.offset, covered, dirty, inst.eip);
                     if self.m.cfg.mem_checks {
                         self.checked(*addr, mem.offset);
                     }
@@ -2138,7 +2222,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     } else {
                         self.emit(W::Drop);
                     }
+                    self.code_writable();
+                    self.emit(W::If(BlockType::Empty));
                     self.check_code_write(la, mem.offset);
+                    self.emit(W::End);
                     return;
                 }
             }
@@ -2412,7 +2499,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
 
     /// Notifies the host for each code page in [addr, addr+len).
     fn check_code_write_range(&mut self, addr: V, len: V) {
-        // for (p = addr & ~0xfff; p < addr + len; p += 0x1000) check(p)
+        // if (code_writable) for (p = addr & ~0xfff; p < addr + len; p += 0x1000) check(p)
+        self.code_writable();
+        self.emit(W::If(BlockType::Empty));
         let wide = self.mem64();
         let p = if wide { self.tmp_i64 } else { self.tmp_i32 };
         let (and, add, ge, k_mask, k_page) = if wide {
@@ -2450,6 +2539,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(add);
         self.emit(W::LocalSet(p));
         self.emit(W::Br(0));
+        self.emit(W::End);
         self.emit(W::End);
         self.emit(W::End);
     }

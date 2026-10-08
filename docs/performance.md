@@ -197,6 +197,22 @@ What running real programs found that CoreMark could not:
   into registers across blocks, and a 32 KB window (a load near a checked
   address can only land in the 64 KB null region or the 4 MB lookup table
   above the guest limit): Lua's module has 14% fewer checks, Lua +4%.
+- **Stores looked up the store map every time.** Every store read a byte
+  per page to notice writes to translated code, and could not share a
+  check with nearby accesses (a store just above the guest limit would hit
+  the runtime's lookup tables). But a Windows program can only write its
+  code once the page is writable: a write to a read-only page faults. The
+  runtime now tracks which pages with translated code are writable
+  (`runtime/wine/codewrite.mjs`: image sections get their real
+  protections, `VirtualProtect` and executable allocations are seen) and
+  tells translated code through a flag in each thread's state
+  (`cpu::CODE_WRITABLE`). While no such page exists, which is the usual
+  case, stores skip the store map and share guest-limit checks like loads
+  do, with 64 KB of nothing above the guest limit
+  (`native_layout::GUARD`). Against the lookup on every store
+  (`WWT_STORE_MAP=always`, which keeps it on), Lua is 8% faster and
+  apibench 4%; against the build before the flag existed the gain is
+  smaller (Lua fib 6%, sort 3%, the rest within noise).
 - **Wine's heap** (`RtlAllocateHeap` and friends) was 15–17% of Lua's time:
   handle checks, the LFH front end, critical sections and free lists, all
   as translated x86 with a register write-back at every internal call. It
@@ -454,6 +470,14 @@ Wine tier when they are (`tools/wine/build.sh`).
 
 ### What didn't help (measured with `ab.mjs`)
 
+* Forwarding stack stores to loads (a pass that gave a later load of
+  the same `[esp+k]` slot the stored value, kept exact by clearing at
+  calls, frame-address escapes and the outermost loop headers where
+  re-entry resumes): only 16% of `luaV_execute`'s stack loads qualified,
+  Lua and apibench within noise. Interpreter values that live across the
+  dispatch loop's iterations are the ones worth keeping in locals, and
+  re-entry at that loop's header would have to reload them.
+
 * Simplifying masks by known zero bits (`setg al; movzx eax, al` lifts to
   `((eax & ~0xff) | flag) & 0xff`): cleaner IR, but V8 already folds it
   (CoreMark, Lua, apibench all within noise).
@@ -561,6 +585,16 @@ programs like CoreMark, not for programs that call Windows APIs.
 uses f64, Emscripten uses 128-bit software floating point.
 
 ## 2. Profile both builds by function
+
+For a picture of one benchmark, `wasm-map.mjs` puts Emscripten's module
+and the translated `.exe`'s side by side: treemaps with each function's
+code size as area and its CPU time as color, and a table of the functions
+matched by name (sizes, times and ratios):
+
+```sh
+node tools/bench/wasm-map.mjs lua      # or sqlite, coremark; --no-profile for sizes only
+# target/wasm-map/lua.html (and lua.json)
+```
 
 ```sh
 node tools/bench/profile.mjs                  # Emscripten, then wwt

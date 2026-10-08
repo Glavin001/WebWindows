@@ -2,7 +2,7 @@
 // The benchmark suite: real programs and Windows API workloads, each run on
 // every tier that can run it, with checksums compared across tiers.
 //
-//   node tools/bench/suite.mjs [--rounds N] [--only a,b] [--tiers t,u] [--json F]
+//   node tools/bench/suite.mjs [--rounds N] [--only a,b] [--tiers t,u] [--json F] [--pin CPU]
 //
 // Workloads (built from pinned sources, checked by SHA-256):
 //   coremark   CoreMark, a fixed iteration count     (computation)
@@ -15,6 +15,20 @@
 //   emcc       the C source built with Emscripten, in Node: the WebAssembly ceiling
 //   wine       the .exe on Wine running natively (`wine` on PATH): Wine without translation
 //   wwt-wine   the .exe translated, on translated Wine, in Node: what we ship
+//   wwt-fast   wwt-wine with the program translated in place by the translator
+//              compiled to WebAssembly, as the page does without an
+//              ahead-of-time translation (WWT_TRANSLATOR=wasm)
+//   qemu       the Linux build on qemu-i386 (user mode): a native software
+//              translator, so how much of our gap is WebAssembly itself
+//   wine-assembly  the .exe on Wine-Assembly (an x86 interpreter written in
+//              WebAssembly), in Node: the emulation baseline. Opt-in: set
+//              WINE_ASSEMBLY to a checkout of github.com/vgrichina/wine-assembly
+//              with tools/bench/wine-assembly-console.patch applied (its
+//              console output is read at exit). CoreMark only: its C runtime
+//              cannot print the other workloads' checksums yet.
+//
+// --pin CPU runs every measurement on one core (taskset). The JSON records
+// the machine and every engine's version.
 //
 // Every number is a time in seconds (lower is better); a tier's speed is the
 // geometric mean over all measurements of native time / its time (or of the
@@ -38,7 +52,7 @@ const workloads = join(root, 'tools/bench/workloads');
 
 // ---- Options ----
 
-const opts = { rounds: 3, only: null, tiers: null, json: null };
+const opts = { rounds: 3, only: null, tiers: null, json: null, pin: null };
 const argv = process.argv.slice(2);
 while (argv.length) {
   const a = argv.shift();
@@ -46,6 +60,7 @@ while (argv.length) {
   else if (a === '--only') opts.only = argv.shift().split(',');
   else if (a === '--tiers') opts.tiers = argv.shift().split(',');
   else if (a === '--json') opts.json = argv.shift();
+  else if (a === '--pin') opts.pin = argv.shift();
   else {
     console.error(`unknown option ${a}`);
     process.exit(2);
@@ -70,7 +85,11 @@ const available = {
   emcc: !!emcc,
   wine: which('wine'),
   'wwt-wine': which('i686-w64-mingw32-gcc') && existsSync(join(root, 'target/release/wwt')) && existsSync(wineBuild),
+  qemu: which('gcc') && which('qemu-i386'),
+  'wwt-fast': which('i686-w64-mingw32-gcc') && existsSync(join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm')) && existsSync(wineBuild),
+  'wine-assembly': !!process.env.WINE_ASSEMBLY && existsSync(join(process.env.WINE_ASSEMBLY, 'test/run.js')) && which('i686-w64-mingw32-gcc'),
 };
+const wineAssembly = process.env.WINE_ASSEMBLY;
 
 // ---- Sources ----
 
@@ -128,7 +147,14 @@ function build(name) {
       const cm = join(root, 'target/coremark-src');
       if (!existsSync(cm)) execFileSync(process.execPath, [join(root, 'tools/bench/coremark.mjs'), '--build-only', '--tiers', 'native'], { stdio: 'inherit' });
       const sources = ['core_list_join.c', 'core_main.c', 'core_matrix.c', 'core_state.c', 'core_util.c', 'simple/core_portme.c'];
-      make(sources, ['-I.', '-Isimple', '-DPERFORMANCE_RUN=1', '-DITERATIONS=30000', '-DFLAGS_STR="-O2"'], cm);
+      const flags = ['-I.', '-Isimple', '-DPERFORMANCE_RUN=1', '-DITERATIONS=30000', '-DFLAGS_STR="-O2"'];
+      make(sources, flags, cm);
+      // Wine-Assembly's C runtime: msvcrt's printf, not MinGW's (which
+      // needs localeconv), and no printf-to-puts rewriting.
+      files.waExe = o('.wa.exe');
+      if (available['wine-assembly'] && !existsSync(files.waExe)) {
+        sh('i686-w64-mingw32-gcc', [...COMMON, '-fno-builtin-printf', '-D__USE_MINGW_ANSI_STDIO=0', ...flags, ...sources, '-o', files.waExe], cm);
+      }
       break;
     }
     case 'sqlite': {
@@ -165,7 +191,10 @@ const WORKLOADS = {
     parse(text) {
       const ips = Number(text.match(/^Iterations\/Sec\s*:\s*([0-9.]+)/m)?.[1]);
       const sum = text.match(/^\[0\]crcfinal\s*:\s*(0x[0-9a-f]+)/m)?.[1];
-      return ips ? [{ name: 'coremark', time: 30000 / ips, sum }] : [];
+      // Wine-Assembly's printf prints no %f: the tick count (ms) instead.
+      const ticks = Number(text.match(/^Total ticks\s*:\s*([0-9]+)/m)?.[1]);
+      const time = ips ? 30000 / ips : text.includes('=== console ===') && ticks ? ticks / 1000 : 0;
+      return time ? [{ name: 'coremark', time, sum }] : [];
     },
   },
   sqlite: {
@@ -177,7 +206,7 @@ const WORKLOADS = {
     },
   },
   lua: {
-    args: (tier) => [tier === 'native' || tier === 'emcc' ? join(workloads, 'bench.lua') : 'C:\\bench.lua', '4'],
+    args: (tier) => [tier === 'native' || tier === 'emcc' || tier === 'qemu' ? join(workloads, 'bench.lua') : 'C:\\bench.lua', '4'],
     files: [[join(workloads, 'bench.lua'), 'C:\\bench.lua']],
     parse: (text) => columns(text),
   },
@@ -208,6 +237,28 @@ function command(tier, files, w, dir) {
         'wine',
         [files.exe.replace(/^\//, 'Z:\\').replaceAll('/', '\\'), ...args.map((a) => (a.startsWith('C:\\') ? `Z:${join(workloads, a.slice(3)).replaceAll('/', '\\')}` : a))],
       ];
+    case 'qemu':
+      return files.native && ['qemu-i386', [files.native, ...args]];
+    case 'wine-assembly':
+      return (
+        files.waExe && [
+          process.execPath,
+          [
+            join(wineAssembly, 'test/run.js'),
+            `--exe=${files.waExe}`,
+            ...(args.length ? [`--args=${args.join(' ')}`] : []),
+            '--max-batches=1000000000',
+            '--stuck-after=0',
+            '--max-seconds=3600',
+            '--quiet-api',
+            '--quiet-blocks',
+            '--no-renderer',
+            // The program's clock in real time, not the batch clock.
+            '--real-ticks',
+          ],
+        ]
+      );
+    case 'wwt-fast':
     case 'wwt-wine':
       return [
         process.execPath,
@@ -220,8 +271,9 @@ function runOnce(tier, files, w) {
   const dir = mkdtempDir();
   const cmd = command(tier, files, w, dir);
   if (!cmd) return null;
-  const env = { ...process.env, WINEDEBUG: '-all', WINEPREFIX: process.env.WINEPREFIX ?? join(tmpdir(), 'wwt-bench-wineprefix') };
-  const r = spawnSync(cmd[0], cmd[1], { cwd: dir, env, encoding: 'utf8', maxBuffer: 256 << 20, timeout: 30 * 60 * 1000 });
+  const env = { ...process.env, WINEDEBUG: '-all', WINEPREFIX: process.env.WINEPREFIX ?? join(tmpdir(), 'wwt-bench-wineprefix'), WA_DUMP_CONSOLE: '80', ...(tier === 'wwt-fast' && { WWT_TRANSLATOR: 'wasm' }) };
+  const [exe, args] = opts.pin ? ['taskset', ['-c', opts.pin, cmd[0], ...cmd[1]]] : cmd;
+  const r = spawnSync(exe, args, { cwd: dir, env, encoding: 'utf8', maxBuffer: 256 << 20, timeout: 60 * 60 * 1000 });
   rmSync(dir, { recursive: true, force: true });
   const rows = w.parse(r.stdout ?? '');
   if (!rows.length) {
@@ -243,8 +295,9 @@ const median = (xs) => {
   return s.length ? (s[(s.length - 1) >> 1] + s[s.length >> 1]) / 2 : NaN;
 };
 
-const TIERS = ['native', 'emcc', 'wine', 'wwt-wine'].filter((t) => available[t] && (!opts.tiers || opts.tiers.includes(t)));
-for (const t of ['native', 'emcc', 'wine', 'wwt-wine']) if (!available[t]) console.error(`skipping tier ${t} (not installed)`);
+const ALL_TIERS = ['native', 'emcc', 'wine', 'qemu', 'wine-assembly', 'wwt-fast', 'wwt-wine'];
+const TIERS = ALL_TIERS.filter((t) => available[t] && (!opts.tiers || opts.tiers.includes(t)));
+for (const t of ALL_TIERS) if (!available[t]) console.error(`skipping tier ${t} (not installed${t === 'wine-assembly' ? ': set WINE_ASSEMBLY' : ''})`);
 
 const results = [];
 for (const name of Object.keys(WORKLOADS)) {
@@ -278,7 +331,8 @@ for (const name of Object.keys(WORKLOADS)) {
 const ref = (row) => (row.times.native !== undefined ? 'native' : 'wine');
 const fmt = (x) => (x === undefined ? '—' : x < 10 ? x.toFixed(3) : x.toFixed(2));
 console.log(`\nBenchmark suite, Node ${process.version}, median of ${opts.rounds}; seconds (lower is better)`);
-console.log(`${'workload/bench'.padEnd(22)}${TIERS.map((t) => t.padStart(10)).join('')}   wwt-wine vs ref   checksums`);
+const W = 14;
+console.log(`${'workload/bench'.padEnd(22)}${TIERS.map((t) => t.padStart(W)).join('')}   wwt-wine vs ref   checksums`);
 let mismatches = 0;
 for (const row of results) {
   const r = ref(row);
@@ -286,7 +340,7 @@ for (const row of results) {
   const same = sums.every((s) => s === sums[0]);
   if (!same) mismatches++;
   const ratio = row.times['wwt-wine'] && row.times[r] ? `${(row.times[r] / row.times['wwt-wine'] * 100).toFixed(0)}% of ${r}` : '';
-  console.log(`${`${row.workload}/${row.bench}`.padEnd(22)}${TIERS.map((t) => fmt(row.times[t]).padStart(10)).join('')}   ${ratio.padEnd(16)}  ${same ? 'ok' : 'MISMATCH ' + JSON.stringify(row.sums)}`);
+  console.log(`${`${row.workload}/${row.bench}`.padEnd(22)}${TIERS.map((t) => fmt(row.times[t]).padStart(W)).join('')}   ${ratio.padEnd(16)}  ${same ? 'ok' : 'MISMATCH ' + JSON.stringify(row.sums)}`);
 }
 // Geometric mean speed of each tier relative to the reference tier.
 console.log('');
@@ -300,7 +354,32 @@ for (const t of TIERS) {
     if (!sums.every((x) => x === sums[0])) continue;
     logs.push(Math.log(row.times[r] / row.times[t]));
   }
-  if (logs.length) console.log(`${t.padEnd(10)} geometric mean ${(Math.exp(logs.reduce((a, b) => a + b, 0) / logs.length) * 100).toFixed(0)}% of reference speed over ${logs.length} measurements`);
+  if (logs.length) console.log(`${t.padEnd(W)} geometric mean ${(Math.exp(logs.reduce((a, b) => a + b, 0) / logs.length) * 100).toFixed(0)}% of reference speed over ${logs.length} measurements`);
 }
-if (opts.json) writeFileSync(opts.json, JSON.stringify({ date: new Date().toISOString(), node: process.version, rounds: opts.rounds, results }, null, 2) + '\n');
+// The machine and the engines, so runs on different days or machines can be
+// told apart.
+function machine() {
+  const out = (cmd, args) => {
+    const r = spawnSync(cmd, args, { encoding: 'utf8' });
+    return r.status === 0 ? (r.stdout || r.stderr).trim().split('\n')[0] : null;
+  };
+  const cpu = readFileSync('/proc/cpuinfo', 'utf8').match(/^model name\s*:\s*(.*)$/m)?.[1];
+  return {
+    cpu,
+    cpus: readFileSync('/proc/cpuinfo', 'utf8').match(/^processor/gm)?.length,
+    kernel: out('uname', ['-r']),
+    governor: existsSync('/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor') ? readFileSync('/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor', 'utf8').trim() : null,
+    pinned: opts.pin,
+    node: process.version,
+    v8: process.versions.v8,
+    gcc: out('gcc', ['--version']),
+    mingw: out('i686-w64-mingw32-gcc', ['--version']),
+    emcc: emcc && out(emcc, ['--version']),
+    wine: out('wine', ['--version']),
+    qemu: out('qemu-i386', ['--version']),
+    wineAssembly: wineAssembly && out('git', ['-C', wineAssembly, 'rev-parse', '--short', 'HEAD']),
+    wwt: out('git', ['-C', root, 'rev-parse', '--short', 'HEAD']),
+  };
+}
+if (opts.json) writeFileSync(opts.json, JSON.stringify({ date: new Date().toISOString(), node: process.version, rounds: opts.rounds, machine: machine(), results }, null, 2) + '\n');
 process.exit(mismatches ? 1 : 0);

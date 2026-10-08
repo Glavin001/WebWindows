@@ -97,8 +97,20 @@ let mem32 = !hasMemory64();
 /** Time spent translating images, which --run-for does not count. */
 let translateMs = 0;
 
+/** The translator compiled to WebAssembly (fast mode), once loaded. */
+let fastTranslator = null;
+
 /** Translates an image with the CLI, caching by content hash. */
 function translate(path, bytes) {
+  // WWT_TRANSLATOR=wasm: the program translated in place by the WebAssembly
+  // build, as the page does without an ahead-of-time translation (Wine's
+  // DLLs stay ahead of time, as the bundle ships them).
+  if (process.env.WWT_TRANSLATOR === 'wasm' && !mem64 && /\.exe$/i.test(path) && fastTranslator) {
+    const t0 = performance.now();
+    const wasm = fastTranslator.translatePe(bytes, { guestLimit: GUEST_LIMIT });
+    stderr(`[wasm translator] ${path.split('\\').pop()}: ${wasm.length} bytes in ${(performance.now() - t0).toFixed(0)} ms\n`);
+    return wasm;
+  }
   mkdirSync(cacheDir, { recursive: true });
   // Keyed by the image and the translator build, so a rebuilt translator
   // never serves stale translations.
@@ -363,7 +375,8 @@ if (useUnix) {
 // Fast mode: code the ahead-of-time pass missed is translated when reached.
 const tw = join(root, 'target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm');
 if (existsSync(tw)) {
-  enableFastMode(machine, await FastTranslator.load(readFileSync(tw)), {
+  fastTranslator = await FastTranslator.load(readFileSync(tw));
+  enableFastMode(machine, fastTranslator, {
     log: trace || process.env.WWT_FAST_LOG ? (s) => stderr(`[fast] ${s}\n`) : undefined,
   });
 }
@@ -416,6 +429,9 @@ const host = new WineHost(machine, {
   // i386 code's (see translate above).
   nativeHeap: x64 ? null : nativeHeap,
   aliasThunks: process.env.WWT_THUNK_ALIAS !== '0',
+  // WWT_STORE_MAP=always: stores look up the store map even when no code
+  // is writable (runtime/wine/codewrite.mjs).
+  storeMapAlways: process.env.WWT_STORE_MAP === 'always',
   audioSink: audioOut ? audioCapture : null,
   nativeStrings: x64 ? null : nativeStrings,
 });

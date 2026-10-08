@@ -51,6 +51,14 @@ pub mod cpu {
     /// (milliseconds): translated loops call `preempt` once the tick reaches
     /// it, so a thread that spins without system calls still lets others run.
     pub const PREEMPT_AT: u32 = 368;
+    /// Non-zero while some page with translated code may be written (the
+    /// runtime sets it in every thread's state): stores then go through the
+    /// store map, which notices writes to code. Zero when no such page is
+    /// writable, as for programs whose code is in read-only image sections:
+    /// stores then only need the guest-limit check, which they can share
+    /// with nearby accesses. Runtimes that do not track page protections
+    /// leave it set.
+    pub const CODE_WRITABLE: u32 = 372;
     /// Scratch space for the host and kernel.
     pub const SCRATCH: u32 = 384;
     pub const SIZE: u32 = 512;
@@ -215,12 +223,16 @@ pub mod store_map {
 /// of reading the `lookup_l1`, `zero_l2` and `store_map` imports; the
 /// runtime checks that its layout matches before loading such a module.
 pub mod native_layout {
+    /// Nothing in the first 64 KB above the guest limit: a store within
+    /// `CHECK_WINDOW` (codegen) of a checked address can land there without
+    /// harming the runtime, so stores share checks the way loads do.
+    pub const GUARD: u32 = 0x1_0000;
     /// First level of the address lookup: one u32 per 4 KB page.
-    pub const LOOKUP_L1: u32 = 0;
+    pub const LOOKUP_L1: u32 = GUARD;
     /// The empty second level.
-    pub const ZERO_L2: u32 = 0x40_0000;
+    pub const ZERO_L2: u32 = GUARD + 0x40_0000;
     /// The store map: one byte per 4 KB page.
-    pub const STORE_MAP: u32 = 0x40_4000;
+    pub const STORE_MAP: u32 = GUARD + 0x40_4000;
 }
 
 /// Names of the module imports every translated module expects.
@@ -258,8 +270,11 @@ pub const FUNCS_SECTION: &str = "wwt.funcs";
 pub const FUNCS64_SECTION: &str = "wwt.funcs64";
 /// Custom section with JSON metadata about the translation.
 pub const META_SECTION: &str = "wwt.meta";
+/// Custom section with, per translated function in table order, the
+/// emulation code generation left in it (`codegen::Residue`), as JSON.
+pub const RESIDUE_SECTION: &str = "wwt.residue";
 /// Bumped whenever generated code changes incompatibly, to invalidate caches.
-pub const ABI_VERSION: u32 = 7;
+pub const ABI_VERSION: u32 = 8;
 /// Every translated module exports its lazy-flags evaluator under this
 /// name: `(fk, fr, fa, fb, fc) -> eflags` (the arithmetic flags).
 pub const EFLAGS_EXPORT: &str = "eflags";
@@ -308,7 +323,9 @@ pub fn abi_json() -> String {
         ("MXCSR", MXCSR),
         ("FAULT_CODE", FAULT_CODE),
         ("FAULT_ADDR", FAULT_ADDR),
+        ("RESUME", RESUME),
         ("PREEMPT_AT", PREEMPT_AT),
+        ("CODE_WRITABLE", CODE_WRITABLE),
         ("SCRATCH", SCRATCH),
         ("SIZE", SIZE),
     ]

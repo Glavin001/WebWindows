@@ -1,0 +1,86 @@
+--- barebones/core_portme.c
++++ win32/core_portme.c
+@@ -17,6 +17,7 @@
+ */
+ #include "coremark.h"
+ #include "core_portme.h"
++#define CLOCKS_PER_SEC 1000
+ 
+ #if VALIDATION_RUN
+ volatile ee_s32 seed1_volatile = 0x3415;
+@@ -41,11 +42,11 @@
+    cpu clock cycles performance counter etc. Sample implementation for standard
+    time.h and windows.h definitions included.
+ */
++__declspec(dllimport) unsigned long __stdcall GetTickCount(void);
+ CORETIMETYPE
+ barebones_clock()
+ {
+-#error \
+-    "You must implement a method to measure time in barebones_clock()! This function should return current time.\n"
++    return GetTickCount();
+ }
+ /* Define : TIMER_RES_DIVIDER
+         Divider to trade off timer resolution and total time that can be
+@@ -129,8 +130,7 @@
+ void
+ portable_init(core_portable *p, int *argc, char *argv[])
+ {
+-#error \
+-    "Call board initialization routines in portable init (if needed), in particular initialize UART!\n"
++/* Nothing to initialize: output goes through WriteFile. */
+ 
+     (void)argc; // prevent unused warning
+     (void)argv; // prevent unused warning
+--- barebones/core_portme.h
++++ win32/core_portme.h
+@@ -91,7 +91,7 @@
+ typedef unsigned char  ee_u8;
+ typedef unsigned int   ee_u32;
+ typedef ee_u32         ee_ptr_int;
+-typedef size_t         ee_size_t;
++typedef unsigned int   ee_size_t;
+ #define NULL ((void *)0)
+ /* align_mem :
+         This macro is used to align an offset to point to a 32b value. It is
+--- barebones/ee_printf.c
++++ win32/ee_printf.c
+@@ -16,6 +16,8 @@
+ 
+ #include <coremark.h>
+ #include <stdarg.h>
++__declspec(dllimport) void *__stdcall GetStdHandle(unsigned long);
++__declspec(dllimport) int __stdcall WriteFile(void *, const void *, unsigned long, unsigned long *, void *);
+ 
+ #define ZEROPAD   (1 << 0) /* Pad with zero */
+ #define SIGN      (1 << 1) /* Unsigned/signed long */
+@@ -662,20 +664,15 @@
+ void
+ uart_send_char(char c)
+ {
+-#error "You must implement the method uart_send_char to use this file!\n";
+-    /*	Output of a char to a UART usually follows the following model:
+-            Wait until UART is ready
+-            Write char to UART
+-            Wait until UART is done
+-
+-            Or in code:
+-            while (*UART_CONTROL_ADDRESS != UART_READY);
+-            *UART_DATA_ADDRESS = c;
+-            while (*UART_CONTROL_ADDRESS != UART_READY);
+-
+-            Check the UART sample code on your platform or the board
+-       documentation.
+-    */
++    /* Line-buffered output through WriteFile on the standard output. */
++    static char line[256];
++    static int n;
++    line[n++] = c;
++    if (c == '\n' || n == sizeof line) {
++        unsigned long w;
++        WriteFile(GetStdHandle((unsigned long)-11), line, n, &w, 0);
++        n = 0;
++    }
+ }
+ 
+ int
