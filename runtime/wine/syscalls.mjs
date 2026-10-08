@@ -7,6 +7,7 @@
 // host's layout (`this.L`), and pointer-sized fields (pointers, handles,
 // SIZE_T) are read and written with `this.ptr` and `this.wptr`.
 
+import { afdOpen, afdIoctl, afdClose } from './afd.mjs';
 import { ProcessExit, GuestFault, hex } from '../runtime.mjs';
 import { parsePe, GL_UNIXLIB, WS2_32_UNIXLIB } from './host.mjs';
 import { WIN32U_UNIXLIB } from './unix.mjs';
@@ -352,6 +353,7 @@ export const SYSCALLS = {
     const obj = this.handles.get(h);
     this.handles.delete(h);
     if (obj?.type === 'file') closeFile(this, obj);
+    if (obj?.type === 'socket' && ![...this.handles.values()].includes(obj)) afdClose(this, obj);
     return STATUS.SUCCESS;
   },
   NtDuplicateObject(a) {
@@ -811,6 +813,8 @@ export const SYSCALLS = {
   },
   NtDeviceIoControlFile(a) {
     const code = a(5);
+    const obj = this.object(a(0));
+    if (obj?.type === 'socket') return afdIoctl(this, obj, a, iosb);
     this.log(`NtDeviceIoControlFile ${hex(code)} on ${hex(a(0))}`);
     return STATUS.NOT_SUPPORTED;
   },
@@ -1016,6 +1020,12 @@ function mapReadOnlyFile(h, path) {
 }
 
 function openFile(h, ph, oa, piosb, disposition, options = 0) {
+  // A socket (./afd.mjs).
+  if (/^\\Device\\Afd/i.test(oaName(h, oa))) {
+    h.wptr(ph, h.newHandle(afdOpen()));
+    iosb(h, piosb, 0, 0);
+    return STATUS.SUCCESS;
+  }
   const path = oaPath(h, oa);
   if (!path) return STATUS.OBJECT_NAME_INVALID;
   const raw = oaName(h, oa);

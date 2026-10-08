@@ -5,3 +5,13 @@ gethostname into a 1-byte buffer fails: 1
 the machine's name resolves: 1
 localhost resolves: 1
 localhost is 127.0.0.1: 1
+UDP sockets: 1
+bind to a port the system picks: 0
+getsockname gives the port: 1
+SO_BROADCAST: 0
+sendto over loopback: 8
+select sees it: 1
+recvfrom: 8 'datagram' from loopback: 1
+FIONBIO: 0
+non-blocking recv with nothing queued: -1, WSAEWOULDBLOCK: 1
+into a buffer too small: -1, WSAEMSGSIZE: 1
