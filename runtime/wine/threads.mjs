@@ -359,7 +359,11 @@ export class Scheduler {
     if (!due) return false;
     if (this.threads.some((o) => o !== t && this.runnable(o))) return true;
     this.poll();
-    return this.threads.some((o) => o !== t && this.runnable(o));
+    if (this.threads.some((o) => o !== t && this.runnable(o))) return true;
+    // Nothing else can run: a new slice for this thread, or every system
+    // call from here on would poll.
+    t.sliceStart = now;
+    return false;
   }
 
   /** Lets others run: the current thread continues at `ret` later. */
