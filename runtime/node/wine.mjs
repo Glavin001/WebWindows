@@ -7,7 +7,8 @@
 //   --screenshot F    save it as a PNG when the program goes idle or exits
 //   --folder          the program's directory as C:\app (games with data files)
 //   --audio-out F     save what the program played as a WAV file (48 kHz stereo)
-//   --run-for MS      ... or after this long
+//   --run-for MS      ... or after this long (running: translating with an
+//                     empty cache does not count)
 //   --input SCRIPT    scripted input, timed from the first frame:
 //                     "500:click 20,80; 900:text Hi; 1200:key Enter"
 //                     (click/rclick/move X,Y; key CODE as in KeyboardEvent.code,
@@ -92,6 +93,9 @@ let x64 = false;
 let mem64 = false;
 let mem32 = !hasMemory64();
 
+/** Time spent translating images, which --run-for does not count. */
+let translateMs = 0;
+
 /** Translates an image with the CLI, caching by content hash. */
 function translate(path, bytes) {
   mkdirSync(cacheDir, { recursive: true });
@@ -117,9 +121,11 @@ function translate(path, bytes) {
     // rename, so a reader never sees a partial file.
     const tmp = join(cacheDir, `${hash}.${process.pid}`);
     writeFileSync(`${tmp}.bin`, bytes);
+    const t0 = performance.now();
     execFileSync(wwt(), ['translate', `${tmp}.bin`, '-o', `${tmp}.wasm`, ...extra], {
       stdio: ['ignore', 'ignore', 'inherit'],
     });
+    translateMs += performance.now() - t0;
     renameSync(`${tmp}.wasm`, out);
     rmSync(`${tmp}.bin`);
   }
@@ -310,9 +316,11 @@ const display = new Display({
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 // Blocks the thread; a wait nothing can end means the program is idle.
 const started = performance.now();
+// How long the program has run, translation (an empty cache) not counted.
+const ranFor = () => performance.now() - started - translateMs;
 const wait = (ms) => {
   if (display.hasInput()) return 1;
-  if (screenshot && performance.now() - started > runFor) throw new ProgramIdle();
+  if (screenshot && ranFor() > runFor) throw new ProgramIdle();
   // Scripted input still to come wakes the program when it is due.
   const due = script.length && firstFrame !== null ? Math.max(0, firstFrame + script[0].at - performance.now()) : -1;
   if (due >= 0 && (ms < 0 || due < ms)) {
@@ -411,7 +419,7 @@ const host = new WineHost(machine, {
 host.boot(`${sys32}\\ntdll.dll`, exeDos);
 // A program that never waits (a game's busy frame loop) still stops on time.
 if (screenshot) host.threads.onSlice = () => {
-  if (performance.now() - started > runFor) throw new ProgramIdle();
+  if (ranFor() > runFor) throw new ProgramIdle();
 };
 await host.startClock();
 const r = host.run();
