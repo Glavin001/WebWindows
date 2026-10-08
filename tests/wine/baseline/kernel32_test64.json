@@ -138,7 +138,7 @@
   "version": {
     "status": "done",
     "tests": 143,
-    "failures": 19
+    "failures": 37
   },
   "virtual": {
     "status": "timeout",
