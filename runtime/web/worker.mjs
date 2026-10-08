@@ -150,6 +150,10 @@ async function runOnWine({ exeName, exePath, exe, folder, times = {}, argv, ft, 
     // (Far Cry's CrySystem.dll imports WININET).
     for (const [name, bytes] of local) if (name.endsWith('.dll') && !seen.has(name)) visit(bytes);
     if (wantsD3D) wanted.add('media');
+    // Rich edit is loaded by name (LoadLibrary("RICHED32.DLL")): wanted
+    // when the program or a DLL of its folder names it, in ANSI or UTF-16.
+    const names = (b) => /riched/i.test(new TextDecoder('latin1').decode(b instanceof Uint8Array ? b : new Uint8Array(b)).replace(/\0/g, ''));
+    if (names(exe) || [...local].some(([n, b]) => (n.endsWith('.dll') || n.endsWith('.exe')) && names(b))) wanted.add('richedit');
   }
   await Promise.all([
     ...Object.entries(manifest.dlls).filter(([, f]) => !f.group || wanted.has(f.group)).map(async ([name, f]) => {

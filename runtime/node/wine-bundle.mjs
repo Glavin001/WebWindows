@@ -67,6 +67,9 @@ const MEDIA_DLLS = [
 // Networking and cryptography (PuTTY, curl): likewise fetched only for
 // programs that import one of them.
 const NET_DLLS = ['ws2_32', 'crypt32', 'dnsapi', 'nsi', 'iphlpapi', 'secur32', 'bcrypt', 'normaliz', 'wldap32', 'wininet', 'mpr'];
+// Rich edit controls: loaded by name (Unreal's Window.dll loads RICHED32.DLL
+// for its RICHEDIT class), so fetched for programs whose files name them.
+const RICHEDIT_DLLS = ['riched20', 'riched32'];
 // Translator flags per DLL. The Direct3D DLLs never write code, so their
 // stores skip the self-modifying-code check (the C runtime's memcpy, which
 // could copy code for a program, keeps it); the same list is in wine.mjs.
@@ -112,7 +115,7 @@ const manifest = { wine: '11.0', arch: x64 ? 'x64' : 'x86', mem64, dlls: {}, nls
 const fileName = (d) => (d.includes('.') ? d : `${d}.dll`);
 const dllPath = (d) => join(wineBuild, 'dlls', d, peDir, fileName(d));
 let nextBase = PRELINK_BASE;
-for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS, ...NET_DLLS] : [])]) {
+for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS, ...NET_DLLS, ...RICHEDIT_DLLS] : [])]) {
   const pe = dllPath(d);
   const name = fileName(d);
   if (!existsSync(pe)) {
@@ -131,7 +134,7 @@ for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS, ...NET_DLL
     }
   }
   writeFileSync(join(out, name), bytes);
-  const group = MEDIA_DLLS.includes(d) ? 'media' : NET_DLLS.includes(d) ? 'network' : null;
+  const group = MEDIA_DLLS.includes(d) ? 'media' : NET_DLLS.includes(d) ? 'network' : RICHEDIT_DLLS.includes(d) ? 'richedit' : null;
   // The browser runs Wine with a 2 GB guest on a 32-bit memory
   // (runtime/web/worker.mjs), a constant in the memory checks; a 64-bit
   // memory reads its limit at run time. The native heap and string
