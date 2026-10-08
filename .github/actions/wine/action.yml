@@ -16,23 +16,28 @@ inputs:
 outputs:
   key:
     description: The build tree's cache key (its inputs' hash).
-    value: ${{ steps.hash.outputs.key }}
+    value: ${{ steps.key.outputs.key }}
 
 runs:
   using: composite
   steps:
+    - name: What to build
+      shell: bash
+      run: |
+        echo "WINE_TARGETS=ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts hid version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d d3d9 dinput dinput8 setupapi apisetschema ws2_32 crypt32 dnsapi nsi iphlpapi secur32 bcrypt normaliz wldap32 kernel32/tests user32/tests gdi32/tests" >> "$GITHUB_ENV"
     - name: Install Wine's build tools and MinGW
       shell: bash
       run: |
-        sudo apt-get update
         if [ "${{ inputs.arch }}" = x86_64 ]; then
-          sudo apt-get install -y gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 flex bison libfreetype-dev
+          tools/ci/apt-install.sh gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 flex bison libfreetype-dev
         else
-          sudo apt-get install -y gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 flex bison libfreetype-dev
+          tools/ci/apt-install.sh gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 flex bison libfreetype-dev
         fi
     # Next to the checkout (cache paths cannot contain '..'), at the same
     # absolute path in every job: Wine's Makefiles record it. The source
-    # tree is shared; each architecture has its own build tree.
+    # tree is shared; each architecture has its own build tree. The key is
+    # what goes into the tree: the build script, the sources it copies in
+    # and the targets.
     - name: Locate the build tree
       id: key
       shell: bash
@@ -41,47 +46,41 @@ runs:
         if [ "${{ inputs.arch }}" = x86_64 ]; then
           echo "WINE_BUILD64=${{ runner.workspace }}/wine-build64" >> "$GITHUB_ENV"
           echo "tree=${{ runner.workspace }}/wine-build64" >> "$GITHUB_OUTPUT"
-          echo "prefix=wine64-" >> "$GITHUB_OUTPUT"
+          prefix=wine64-
         else
           echo "WINE_BUILD=${{ runner.workspace }}/wine-build" >> "$GITHUB_ENV"
           echo "tree=${{ runner.workspace }}/wine-build" >> "$GITHUB_OUTPUT"
-          echo "prefix=wine-" >> "$GITHUB_OUTPUT"
+          prefix=wine-
         fi
-    - name: Cache key
-      id: hash
-      shell: bash
-      run: echo "key=${{ steps.key.outputs.prefix }}${{ hashFiles('.github/actions/wine/action.yml', 'tools/wine/**', 'native/audio/**', 'native/wined3d-wgpu/**', 'crates/d3dgpu-proto/include/**') }}" >> "$GITHUB_OUTPUT"
+        echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+        targets=$(printf %s "$WINE_TARGETS" | sha256sum | cut -c1-8)
+        echo "key=$prefix${{ hashFiles('tools/wine/**', 'native/audio/**', 'native/wined3d-wgpu/**', 'crates/d3dgpu-proto/include/**') }}-$targets" >> "$GITHUB_OUTPUT"
     # An older tree is fine: tools/wine/build.sh is incremental (it swaps a
-    # changed wined3d patch and copies only changed sources).
+    # changed wined3d patch and copies only changed sources). A download
+    # that stalls (SEGMENT_DOWNLOAD_TIMEOUT_MINS, set by the workflow) leaves
+    # it to build the tree, about three minutes from scratch.
     - uses: actions/cache/restore@v4
       id: restore
       with:
         path: |
           ${{ runner.workspace }}/wine-src
           ${{ steps.key.outputs.tree }}
-        key: ${{ steps.hash.outputs.key }}
+        key: ${{ steps.key.outputs.key }}
         restore-keys: ${{ steps.key.outputs.prefix }}
     - name: Build Wine's ${{ inputs.arch }} PE DLLs, programs and conformance tests
       shell: bash
       run: |
-        dlls="ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost \
-          user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 \
-          rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts \
-          hid version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d d3d9 dinput dinput8 setupapi \
-          apisetschema ws2_32 crypt32 dnsapi nsi iphlpapi secur32 bcrypt normaliz wldap32 \
-          kernel32/tests user32/tests gdi32/tests"
+        echo "::group::Wine's build (cache: ${{ steps.restore.outputs.cache-matched-key || 'none' }})"
+        trap 'echo ::endgroup::' EXIT
         if [ "${{ inputs.arch }}" = x86_64 ]; then
-          ARCH=x86_64 WINE_BUILD=$WINE_BUILD64 sh tools/wine/build.sh $dlls > "$RUNNER_TEMP/wine-build.log" 2>&1 \
-            || { tail -n 200 "$RUNNER_TEMP/wine-build.log"; exit 1; }
+          ARCH=x86_64 WINE_BUILD=$WINE_BUILD64 sh tools/wine/build.sh $WINE_TARGETS
         else
-          sh tools/wine/build.sh $dlls > "$RUNNER_TEMP/wine-build.log" 2>&1 \
-            || { tail -n 200 "$RUNNER_TEMP/wine-build.log"; exit 1; }
+          sh tools/wine/build.sh $WINE_TARGETS
         fi
-        tail -n 5 "$RUNNER_TEMP/wine-build.log"
     - uses: actions/cache/save@v4
       if: inputs.save == 'true' && steps.restore.outputs.cache-hit != 'true'
       with:
         path: |
           ${{ runner.workspace }}/wine-src
           ${{ steps.key.outputs.tree }}
-        key: ${{ steps.hash.outputs.key }}
+        key: ${{ steps.key.outputs.key }}
