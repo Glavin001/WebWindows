@@ -64,6 +64,19 @@ for d in $DLLS; do
     ls -la dlls/winepulse.drv/i386-windows/winepulse.drv
     continue
   fi
+  if [ "$d" = opengl32 ]; then
+    # OpenGL 1.1 over Direct3D 9 (native/opengl32), in place of Wine's
+    # opengl32, which needs a host OpenGL driver. The functions it does not
+    # implement are generated stubs, from MinGW's GL/gl.h.
+    mkdir -p dlls/opengl32/i386-windows
+    gl_h=$(echo '#include <GL/gl.h>' | i686-w64-mingw32-gcc -E -H -x c - 2>&1 >/dev/null | grep -m1 'GL/gl.h$' | sed 's/^\.* //')
+    node "$repo/native/opengl32/gen-stubs.mjs" "$gl_h" "$repo/native/opengl32/opengl32.c" > dlls/opengl32/stubs.c
+    i686-w64-mingw32-gcc -O2 -Wall -shared -nostartfiles -Wl,-e,_DllMain@12 -Wl,--kill-at \
+      -I"$repo/native/opengl32" -o dlls/opengl32/i386-windows/opengl32.dll \
+      "$repo/native/opengl32/opengl32.c" dlls/opengl32/stubs.c -ld3d9 -luser32 -lgdi32 -lkernel32 -lmsvcrt
+    ls -la dlls/opengl32/i386-windows/opengl32.dll
+    continue
+  fi
   if [ "$d" = fonts ]; then
     # sfnt2fon converts the TrueType sources; Wine was configured without
     # FreeType (the browser build brings its own), so build it here.

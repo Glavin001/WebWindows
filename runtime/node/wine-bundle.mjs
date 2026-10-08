@@ -37,12 +37,13 @@ const GUI_DLLS = [
 // Sound, DirectDraw, Direct3D, DirectInput and Winsock (games): fetched
 // only for programs that use one of them (wined3d alone is megabytes), see
 // runtime/web/worker.mjs. wined3d draws Direct3D with its WebGPU backend
-// and needs no opengl32; d3dcompiler_47 compiles HLSL for programs that do
-// it at run time. Winsock has no network behind it (single-player games
+// and needs no opengl32; opengl32 is native/opengl32 (OpenGL 1.1 over
+// Direct3D 9); d3dcompiler_47 compiles HLSL for programs that do it at run
+// time. Winsock has no network behind it (single-player games
 // talk to their own server in memory).
 const MEDIA_DLLS = [
   'version', 'winmm', 'msacm32', 'dsound', 'mmdevapi', 'winepulse.drv', 'ddraw', 'wined3d', 'd3d9',
-  'd3dcompiler_47', 'dinput', 'dinput8', 'hid', 'setupapi',
+  'd3dcompiler_47', 'opengl32', 'dinput', 'dinput8', 'hid', 'setupapi',
   'ws2_32', 'wsock32', 'iphlpapi', 'dnsapi', 'nsi',
 ];
 // Translator flags per DLL. The Direct3D DLLs never write code, so their

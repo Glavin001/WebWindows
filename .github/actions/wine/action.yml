@@ -20,7 +20,7 @@ runs:
     - name: What to build
       shell: bash
       run: |
-        echo "WINE_TARGETS=ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts hid version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d d3d9 d3dcompiler_47 dinput dinput8 setupapi ws2_32 wsock32 iphlpapi dnsapi nsi kernel32/tests user32/tests gdi32/tests" >> "$GITHUB_ENV"
+        echo "WINE_TARGETS=ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts hid version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d d3d9 d3dcompiler_47 opengl32 dinput dinput8 setupapi ws2_32 wsock32 iphlpapi dnsapi nsi kernel32/tests user32/tests gdi32/tests" >> "$GITHUB_ENV"
     - name: Install Wine's build tools and MinGW
       shell: bash
       run: |
@@ -36,7 +36,7 @@ runs:
         echo "WINE_SRC=${{ runner.workspace }}/wine-src/wine-11.0" >> "$GITHUB_ENV"
         echo "WINE_BUILD=${{ runner.workspace }}/wine-build" >> "$GITHUB_ENV"
         targets=$(printf %s "$WINE_TARGETS" | sha256sum | cut -c1-8)
-        echo "key=wine-${{ hashFiles('tools/wine/**', 'native/audio/**', 'native/wined3d-wgpu/**', 'crates/d3dgpu-proto/include/**') }}-$targets" >> "$GITHUB_OUTPUT"
+        echo "key=wine-${{ hashFiles('tools/wine/**', 'native/audio/**', 'native/opengl32/**', 'native/wined3d-wgpu/**', 'crates/d3dgpu-proto/include/**') }}-$targets" >> "$GITHUB_OUTPUT"
     # An older tree is fine: tools/wine/build.sh is incremental (it swaps a
     # changed wined3d patch and copies only changed sources). A download
     # that stalls (SEGMENT_DOWNLOAD_TIMEOUT_MINS, set by the workflow) leaves
