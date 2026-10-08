@@ -443,6 +443,7 @@ export class Machine {
       tick: this.wide(this.tickAddr),
     };
     if (this.code64) env.code_pages = BigInt(this.codePages);
+    const traps = this.abi.traps_section && sections(this.abi.traps_section)[0];
     const finish = (instance) => {
       for (let i = 0; i < addrs.length; i++) {
         if (opts.keepExisting && this.lookup(addrs[i])) continue;
@@ -450,12 +451,62 @@ export class Machine {
       }
       this.funcCount += addrs.length;
       const rec = { name, base, count: addrs.length, meta, instance, addrs };
+      if (traps) this.addTraps(rec, traps);
       this.modules.push(rec);
       this.log(`loaded ${name}: ${addrs.length} functions at table ${base}`);
       return rec;
     };
     const r = instantiate(module, { env });
     return r instanceof Promise ? r.then((x) => finish(x.instance ?? x)) : finish(r);
+  }
+
+  // ---- Fast mode: bounds traps as faults ---------------------------------------
+
+  /**
+   * Records a module's trapping accesses (`wwt.traps`, see
+   * `CodegenConfig::mem_traps`): their offsets in the module, keyed by the
+   * module's function entries, which name its functions in stack traces.
+   */
+  addTraps(rec, section) {
+    const d = new Uint32Array(section.slice(0, section.byteLength & ~3));
+    rec.traps = new Map();
+    for (let i = 0, e = 1; i < d[0]; i++, e += 4) rec.traps.set(d[e], { eip: d[e + 1], flags: d[e + 2], disp: d[e + 3] });
+    this.trapModules ??= new Map();
+    for (const a of rec.addrs) this.trapModules.set(Number(a), rec);
+  }
+
+  /**
+   * The trapping access an engine trap stopped at, from the innermost
+   * WebAssembly frame of its stack trace (V8's and SpiderMonkey's formats),
+   * or null when the trap was elsewhere.
+   */
+  trapSite(e) {
+    if (!this.trapModules || !(e instanceof WebAssembly.RuntimeError)) return null;
+    const line = String(e.stack ?? '').split('\n').find((l) => l.includes('wasm-function['));
+    const at = line && /wasm-function\[\d+\]:0x([0-9a-f]+)/.exec(line);
+    if (!at) return null;
+    // V8: "at NAME (URL:wasm-function[i]:0xOFF)"; SpiderMonkey: "NAME@URL...".
+    const name = (/^\s*at (\S+) \(/.exec(line) ?? /^(.*?)@[a-z-]+:/.exec(line))?.[1] ?? '';
+    const entry = /(?:@|^x86_)([0-9a-f]+)$/.exec(name);
+    const rec = entry && this.trapModules.get(parseInt(entry[1], 16));
+    return rec?.traps.get(parseInt(at[1], 16)) ?? null;
+  }
+
+  /**
+   * The address a trapping access accessed, from its x86 memory operand and
+   * the registers as last written back (0 when the operand is not known).
+   */
+  trapAddress(cpu, t) {
+    const T = this.abi.trap;
+    if (!(t.flags & T.OPERAND)) return 0;
+    const reg = (shift) => {
+      const r = (t.flags >>> shift) & 15;
+      return r ? this.reg(cpu, r - 1) : 0;
+    };
+    const scale = (t.flags >>> T.SCALE_SHIFT) & 3;
+    const seg = (t.flags >>> T.SEG_SHIFT) & 3;
+    const segBase = seg ? this.r32(cpu + (seg === 1 ? this.abi.cpu.FS_BASE : this.abi.cpu.GS_BASE)) : 0;
+    return (reg(T.BASE_SHIFT) + reg(T.INDEX_SHIFT) * (1 << scale) + t.disp + segBase) >>> 0;
   }
 
   /** Registered function entries in [lo, hi). */
@@ -529,9 +580,9 @@ export class Machine {
    * dispatch) returns the address to continue at; otherwise the fault stops
    * the program.
    */
-  fault(cpu, code, eip, info) {
+  fault(cpu, code, eip, info, trap = false) {
     if (this.onFault) {
-      const next = this.onFault(cpu, code >>> 0, eip, info);
+      const next = this.onFault(cpu, code >>> 0, eip, info, trap);
       if (next !== undefined) return next;
     }
     const names = Object.entries(this.abi.fault).find(([, v]) => v === code >>> 0);
@@ -580,9 +631,25 @@ export class Machine {
     return this.code64 ? this.abi.yield_address64 : this.abi.yield_address >>> 0;
   }
 
-  /** Runs guest code at `eip` until it returns to the stop address. */
+  /**
+   * Runs guest code at `eip` until it returns to the stop address. A bounds
+   * trap at a trapping access (fast mode) is an access violation at its
+   * instruction: the registers are as last written back, and the address
+   * accessed is not known (reported as 0).
+   */
   run(cpu, eip) {
-    return this.addr(this.kernel.run(this.wide(cpu), this.code(eip)));
+    for (;;) {
+      try {
+        return this.addr(this.kernel.run(this.wide(cpu), this.code(eip)));
+      } catch (e) {
+        const t = this.trapSite(e);
+        if (!t) throw e;
+        const F = this.abi.fault;
+        this.resumeAt(cpu, t.eip);
+        const write = t.flags & this.abi.trap.WRITE;
+        eip = this.fault(cpu, write ? F.ACCESS_VIOLATION_WRITE : F.ACCESS_VIOLATION, t.eip, this.trapAddress(cpu, t), true);
+      }
+    }
   }
 
   /**

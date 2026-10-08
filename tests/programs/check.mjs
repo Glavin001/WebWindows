@@ -16,6 +16,8 @@
 //   node tests/programs/check.mjs --mem64         # 32-bit programs, 64-bit memory
 //   node tests/programs/check.mjs --shard 2/3 ... # every third run, from the second
 //                                                 # (CI splits the torture tests)
+//   node tests/programs/check.mjs --mem-traps     # bounds traps instead of memory
+//                                                 # checks (wwt translate --mem-traps)
 //
 // With --arch x64 the .exe is built with x86_64-w64-mingw32-gcc and the
 // reference with the native x86-64 gcc. Linux is LP64 and Windows LLP64, so
@@ -48,6 +50,7 @@ let jobs = 4;
 let wine = false;
 let arch = 'x86';
 let mem64 = null;
+let memTraps = false;
 let torture = null;
 let filter = null;
 let shard = [1, 1];
@@ -62,6 +65,7 @@ while (args.length) {
   else if (a === '--arch') arch = args.shift();
   else if (a === '--mem64') mem64 = true;
   else if (a === '--mem32') mem64 = false;
+  else if (a === '--mem-traps') memTraps = true;
   else if (a === '--torture') torture = resolve(args.shift());
   else if (a === '--filter') filter = new RegExp(args.shift());
   else if (a === '--shard') shard = args.shift().split('/').map(Number);
@@ -179,14 +183,15 @@ async function runOne(p, opt) {
   // run.mjs's guest limit (defaultGuestLimitMB), a constant in the checks
   // with a 32-bit memory.
   const guestLimitMB = arch === 'x64' ? 3072 : 1024;
-  const tr = await sh(wwt, ['translate', b.exe, '-o', wasm, ...(mem64 ? ['--mem64'] : ['--guest-limit-mb', String(guestLimitMB)])]);
+  const traps = memTraps ? ['--mem-traps'] : [];
+  const tr = await sh(wwt, ['translate', b.exe, '-o', wasm, ...(mem64 ? ['--mem64'] : ['--guest-limit-mb', String(guestLimitMB)]), ...traps]);
   if (tr.status !== 0) return { status: 'fail', detail: 'translate: ' + tr.stderr.slice(-800) };
   const t0 = performance.now();
   // With --wine the program runs on translated Wine DLLs (Milestone 2)
   // instead of the JavaScript Win32 shims.
   const runner = wine
-    ? [join(root, 'runtime/node/wine.mjs'), ...(arch === 'x64' && !mem64 ? ['--mem32'] : []), b.exe]
-    : [join(root, 'runtime/node/run.mjs'), '--wasm', wasm, mem64 ? '--mem64' : '--mem32', b.exe];
+    ? [join(root, 'runtime/node/wine.mjs'), ...(arch === 'x64' && !mem64 ? ['--mem32'] : []), ...traps, b.exe]
+    : [join(root, 'runtime/node/run.mjs'), '--wasm', wasm, mem64 ? '--mem64' : '--mem32', ...traps, b.exe];
   // Earlier Node 22 releases have 64-bit memory behind a flag (Node 24
   // rejects the flag).
   const nodeFlags = mem64 && process.version.startsWith('v22.') ? ['--experimental-wasm-memory64'] : [];

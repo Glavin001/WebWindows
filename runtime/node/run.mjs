@@ -77,7 +77,7 @@ export async function runExe(exePath, argv, opts = {}) {
   if (!wasmPath) {
     const dir = mkdtempSync(join(tmpdir(), 'wwt-'));
     wasmPath = join(dir, basename(exePath) + '.wasm');
-    const extra = opts.translateArgs ?? [];
+    const extra = [...(opts.translateArgs ?? []), ...(opts.memTraps ? ['--mem-traps'] : [])];
     // A guest limit known at translation time (a constant in the checks)
     // with a 32-bit memory; a 64-bit one reads it at run time.
     const limitMB = opts.guestLimitMB ?? defaultGuestLimitMB(arch, mem64);
@@ -105,7 +105,7 @@ export async function runExe(exePath, argv, opts = {}) {
     const tw = findTranslatorWasm();
     if (tw) {
       const ft = await FastTranslator.load(readFileSync(tw));
-      enableFastMode(machine, ft, { log: opts.verbose ? (s) => stderr(s + '\n') : undefined });
+      enableFastMode(machine, ft, { log: opts.verbose ? (s) => stderr(s + '\n') : undefined, memTraps: opts.memTraps });
     }
   }
   const mod = await machine.loadModule(readFileSync(wasmPath), basename(wasmPath));
@@ -148,6 +148,7 @@ async function main() {
     else if (a === '--guest-limit') opts.guestLimitMB = Number(args.shift());
     else if (a === '--mem64') opts.mem64 = true;
     else if (a === '--mem32') opts.mem64 = false;
+    else if (a === '--mem-traps') opts.memTraps = true;
     else throw new Error(`unknown option ${a}`);
   }
   const exe = args.shift();
