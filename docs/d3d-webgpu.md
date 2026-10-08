@@ -423,6 +423,17 @@ game ─► d3d9.dll ─► wined3d.dll (adapter_wgpu) ─► d3dgpu batches in 
 
 ![d3d9tri on translated Wine in headless Chromium](d3d9tri-browser.png)
 
+More of what the tests and runs show (`docs/qa/`):
+
+| | |
+| --- | --- |
+| ![d3d9bench, 2000 cubes and 2000 particles with 8 materials, through GPU present](qa/d3d9bench-2000.png) | ![d3d9bench at 250 fps on an iPhone in Safari](qa/iphone-d3d9bench.jpg) |
+| d3d9bench: 2000 cubes, 2000 particles, 8 materials, through GPU present (headless Chromium, the frame read back by `window.d3dSnapshot()`) | d3d9bench at 250 fps on an iPhone (Safari, WebGPU) |
+
+![The nine animated demos rendered by the core on lavapipe](qa/demos.png)
+
+The nine animated demos as `cargo test -p d3dgpu-core --test demos` renders them natively (lavapipe).
+
 Testing: `tests/programs/gui/d3d9tri.c` (a clear, a shader triangle with
 constants, a fixed-function quad) runs in headless Chromium in
 `node tests/web/gui.mjs`. In Node, which has no WebGPU, `node
