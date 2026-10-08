@@ -26,6 +26,11 @@ const STATUS_TIMEOUT = 0x102;
 /** wgpu_open_params.flags: the host shows presented frames over the window. */
 const WGPU_HOST_PRESENT = 0x1;
 
+/** PCI vendor ids for the vendor names WebGPU gives (GPUAdapterInfo.vendor);
+ * wined3d reports a card of that vendor (NVIDIA's for one not listed). */
+const PCI_VENDORS = { nvidia: 0x10de, amd: 0x1002, ati: 0x1002, intel: 0x8086 };
+export const pciVendor = (name) => PCI_VENDORS[String(name ?? '').toLowerCase()] ?? 0;
+
 export class D3DBridge {
   /**
    * @param {SharedArrayBuffer} sab  P.SAB_BYTES, shared with the render worker
@@ -43,6 +48,8 @@ export class D3DBridge {
     this.present = present;
     this.produced = Atomics.load(this.ctrl, P.PRODUCED);
     this.batches = 0;
+    /** The GPU's PCI vendor (pciVendor), 0 when not known. */
+    this.vendorId = 0;
   }
 
   /** A unix call from wined3d.dll (enum wgpu_unix_call). */
@@ -52,7 +59,8 @@ export class D3DBridge {
     const u32 = (p) => dv.getUint32(p, true);
     switch (code) {
       case 0: {
-        // open: struct wgpu_open_params {version, max_batch, shared_size, name[64], flags}
+        // open: struct wgpu_open_params {version, max_batch, shared_size,
+        // name[64], flags, vendor_id, device_id}
         if (u32(args) !== 1) return STATUS_NOT_SUPPORTED;
         dv.setUint32(args + 4, P.SLOT_BYTES, true);
         dv.setUint32(args + 8, P.SHARED_BYTES, true);
@@ -60,6 +68,8 @@ export class D3DBridge {
         u8.fill(0, args + 12, args + 76);
         u8.set(name, args + 12);
         dv.setUint32(args + 76, this.present ? WGPU_HOST_PRESENT : 0, true);
+        dv.setUint32(args + 80, this.vendorId, true);
+        dv.setUint32(args + 84, 0, true);
         return STATUS_SUCCESS;
       }
       case 1: {
@@ -238,5 +248,6 @@ export async function startD3D(workerUrl, log = () => {}, present = {}) {
   log(`d3d: render worker on ${ready.adapter}`);
   const bridge = new D3DBridge(sab, ready.adapter, ready.present ? { worker, onWindow: present.onWindow } : null, present.onWindow);
   bridge.worker = worker;
+  bridge.vendorId = pciVendor(ready.vendor);
   return bridge;
 }

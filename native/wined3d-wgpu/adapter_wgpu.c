@@ -60,6 +60,8 @@ struct wgpu_open_params
     UINT32 shared_size;    /* out: bytes of the readback region */
     char name[64];         /* out: adapter description */
     UINT32 flags;          /* out: WGPU_HOST_* */
+    UINT32 vendor_id;      /* out: the GPU's PCI vendor, 0 when unknown */
+    UINT32 device_id;      /* out: its PCI device, 0 when unknown */
 };
 
 struct wgpu_submit_params
@@ -3122,10 +3124,10 @@ static void wgpu_init_d3d_info(struct wined3d_adapter *adapter, unsigned int win
 
 struct wined3d_adapter *wined3d_adapter_wgpu_create(unsigned int ordinal, unsigned int wined3d_creation_flags)
 {
-    struct wined3d_gpu_description gpu_description =
-    {
-        HW_VENDOR_SOFTWARE, CARD_WINE, "WebGPU (d3dgpu)", DRIVER_WINE, 512,
-    };
+    struct wined3d_gpu_description description = {0};
+    const struct wined3d_gpu_description *gpu_description;
+    enum wined3d_pci_vendor vendor;
+    enum wined3d_pci_device device;
     struct wined3d_adapter *adapter;
     LUID primary_luid, *luid = NULL;
 
@@ -3138,14 +3140,36 @@ struct wined3d_adapter *wined3d_adapter_wgpu_create(unsigned int ordinal, unsign
     }
     wgpu_host.version = D3DGPU_VERSION;
     wgpu_host.flags = 0;
+    wgpu_host.vendor_id = wgpu_host.device_id = 0;
     if (WINE_UNIX_CALL(unix_wgpu_open, &wgpu_host) || !wgpu_host.max_batch)
     {
         TRACE("The host has no WebGPU device.\n");
         return NULL;
     }
     wgpu_host.name[sizeof(wgpu_host.name) - 1] = 0;
-    if (wgpu_host.name[0])
-        gpu_description.description = wgpu_host.name;
+    /* The card programs see, as the GL and Vulkan adapters report it: the
+     * host GPU's when wined3d knows it, else a card of its vendor (NVIDIA
+     * for an unknown one) at this adapter's feature level. Games choose
+     * their rendering paths by vendor; a "software" adapter gets the least
+     * tested one (Far Cry's fog). Browsers tell the vendor but not the
+     * device. */
+    vendor = wgpu_host.vendor_id;
+    device = wgpu_host.device_id;
+    if (!device)
+        device = wined3d_gpu_from_feature_level(&vendor, WINED3D_FEATURE_LEVEL_9_3);
+    if (!(gpu_description = wined3d_get_user_override_gpu_description(vendor, device))
+            && !(gpu_description = wined3d_get_gpu_description(vendor, device)))
+    {
+        description.vendor = vendor;
+        description.device = device;
+        description.description = wgpu_host.name[0] ? wgpu_host.name : "WebGPU (d3dgpu)";
+        description.driver = DRIVER_WINE;
+        description.vidmem = 512;
+        gpu_description = &description;
+    }
+    TRACE("Host GPU %s %04x:%04x, reported as %s %04x:%04x.\n", debugstr_a(wgpu_host.name),
+            wgpu_host.vendor_id, wgpu_host.device_id, debugstr_a(gpu_description->description),
+            gpu_description->vendor, gpu_description->device);
     /* There is no thread for the command stream yet: run it on the
      * application's thread. */
     wined3d_settings.cs_multithreaded = 0;
@@ -3165,7 +3189,7 @@ struct wined3d_adapter *wined3d_adapter_wgpu_create(unsigned int ordinal, unsign
         free(adapter);
         return NULL;
     }
-    if (!wined3d_driver_info_init(&adapter->driver_info, &gpu_description, WINED3D_FEATURE_LEVEL_9_3, 0, 0))
+    if (!wined3d_driver_info_init(&adapter->driver_info, gpu_description, WINED3D_FEATURE_LEVEL_9_3, 0, 0))
     {
         wined3d_adapter_cleanup(adapter);
         free(adapter);
