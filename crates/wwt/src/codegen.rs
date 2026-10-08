@@ -3021,7 +3021,11 @@ fn gen_helper(h: Helper, eflags: u32) -> wasm_encoder::Function {
             // param: previous (i64); local 1: the clock's value.
             locals.push(ValType::I64);
             out.push(W::GlobalGet(G_TICK));
-            out.push(W::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+            out.push(W::I32Load(MemArg {
+                offset: 0,
+                align: 2,
+                memory_index: 0,
+            }));
             out.push(W::I64ExtendI32U);
             out.push(W::I64Const(3_000_000));
             out.push(W::I64Mul);

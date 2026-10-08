@@ -681,9 +681,16 @@ impl Core {
     fn bound_textures(&mut self, bindings: &[sh::TextureBinding]) -> Vec<Bound> {
         let mut out = Vec::new();
         let features = self.features;
+        // Textures this draw renders to.
+        let targets: Vec<u32> = self
+            .current_targets()
+            .map(|t| t.colors.iter().chain([&t.depth]).flatten().map(|c| c.texture.0).collect())
+            .unwrap_or_default();
         for b in bindings {
             let n = b.sampler as usize;
             let want_dim = view_dim(b.dim);
+            let feedback =
+                targets.contains(&self.st.textures[n].0).then(|| self.feedback_copy(self.st.textures[n].0)).flatten();
             let tex = match self.objects.get_mut(&self.st.textures[n].0) {
                 Some(Object::Texture(t)) => Some(t),
                 _ => None,
@@ -701,8 +708,9 @@ impl Core {
                 let aspect = if t.is_depth() { Some(wgpu::TextureAspect::DepthOnly) } else { None };
                 let sample = t.format.sample_type(aspect, Some(features))?;
                 let srgb = self.st.samp[n][SamplerState::SrgbTexture.0 as usize] != 0;
-                let (view, id) = match (&t.srgb_view, srgb) {
-                    (Some((v, id)), true) => (v.clone(), *id),
+                let (view, id) = match (&t.srgb_view, srgb, feedback) {
+                    (_, _, Some(f)) => f,
+                    (Some((v, id)), true, None) => (v.clone(), *id),
                     _ => (t.view.clone(), t.view_id),
                 };
                 Some((view, id, sample))

@@ -35,9 +35,7 @@ use std::sync::Arc;
 
 use d3dgpu_emu::format::{self as fmt, Conversion, FormatOptions};
 use d3dgpu_proto::d3d9::*;
-use d3dgpu_proto::{
-    buffer_usage, Command, Data, Handle, Rect, Stage, TextureDesc, TextureKind, TextureRegion,
-};
+use d3dgpu_proto::{buffer_usage, Command, Data, Handle, Rect, Stage, TextureDesc, TextureKind, TextureRegion};
 
 pub use present::{HeadlessPresenter, PresentContext, Presenter, SurfacePresenter};
 use resources::{Buffer, FastMap, Object, Ring, Texture};
@@ -233,6 +231,14 @@ pub struct Core {
     queue: wgpu::Queue,
     opts: Options,
     objects: FastMap<u32, Object>,
+    /// Depth buffers standing in for larger ones bound with smaller render
+    /// targets, by (depth id, face, level, width, height); their ids count
+    /// down from the top of the range, which wined3d's counter never reaches.
+    depth_stand_ins: HashMap<(u32, u32, u32, u32, u32), u32>,
+    next_stand_in: u32,
+    /// Copies of textures a draw samples while rendering to them, by id:
+    /// (copy, its sample view, the view's id).
+    feedback: HashMap<u32, (wgpu::Texture, wgpu::TextureView, u64)>,
     st: State,
     enc: Option<wgpu::CommandEncoder>,
     pass: Option<wgpu::RenderPass<'static>>,
@@ -283,6 +289,9 @@ impl Core {
             queue,
             opts,
             objects: FastMap::default(),
+            depth_stand_ins: HashMap::new(),
+            next_stand_in: u32::MAX,
+            feedback: HashMap::new(),
             st: State::new(),
             enc: None,
             pass: None,
@@ -439,6 +448,17 @@ impl Core {
             Command::CreateBuffer { id, size, usage } => self.create_buffer(id, size, usage),
             Command::Destroy { id } => {
                 self.objects.remove(&id.0);
+                self.feedback.remove(&id.0);
+                // Depth stand-ins go with the depth buffer they stand in for.
+                let stand_ins = &mut self.depth_stand_ins;
+                let objects = &mut self.objects;
+                stand_ins.retain(|k, v| {
+                    let keep = k.0 != id.0;
+                    if !keep {
+                        objects.remove(v);
+                    }
+                    keep
+                });
                 self.d11.dirty = d3d11::dirty::ALL;
                 self.d11.caches.forget_handles();
             }
@@ -886,18 +906,130 @@ impl Core {
             }
         }
         let ds = self.st.ds;
+        let mut stand_in = None;
         if !ds.texture.is_none() {
             if let Some(Object::Texture(tex)) = self.objects.get(&ds.texture.0) {
                 if tex.is_depth() && ds.level < tex.levels {
-                    t.depth = Some(ds);
-                    size.get_or_insert(tex.level_size(ds.level));
+                    let (dw, dh) = tex.level_size(ds.level);
+                    match size {
+                        // Direct3D 9 renders to a target with a larger
+                        // depth buffer (its top-left part); WebGPU wants
+                        // attachments of one size, so the pass gets a depth
+                        // buffer of the target's size in its place. A
+                        // smaller one is undefined in Direct3D: no depth.
+                        Some((w, h)) if (dw, dh) != (w, h) => {
+                            if dw >= w && dh >= h {
+                                stand_in = Some((tex.desc, w, h));
+                            }
+                        }
+                        _ => {
+                            t.depth = Some(ds);
+                            size.get_or_insert((dw, dh));
+                        }
+                    }
                 }
             }
+        }
+        if let Some((desc, w, h)) = stand_in {
+            t.depth = Some(self.depth_stand_in(ds, desc, w, h));
         }
         let (w, h) = size?;
         t.width = w;
         t.height = h;
         Some(t)
+    }
+
+    /// A depth buffer of `w` x `h` used in place of `ds` (larger) for a
+    /// smaller render target, made on first use and kept with `ds`'s id.
+    fn depth_stand_in(&mut self, ds: Target, desc: TextureDesc, w: u32, h: u32) -> Target {
+        let key = (ds.texture.0, ds.face, ds.level, w, h);
+        let id = match self.depth_stand_ins.get(&key) {
+            Some(&id) if self.objects.contains_key(&id) => id,
+            _ => {
+                let id = self.next_stand_in;
+                self.next_stand_in -= 1;
+                let desc = TextureDesc { kind: TextureKind::D2, width: w, height: h, depth: 1, levels: 1, ..desc };
+                self.create_texture(Handle(id), desc);
+                self.depth_stand_ins.insert(key, id);
+                id
+            }
+        };
+        Target { texture: Handle(id), face: 0, level: 0 }
+    }
+
+    /// A view of a copy of texture `id`, taken now, for a draw that samples
+    /// it while rendering to it: undefined in Direct3D but done by games
+    /// (they get the contents from before the draw), and a usage conflict
+    /// that makes WebGPU drop the whole submit.
+    fn feedback_copy(&mut self, id: u32) -> Option<(wgpu::TextureView, u64)> {
+        let Some(Object::Texture(t)) = self.objects.get(&id) else { return None };
+        if !t.gpu.usage().contains(wgpu::TextureUsages::COPY_SRC) {
+            return None;
+        }
+        let (size, levels, dim, format, kind) = (t.gpu.size(), t.levels, t.gpu.dimension(), t.format, t.desc.kind);
+        let stale = match self.feedback.get(&id) {
+            Some((copy, ..)) => copy.size() != size || copy.format() != format || copy.mip_level_count() != levels,
+            None => true,
+        };
+        if stale {
+            let copy = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("d3dgpu feedback copy"),
+                size,
+                mip_level_count: levels,
+                sample_count: 1,
+                dimension: dim,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let depth = format.is_depth_stencil_format();
+            let view = copy.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("d3dgpu feedback view"),
+                dimension: Some(match kind {
+                    TextureKind::D2 => wgpu::TextureViewDimension::D2,
+                    TextureKind::Cube => wgpu::TextureViewDimension::Cube,
+                    TextureKind::Volume => wgpu::TextureViewDimension::D3,
+                }),
+                aspect: if depth { wgpu::TextureAspect::DepthOnly } else { wgpu::TextureAspect::All },
+                ..Default::default()
+            });
+            let view_id = self.id();
+            self.feedback.insert(id, (copy, view, view_id));
+        }
+        // What is drawn so far, pending clears included, goes into the copy.
+        if self.clear.is_some() {
+            self.flush_clear();
+        }
+        self.end_pass();
+        let Some(Object::Texture(t)) = self.objects.get(&id) else { return None };
+        let src = t.gpu.clone();
+        let (copy, view, view_id) = self.feedback.get(&id).cloned()?;
+        let encoder = self.encoder();
+        for level in 0..levels {
+            let w = (size.width >> level).max(1);
+            let h = (size.height >> level).max(1);
+            let layers = if dim == wgpu::TextureDimension::D3 {
+                (size.depth_or_array_layers >> level).max(1)
+            } else {
+                size.depth_or_array_layers
+            };
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &src,
+                    mip_level: level,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &copy,
+                    mip_level: level,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: layers },
+            );
+        }
+        Some((view, view_id))
     }
 
     /// Makes sure a render pass is open on the current targets.
