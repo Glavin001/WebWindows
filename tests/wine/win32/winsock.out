@@ -1,0 +1,7 @@
+WSAStartup: 0
+gethostname: 0
+host name is printable: 1
+gethostname into a 1-byte buffer fails: 1
+the machine's name resolves: 1
+localhost resolves: 1
+localhost is 127.0.0.1: 1

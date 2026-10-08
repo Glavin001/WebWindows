@@ -303,9 +303,10 @@ export const SYSCALLS = {
       }
       // DLLs that refuse to load without a Unix library get one whose
       // calls all fail (STATUS_NOT_IMPLEMENTED), so that programs importing
-      // them start: ws2_32 (sockets; a page has none) and crypt32 (the
-      // system's certificate stores).
-      if (img && /\\(ws2_32|crypt32)\.dll$/i.test(img.path)) {
+      // them start: crypt32 (the system's certificate stores). (ws2_32 has
+      // its own below: matched here first, it got this one, and its name
+      // lookups returned success with nothing filled in.)
+      if (img && /\\crypt32\.dll$/i.test(img.path)) {
         this.w32(buf, STUB_UNIXLIB);
         this.w32(buf + 4, 0);
         return STATUS.SUCCESS;

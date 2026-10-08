@@ -1153,14 +1153,41 @@ export class WineHost {
 
   /**
    * ws2_32's Unix side: its name lookups (dlls/ws2_32/unixlib.c), which
-   * return Winsock error codes. There is no network: the machine is named
-   * and every lookup fails, so games fall back to their local (loopback)
-   * play. Sockets themselves go through ntdll's AFD device, which does not
-   * exist, so creating one fails.
+   * return Winsock error codes. There is no network: the machine is named,
+   * it and localhost resolve to the loopback address (as on a Windows
+   * machine without a network), and every other lookup fails, so games
+   * fall back to their local play. Sockets themselves go through ntdll's
+   * AFD device, which does not exist, so creating one fails.
    */
   winsockCall(code, args) {
     const WSAEFAULT = 10014;
     const WSAHOST_NOT_FOUND = 11001;
+    const ERROR_INSUFFICIENT_BUFFER = 122;
+    if (code === 2) {
+      // gethostbyname({const char *name, WS_hostent *host, unsigned *size}),
+      // laid out as hostent_from_unix does: the hostent, the alias and
+      // address lists, the address, the name.
+      const name = this.m.readCString(this.u32(args)).toLowerCase();
+      if (name !== 'localhost' && name !== 'webwindows') return WSAHOST_NOT_FOUND;
+      const host = this.u32(args + 4);
+      const psize = this.u32(args + 8);
+      const needed = 16 + 4 + 8 + 4 + name.length + 1;
+      if (this.u32(psize) < needed) return (this.w32(psize, needed), ERROR_INSUFFICIENT_BUFFER);
+      this.m.u8.fill(0, host, host + needed);
+      const aliases = host + 16;
+      const list = aliases + 4;
+      const addr = list + 8;
+      const str = addr + 4;
+      this.w32(host + 4, aliases);
+      this.w16(host + 8, 2); // AF_INET
+      this.w16(host + 10, 4);
+      this.w32(host + 12, list);
+      this.w32(list, addr);
+      this.m.u8.set([127, 0, 0, 1], addr);
+      for (let i = 0; i < name.length; i++) this.m.u8[str + i] = name.charCodeAt(i);
+      this.w32(host, str);
+      return 0;
+    }
     if (code === 3) {
       // gethostname({char *name, unsigned size})
       const name = 'webwindows';
