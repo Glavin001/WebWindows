@@ -205,12 +205,19 @@ jobs:
           cargo build --release -p wwt-cli
           cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
           ARCH=x86_64 WINE_BUILD=$WINE_BUILD64 sh native/wine-unix/build.sh
-      - name: x86_64 Wine bundle (for the site)
-        run: node runtime/node/wine-bundle.mjs --arch x64
+          ARCH=x86_64 MEM32=1 WINE_BUILD=$WINE_BUILD64 sh native/wine-unix/build.sh
+      - name: x86_64 Wine bundles (for the site)
+        run: |
+          node runtime/node/wine-bundle.mjs --arch x64
+          node runtime/node/wine-bundle.mjs --arch x64 --mem32
       - uses: actions/upload-artifact@v4
         with:
           name: wine-bundle64
           path: target/wine-bundle64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wine-bundle64-m32
+          path: target/wine-bundle64-m32
       - name: hello64 on translated x86_64 Wine
         run: |
           node runtime/node/wine.mjs tests/programs/hello64.exe | tee target/hello64.out
@@ -229,11 +236,16 @@ jobs:
             node tests/wine/winetest.mjs --jobs 4 --timeout 120 --baseline tests/wine/baseline/${t}_test64.json \
               "$WINE_BUILD64/dlls/$t/tests/x86_64-windows/${t}_test.exe"
           done
+      - name: 64-bit programs and GUI on a 32-bit memory (lowered Unix side), as without memory64
+        run: |
+          node tests/programs/check.mjs --arch x64 --mem32 --wine --jobs 4
+          node tests/wine/gui.mjs --arch x64 --mem32
       - name: 64-bit GUI programs in headless Chromium
         run: |
           npx --yes playwright@1 install --with-deps chromium
           npm install --no-save playwright@1
           node tests/web/gui.mjs --arch x64
+          node tests/web/gui.mjs --arch x64 --no-memory64
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -274,6 +286,11 @@ jobs:
         with:
           name: wine-bundle64
           path: target/wine-bundle64
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: wine-bundle64-m32
+          path: target/wine-bundle64-m32
       - name: Deploy the site to Vercel
         id: vercel
         env:

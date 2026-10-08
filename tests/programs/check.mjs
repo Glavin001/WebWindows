@@ -178,7 +178,7 @@ async function runOne(p, opt) {
   // With --wine the program runs on translated Wine DLLs (Milestone 2)
   // instead of the JavaScript Win32 shims.
   const runner = wine
-    ? [join(root, 'runtime/node/wine.mjs'), b.exe]
+    ? [join(root, 'runtime/node/wine.mjs'), ...(arch === 'x64' && !mem64 ? ['--mem32'] : []), b.exe]
     : [join(root, 'runtime/node/run.mjs'), '--wasm', wasm, mem64 ? '--mem64' : '--mem32', b.exe];
   // Earlier Node 22 releases have 64-bit memory behind a flag (Node 24
   // rejects the flag).

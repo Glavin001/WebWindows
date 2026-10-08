@@ -8,6 +8,10 @@
 //   node runtime/node/wine-bundle.mjs --arch x64 && node tests/web/gui.mjs --arch x64
 //
 // --arch x64 runs the 64-bit builds of the programs, from the x86_64 bundle.
+// --no-memory64 as well makes the browser look like one without 64-bit
+// WebAssembly memory (WebKit: modules declaring one do not validate), so the
+// page runs them from the 32-bit-memory bundle
+// (wine-bundle.mjs --arch x64 --mem32).
 //
 // --root serves another directory with the repository's layout, such as the
 // static site tools/site/build.sh assembles; --url tests a deployed site
@@ -34,8 +38,9 @@ const root = rootArg > 0 ? resolve(process.argv[rootArg + 1]) : repo;
 const outDir = join(repo, 'target/gui');
 mkdirSync(outDir, { recursive: true });
 const x64 = process.argv.includes('--arch') && process.argv[process.argv.indexOf('--arch') + 1] === 'x64';
-const bundleDir = x64 ? 'wine-bundle64' : 'wine-bundle';
-const tag = x64 ? '64' : '';
+const noMemory64 = process.argv.includes('--no-memory64');
+const bundleDir = x64 ? (noMemory64 ? 'wine-bundle64-m32' : 'wine-bundle64') : 'wine-bundle';
+const tag = `${x64 ? '64' : ''}${noMemory64 ? '-m32' : ''}`;
 const urlArg = process.argv.indexOf('--url');
 const site = urlArg > 0 ? new URL(process.argv[urlArg + 1]) : null;
 const port = 19000 + Math.floor(Math.random() * 1000);
@@ -96,6 +101,16 @@ try {
   const page = await browser.newPage({ viewport: { width: 1000, height: 1100 }, ignoreHTTPSErrors: !!proxy });
   if (site?.searchParams.has('_vercel_share')) await page.goto(site.href);
   page.on('pageerror', (e) => console.error('page error:', e.message));
+  if (noMemory64) {
+    await page.addInitScript(() => {
+      const validate = WebAssembly.validate;
+      // A memory section whose limits have the 64-bit flag (0x04).
+      WebAssembly.validate = (bytes) => {
+        const b = new Uint8Array(bytes);
+        return b[8] === 5 && b[11] & 4 ? false : validate(bytes);
+      };
+    });
+  }
 
   // Minesweeper: LEDs, smiley and the board; a click reveals a square.
   await open(page, 'winemine.exe');

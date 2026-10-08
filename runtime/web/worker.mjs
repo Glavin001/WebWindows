@@ -11,7 +11,7 @@ import { Machine, ProcessExit, GuestFault, hasMemory64 } from '../runtime.mjs';
 import { Process } from '../win32.mjs';
 import { peArch } from '../pe.mjs';
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
-import { WineHost } from '../wine/host.mjs';
+import { WineHost, parsePe, rebaseImage } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
 import { InputRing } from '../wine/input-ring.mjs';
@@ -57,16 +57,27 @@ async function cacheWrite(dir, name, bytes) {
  * Runs the program on translated Wine (Milestone 2): Wine's DLLs come
  * pre-translated in the bundle; the .exe is translated here and cached.
  * 64-bit programs use the x86_64 bundle (Wine's x86_64 DLLs and the wasm64
- * Unix side) on a 64-bit memory.
+ * Unix side) on a 64-bit memory; without 64-bit WebAssembly memory (WebKit),
+ * its 32-bit-memory variant: the same DLLs below 2 GB, translated for a
+ * 32-bit memory, and the Unix side lowered to one.
  */
-async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, key, bundleUrl, bundle64Url, memory64, display: shared }) {
+async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, key, bundleUrl, bundle64Url, bundle64m32Url, memory64, display: shared }) {
   const x64 = peArch(exe) === 'x64';
-  if (x64 && !memory64) {
-    // A limit of the browser, not a bug: no stack trace.
-    throw Object.assign(new Error('64-bit programs on Wine need a browser with 64-bit WebAssembly memory (Chrome 133, Firefox 134 or later; not yet Safari or any browser on iOS)'), { plain: true });
+  const mem64 = x64 && memory64;
+  const base = new URL(mem64 ? bundle64Url : x64 ? bundle64m32Url : bundleUrl, self.location.href);
+  const manifestResponse = await fetch(new URL('manifest.json', base));
+  if (x64 && !mem64 && !manifestResponse.ok) {
+    // A limit of this site's build, not a bug: no stack trace.
+    throw Object.assign(new Error('64-bit programs on Wine need a browser with 64-bit WebAssembly memory (Chrome 133, Firefox 134 or later), or this site\'s 32-bit-memory build of 64-bit Wine, which it does not have'), { plain: true });
   }
-  const base = new URL(x64 ? bundle64Url : bundleUrl, self.location.href);
-  const manifest = await (await fetch(new URL('manifest.json', base))).json();
+  const manifest = await manifestResponse.json();
+  if (x64 && !mem64) {
+    // A 64-bit .exe prefers 0x1_4000_0000, above the guest region: move it
+    // below before translating, so the host maps the translated image as it
+    // is instead of relocating and translating it again.
+    const info = parsePe(exe);
+    if (info.imageBase + info.sizeOfImage > 0x8000_0000) exe = rebaseImage(exe, info, 0x40_0000) ?? exe;
+  }
   const t0 = performance.now();
   const bytesOf = async (rel) => new Uint8Array(await (await fetch(new URL(rel, base))).arrayBuffer());
   // Wine's Unix side (windowed programs): its layout decides the machine's.
@@ -106,18 +117,19 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
   files.set(exeDos, exe);
   const translateTimed = (path, bytes) => {
     const t = performance.now();
-    const w = ft.translatePe(bytes, { mem64: x64 });
+    const w = ft.translatePe(bytes, { mem64 });
     log(`translated ${path} in ${(performance.now() - t).toFixed(0)} ms`);
     return w;
   };
   // The .exe is translated before boot so its cache write completes before
   // the program runs (the worker may be terminated as soon as it exits).
-  let exeWasm = await cacheRead(dir, `${key}.wine.wasm`);
+  const wkey = `${key}${x64 && !mem64 ? '-m32' : ''}`;
+  let exeWasm = await cacheRead(dir, `${wkey}.wine.wasm`);
   if (exeWasm) {
     log(`loaded cached translation of ${exeDos}`);
   } else {
     exeWasm = translateTimed(exeDos, exe);
-    await cacheWrite(dir, `${key}.wine.wasm`, exeWasm);
+    await cacheWrite(dir, `${wkey}.wine.wasm`, exeWasm);
   }
   // By file, too: an assembly's DLL is also installed in C:\windows\winsxs.
   const compiledFor = new Map([...compiled].map(([path, mod]) => [files.get(path), mod]));
@@ -131,9 +143,10 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
   const [layout, win32uNames, dataFiles, ntCalls] = unixFiles ?? [];
   const machine = new Machine({
     abi,
-    kernel: ft.kernel({ mem64: x64, code64: x64 }),
-    // x86_64 Wine's DLLs load at 0x1_7000_0000 and up.
-    ...(x64 ? { arch: 'x64', mem64: true, guestLimit: 0x2_0000_0000 } : { guestLimit: 0x8000_0000 }),
+    kernel: ft.kernel({ mem64, code64: mem64 }),
+    // x86_64 Wine's DLLs load at 0x1_7000_0000 and up (below 2 GB in the
+    // 32-bit-memory bundle).
+    ...(mem64 ? { arch: 'x64', mem64: true, guestLimit: 0x2_0000_0000 } : { arch: x64 ? 'x64' : 'x86', guestLimit: layout?.guestLimit ?? 0x8000_0000 }),
     ...(layout && { nativeSize: layout.nativeSize, extraSize: layout.extraSize }),
     log,
   });
@@ -186,7 +199,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
 }
 
 onmessage = async (e) => {
-  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, bundle64Url, display } = e.data;
+  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, bundle64Url, bundle64m32Url, display } = e.data;
   // The page tests for 64-bit WebAssembly memory once (hasMemory64).
   const memory64 = e.data.memory64 ?? hasMemory64();
   const enc = new TextEncoder();
@@ -198,7 +211,7 @@ onmessage = async (e) => {
     const key = `${await sha256(exe)}-abi${abi.version}`;
     const dir = noCache ? null : await cacheDir();
     if (wine) {
-      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, bundle64Url, memory64, display });
+      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, bundleUrl, bundle64Url, bundle64m32Url, memory64, display });
       if (r.error) postMessage({ type: 'stderr', bytes: enc.encode(`\n*** ${r.error.message}\n`) });
       postMessage({ type: 'exit', code: r.error ? null : r.exitCode, translated: false, runMs: r.runMs, wine: true });
       return;

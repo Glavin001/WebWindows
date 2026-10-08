@@ -5,8 +5,12 @@
 #   native/wine-unix/build.sh
 #   ARCH=x86_64 native/wine-unix/build.sh   # for 64-bit Wine: a wasm64
 #                                           # module in target/wine-unix64
+#   ARCH=x86_64 MEM32=1 native/wine-unix/build.sh
+#       # 64-bit Wine for browsers without 64-bit WebAssembly memory: the same
+#       # C code with 8-byte pointers, lowered to a 32-bit memory, in
+#       # target/wine-unix64-m32
 #
-# Environment: ARCH, WINE_SRC, WINE_BUILD (as tools/wine/build.sh), EMSDK.
+# Environment: ARCH, MEM32, WINE_SRC, WINE_BUILD (as tools/wine/build.sh), EMSDK.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
@@ -19,6 +23,11 @@ case $ARCH in
   x86_64) WINE_BUILD=${WINE_BUILD:-/opt/wine-build64}; out=$root/target/wine-unix64; wasm64=-sMEMORY64=1 ;;
   *) echo "ARCH must be i386 or x86_64" >&2; exit 2 ;;
 esac
+# MEMORY64=2: compiled for wasm64 (8-byte pointers, the x86_64 layouts), then
+# lowered by Binaryen to a 32-bit memory, for engines without memory64
+# (WebKit). The guest then lives below 4 GB, as i386 Wine's does.
+MEM32=${MEM32:-}
+if [ "$ARCH" = x86_64 ] && [ -n "$MEM32" ]; then out=$root/target/wine-unix64-m32; wasm64=-sMEMORY64=2; fi
 if ! command -v emcc > /dev/null; then export PATH="${EMSDK:-/opt/emsdk}/upstream/emscripten:$PATH"; fi
 mkdir -p "$out/include" "$out/obj"
 # Headers Wine generates from IDL (d3d11.h for win32u's d3dkmt.c, ...): a
@@ -30,9 +39,11 @@ sh "$here/gen-config.sh" "$WINE_BUILD/include/config.h" "$out/include/config.h"
 python3 "$here/prepare.py" "$WINE_SRC" "$WINE_BUILD" "$out/src" "$ARCH"
 
 # Memory layout, shared with runtime/runtime.mjs: the guest region (2 GB for
-# i386 Wine, 8 GB for x86_64), the runtime's native area, then this module's
+# i386 Wine and lowered x86_64, 8 GB for x86_64), the runtime's native area, then this module's
 # data, stack and heap.
-if [ "$ARCH" = x86_64 ]; then GUEST_LIMIT=$((0x200000000)); else GUEST_LIMIT=$((0x80000000)); fi
+if [ "$ARCH" = i386 ]; then GUEST_LIMIT=$((0x80000000))
+elif [ -z "$MEM32" ]; then GUEST_LIMIT=$((0x200000000))
+else GUEST_LIMIT=$((0x80000000)); fi
 NATIVE_SIZE=$((0x10000000))
 EXTRA_SIZE=$((0x10000000))
 GLOBAL_BASE=$((GUEST_LIMIT + NATIVE_SIZE))
@@ -42,6 +53,9 @@ MEMORY_SIZE=$((GLOBAL_BASE + EXTRA_SIZE))
 # Atomics and bulk memory: the module shares the guest's memory, which is a
 # shared WebAssembly memory.
 CFLAGS="-O2 -g0 -w $wasm64 -DGUEST_LIMIT=$GUEST_LIMIT -matomics -mbulk-memory -D__WINESRC__ -D_GNU_SOURCE -include stdarg.h -I$out/include -I$WINE_BUILD/include -I$out/src/include"
+# Objects are rebuilt when their source changes; a change of flags (the
+# layout's GUEST_LIMIT, say) rebuilds them all.
+if [ "$(cat "$out/obj/cflags" 2> /dev/null)" != "$CFLAGS" ]; then rm -rf "$out/obj"; mkdir -p "$out/obj"; echo "$CFLAGS" > "$out/obj/cflags"; fi
 # Names wineserver and win32u share with the rest of the module: in Wine
 # they are separate programs and libraries, here one module. The loop at the
 # end of compile_all finds clashes with nm and renames them in the server
@@ -140,11 +154,26 @@ emcc $(find "$out/obj" -name '*.o') -o "$out/wine_unix.mjs" -O2 $wasm64 --no-ent
   -sGLOBAL_BASE=$GLOBAL_BASE -sINITIAL_MEMORY=$MEMORY_SIZE -sMAXIMUM_MEMORY=$MEMORY_SIZE -sSTACK_SIZE=4MB \
   -sEXPORTED_FUNCTIONS="$exports" -sEXPORTED_RUNTIME_METHODS=FS,HEAPU8,UTF8ToString \
   -sERROR_ON_UNDEFINED_SYMBOLS=1 -Wl,--error-limit=0 2> "$out/link.log" || { cat "$out/link.log"; exit 1; }
+# The lowered module's glue indexes the heap with signed shifts
+# (HEAPU64[p >> 3]): Emscripten makes them unsigned only for wasm32 builds
+# that can address 2 GB, not for MEMORY64=2 ones. Its memory goes past 2 GB
+# (Windows' shared user data sits at 0x7ffe0000, so the guest region is
+# 2 GB), so make them unsigned here.
+if [ -n "$MEM32" ]; then
+  node -e '
+    const fs = require("fs"), p = process.argv[1];
+    let n = 0;
+    const s = fs.readFileSync(p, "utf8").replace(/(?<!>)>>([123])\]/g, (_, k) => (n++, `>>>${k}]`));
+    if (!n) { console.error("no signed heap shifts found in " + p); process.exit(1); }
+    fs.writeFileSync(p, s);
+    console.log(`unsigned heap shifts: ${n}`);
+  ' "$out/wine_unix.mjs"
+fi
 # Two definitions of a name with different signatures only warn, and one of
 # them silently wins: never accept that.
 if grep -q "signature mismatch" "$out/link.log"; then grep -A2 "signature mismatch" "$out/link.log"; exit 1; fi
 cat > "$out/wine_unix.json" <<JSON
-{ "arch": "$ARCH", "guestLimit": $GUEST_LIMIT, "nativeSize": $NATIVE_SIZE, "extraSize": $EXTRA_SIZE, "globalBase": $GLOBAL_BASE }
+{ "arch": "$ARCH", "mem64": $([ "$ARCH" = x86_64 ] && [ -z "$MEM32" ] && echo true || echo false), "guestLimit": $GUEST_LIMIT, "nativeSize": $NATIVE_SIZE, "extraSize": $EXTRA_SIZE, "globalBase": $GLOBAL_BASE }
 JSON
 cp "$out/src/win32u_syscalls.json" "$out/win32u_syscalls.json"
 cp "$out/src/nt_calls.json" "$out/nt_calls.json"

@@ -18,10 +18,13 @@ const translatorUrl = params.get('translator') ?? new URL('../../target/wasm32-u
 const bundleUrl = params.get('bundle') ?? new URL('../../target/wine-bundle/', import.meta.url).href;
 // 64-bit programs run on Wine's x86_64 DLLs from their own bundle.
 const bundle64Url = params.get('bundle64') ?? new URL('../../target/wine-bundle64/', import.meta.url).href;
+// ... or, in browsers without 64-bit WebAssembly memory, from a bundle for a
+// 32-bit memory (the DLLs below 2 GB, the Unix side lowered to wasm32).
+const bundle64m32Url = params.get('bundle64m32') ?? new URL('../../target/wine-bundle64-m32/', import.meta.url).href;
 if (params.get('wine')) $('wine').checked = true;
-// 64-bit Wine needs 64-bit WebAssembly memory, which WebKit (Safari, and
-// every browser on iOS) does not ship yet. 64-bit console programs run
-// without it, below 4 GB.
+// 64-bit WebAssembly memory: WebKit (Safari, and every browser on iOS) does
+// not ship it yet. Without it 64-bit programs run below 4 GB on a 32-bit
+// memory, on Wine from the 32-bit-memory bundle.
 const memory64 = hasMemory64();
 $('mem64note').hidden = memory64;
 
@@ -182,6 +185,7 @@ function run(exeName, exeBytes, files, exePath) {
         wine,
         bundleUrl,
         bundle64Url,
+        bundle64m32Url,
         memory64,
         display: screen && { width: screen.width, height: screen.height, screen: screen.screen, frame: screen.frame, input: screen.input },
       },
@@ -202,20 +206,18 @@ $('run').onclick = async () => {
 // needed), and Wine's own programs from each bundle that carries Wine's
 // Unix side, in their 32-bit and 64-bit builds.
 const samples = [];
-function addSample(label, url, wine, needsMemory64 = false) {
+function addSample(label, url, wine) {
   samples.push({ url, wine });
-  const option = new Option(needsMemory64 && !memory64 ? `${label} (needs 64-bit WebAssembly memory)` : label, String(samples.length - 1));
-  option.disabled = needsMemory64 && !memory64;
-  $('sample').add(option);
+  $('sample').add(new Option(label, String(samples.length - 1)));
   $('samples').hidden = false;
 }
 addSample('hello.exe — 32-bit console', new URL('../../tests/programs/hello.exe', import.meta.url).href, false);
 addSample('hello64.exe — 64-bit console', new URL('../../tests/programs/hello64.exe', import.meta.url).href, false);
-for (const [url, bits] of [[bundleUrl, '32-bit'], [bundle64Url, '64-bit']]) {
+for (const [url, bits] of [[bundleUrl, '32-bit'], [memory64 ? bundle64Url : bundle64m32Url, '64-bit']]) {
   fetch(new URL('manifest.json', url))
     .then((r) => (r.ok ? r.json() : null))
     .then((manifest) => {
-      for (const p of manifest?.programs ?? []) addSample(`${p.split('/').pop()} — ${bits} on Wine`, new URL(p, url).href, true, bits === '64-bit');
+      for (const p of manifest?.programs ?? []) addSample(`${p.split('/').pop()} — ${bits} on Wine`, new URL(p, url).href, true);
     })
     .catch(() => {});
 }

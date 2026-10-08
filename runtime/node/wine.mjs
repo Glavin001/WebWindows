@@ -10,6 +10,10 @@
 //                     "500:click 20,80; 900:text Hi; 1200:key Enter"
 //                     (click/rclick/move X,Y; key CODE as in KeyboardEvent.code;
 //                     text types letters, digits and spaces)
+//   --mem32           a 64-bit program on a 32-bit memory, below 4 GB, with the
+//                     lowered Unix side (target/wine-unix64-m32), as in browsers
+//                     without 64-bit WebAssembly memory; the default when this
+//                     engine has none
 //   --dir DIR         DIR is C:\app (as a folder chosen in the browser): the
 //                     program runs from there (from C:\app if it lives
 //                     elsewhere), and files it creates or changes there are
@@ -27,7 +31,7 @@ import { createHash } from 'node:crypto';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { Machine, GuestFault, hex } from '../runtime.mjs';
+import { Machine, GuestFault, hex, hasMemory64 } from '../runtime.mjs';
 import { peArch } from '../pe.mjs';
 import { WineHost } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
@@ -51,8 +55,10 @@ function wwt() {
     .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
 }
 
-/** 64-bit programs: x86_64 Wine on a 64-bit memory. */
+/** 64-bit programs: x86_64 Wine, on a 64-bit memory unless --mem32. */
 let x64 = false;
+let mem64 = false;
+let mem32 = !hasMemory64();
 
 /** Translates an image with the CLI, caching by content hash. */
 function translate(path, bytes) {
@@ -60,14 +66,14 @@ function translate(path, bytes) {
   // Keyed by the image and the translator build, so a rebuilt translator
   // never serves stale translations.
   const t = statSync(wwt());
-  const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}${x64 ? ':mem64' : ''}`).digest('hex').slice(0, 16);
+  const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}${mem64 ? ':mem64' : ''}`).digest('hex').slice(0, 16);
   const out = join(cacheDir, `${path.split('\\').pop()}-${hash}.wasm`);
   if (!existsSync(out)) {
     // Several runners share the cache: write under a per-process name and
     // rename, so a reader never sees a partial file.
     const tmp = join(cacheDir, `${hash}.${process.pid}`);
     writeFileSync(`${tmp}.bin`, bytes);
-    execFileSync(wwt(), ['translate', `${tmp}.bin`, '-o', `${tmp}.wasm`, ...(x64 ? ['--mem64'] : [])], { stdio: ['ignore', 'ignore', 'inherit'] });
+    execFileSync(wwt(), ['translate', `${tmp}.bin`, '-o', `${tmp}.wasm`, ...(mem64 ? ['--mem64'] : [])], { stdio: ['ignore', 'ignore', 'inherit'] });
     renameSync(`${tmp}.wasm`, out);
     rmSync(`${tmp}.bin`);
   }
@@ -98,6 +104,7 @@ while (args[0]?.startsWith('--')) {
   else if (a === '--run-for') runFor = Number(args.shift());
   else if (a === '--input') script = parseInput(args.shift());
   else if (a === '--dir') appDir = resolve(args.shift());
+  else if (a === '--mem32') mem32 = true;
 }
 
 /** "ms:action args; ..." -> [{at, push(display)}], in time order. */
@@ -145,14 +152,15 @@ function parseInput(text) {
 }
 const exe = args.shift();
 if (!exe) {
-  console.error('usage: wine.mjs [--trace] [--trace-unix CHANNELS] [--no-unix] [--screenshot F [--run-for MS]] program.exe [args...]');
+  console.error('usage: wine.mjs [--trace] [--trace-unix CHANNELS] [--no-unix] [--mem32] [--screenshot F [--run-for MS]] program.exe [args...]');
   process.exit(2);
 }
 
 x64 = peArch(readFileSync(exe)) === 'x64';
+mem64 = x64 && !mem32;
 if (x64) {
   wineBuild = process.env.WINE_BUILD64 ?? '/opt/wine-build64';
-  unixDir = join(root, 'target/wine-unix64');
+  unixDir = join(root, mem64 ? 'target/wine-unix64' : 'target/wine-unix64-m32');
 }
 useUnix ??= existsSync(join(unixDir, 'wine_unix.mjs'));
 const peDir = x64 ? 'x86_64-windows' : 'i386-windows';
@@ -208,15 +216,16 @@ function syncBack() {
 mkdirSync(cacheDir, { recursive: true });
 const abi = JSON.parse(execFileSync(wwt(), ['abi']).toString());
 const kernelPath = join(cacheDir, `kernel.${process.pid}.wasm`);
-execFileSync(wwt(), ['kernel', '-o', kernelPath, ...(x64 ? ['--code64'] : [])]);
+execFileSync(wwt(), ['kernel', '-o', kernelPath, ...(mem64 ? ['--code64'] : [])]);
 const kernel = readFileSync(kernelPath);
 rmSync(kernelPath);
 const layout = useUnix ? JSON.parse(readFileSync(join(unixDir, 'wine_unix.json'), 'utf8')) : null;
 const machine = new Machine({
   abi,
   kernel,
-  // x86_64 Wine's DLLs load at 0x1_7000_0000 and up.
-  ...(x64 ? { arch: 'x64', mem64: true, guestLimit: 0x2_0000_0000 } : { guestLimit: 0x8000_0000 }),
+  // x86_64 Wine's DLLs load at 0x1_7000_0000 and up; on a 32-bit memory the
+  // host moves them into the guest region (2 GB, as for i386).
+  ...(mem64 ? { arch: 'x64', mem64: true, guestLimit: 0x2_0000_0000 } : { arch: x64 ? 'x64' : 'x86', guestLimit: layout?.guestLimit ?? 0x8000_0000 }),
   ...(layout && { nativeSize: layout.nativeSize, extraSize: layout.extraSize }),
   log: trace ? (s) => stderr(`[machine] ${s}\n`) : undefined,
 });

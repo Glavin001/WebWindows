@@ -298,16 +298,65 @@ Emscripten's memory64 output also uses a 64-bit function table, which V8
 supports from Node 24 (and Chrome 133); Node 22's memory64 does not include
 it, so 64-bit Wine with the Unix side needs Node 24.
 
+### 64-bit Wine without 64-bit WebAssembly memory
+
 WebKit (Safari, and every browser on iOS, which must use it) has no
 memory64 in a stable release yet (Safari Technology Preview has it since
-August 2026). There the page runs 64-bit console programs below 4 GB on a
-32-bit memory, greys out the 64-bit Wine samples and says why, and refuses
-a 64-bit program on Wine with that reason. The page tests for memory64 by
-validating a module that declares a shared 64-bit memory: creating one is
-no test, since WebKit ignores the descriptor's `address`/`index` key and
-makes a 32-bit memory, which is how an iPhone reached a compile error
-instead. `tests/web/nomemory64.mjs` checks this in Chromium with that
-validation failing.
+August 2026). There 64-bit programs run on a 32-bit memory instead, Wine
+included, in a third stack:
+
+| | i386 Wine | x86_64 Wine | x86_64 Wine, 32-bit memory |
+| --- | --- | --- | --- |
+| Translated code | x86 | x86-64 | x86-64 |
+| Memory | 32-bit | 64-bit | 32-bit |
+| Guest region | 2 GB | 8 GB | 2 GB |
+| Wine's DLLs | i386 | x86_64, at their bases (`0x1_7000_0000` up) | x86_64, moved below 2 GB |
+| Unix side | wasm32 | wasm64 (`MEMORY64=1`) | wasm64 lowered to wasm32 (`MEMORY64=2`) |
+| Bundle | `wine-bundle` | `wine-bundle64` | `wine-bundle64-m32` |
+
+The translator already ran x86-64 code on a 32-bit memory (images below
+4 GB). The Unix side is the same C, compiled for wasm64 (8-byte pointers,
+the x86_64 layouts that the guest's structures have) and then lowered by
+Binaryen to a 32-bit memory (`ARCH=x86_64 MEM32=1 native/wine-unix/build.sh`,
+into `target/wine-unix64-m32`): pointers stay 64-bit values whose upper half
+is zero. The host moves the DLLs and the program below 2 GB (relocating
+them as Windows would); `wine-bundle.mjs --arch x64 --mem32` does it ahead
+of time for the browser, and the worker moves a 64-bit `.exe` before
+translating it. `wine.mjs --mem32` runs it in Node (the default where the
+engine has no memory64).
+
+Found on the way:
+
+* Emscripten's glue for a lowered module indexes the heap with signed
+  shifts (`HEAPU64[p >> 3]`): it makes them unsigned only for wasm32 builds
+  that can address 2 GB, and the lowered mode is not counted as one. The
+  Unix side sits above the 2 GB guest region, so the build rewrites them as
+  unsigned (and fails if it finds none). The guest region cannot shrink
+  instead: Windows' shared user data is at `0x7ffe0000`.
+* The lowered module is about 5% larger (2.66 MB against 2.53 MB).
+
+The page tests for memory64 by validating a module that declares a shared
+64-bit memory. Creating one is no test: WebKit ignores the descriptor's
+`address`/`index` key and makes a 32-bit memory, which is how an iPhone
+reached a compile error before. Without memory64 the page says so, and runs
+64-bit programs from the third bundle (or, on a site built without it,
+refuses them on Wine with that reason). Each run loads one bundle, the one
+for the program's architecture and the browser, so no browser downloads
+another's.
+
+| Test (32-bit memory, lowered Unix side) | Result |
+| --- | --- |
+| The 7 programs × 5 levels on x86_64 Wine (`check.mjs --arch x64 --mem32 --wine`), Node 22, which has no table64 | 35/35 pass |
+| `tests/wine/gui.mjs --arch x64 --mem32` (winbasic, Minesweeper with a click, Notepad with typing), Node 22 | 13/13 |
+| Real programs (`tests/wine/apps.mjs --arch x64 --mem32`: NASM, ndisasm, 7-Zip, PuTTY, plink, SQLite, curl, trurl), Node 22 | 10/10 |
+| `tests/web/gui.mjs --arch x64 --no-memory64` (headless Chromium where memory64 modules do not validate) | 5/5 |
+| `tests/web/nomemory64.mjs` (console and Wine 64-bit programs, the page's note) | 4/4 |
+
+Limits: a 64-bit program gets the 2 GB guest region, as a 32-bit one does,
+and one linked at a fixed address above it without relocations cannot run
+this way. Not yet tried on a real iPhone; whether iOS grants a page this
+much shared memory is the same question as for i386 Wine, which uses the
+same layout.
 
 In the browser, `runtime/node/wine-bundle.mjs --arch x64` builds a second
 bundle (`target/wine-bundle64`: the x86_64 DLLs, prelinked off MinGW's

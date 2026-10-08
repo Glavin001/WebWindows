@@ -8,10 +8,15 @@
 //   node runtime/node/wine-bundle.mjs [out dir]     (default: target/wine-bundle)
 //   node runtime/node/wine-bundle.mjs --arch x64 [out dir]
 //                                    (default: target/wine-bundle64)
+//   node runtime/node/wine-bundle.mjs --arch x64 --mem32 [out dir]
+//                                    (default: target/wine-bundle64-m32)
 //
 // With --arch x64 the bundle holds Wine's x86_64 DLLs (WINE_BUILD64,
 // default /opt/wine-build64), translated for a 64-bit memory at their own
 // addresses, and the wasm64 Unix side (ARCH=x86_64 native/wine-unix/build.sh).
+// With --mem32 as well, the same DLLs for browsers without 64-bit
+// WebAssembly memory: every DLL moved below 2 GB and translated for a 32-bit
+// memory, and the lowered Unix side (ARCH=x86_64 MEM32=1).
 //
 // Wine's DLLs are translated once here (as on CI) and shipped, so browsers
 // compile them with streaming compilation and can cache the compiled code.
@@ -30,7 +35,10 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const argv = process.argv.slice(2);
 const x64 = argv[0] === '--arch' && argv[1] === 'x64';
 if (argv[0] === '--arch') argv.splice(0, 2);
-const out = resolve(argv[0] ?? join(root, x64 ? 'target/wine-bundle64' : 'target/wine-bundle'));
+const mem32 = x64 && argv[0] === '--mem32';
+if (argv[0] === '--mem32') argv.shift();
+const mem64 = x64 && !mem32;
+const out = resolve(argv[0] ?? join(root, mem32 ? 'target/wine-bundle64-m32' : x64 ? 'target/wine-bundle64' : 'target/wine-bundle'));
 const wineBuild = x64 ? (process.env.WINE_BUILD64 ?? '/opt/wine-build64') : (process.env.WINE_BUILD ?? '/opt/wine-build');
 const peDir = x64 ? 'x86_64-windows' : 'i386-windows';
 const wineSrc = process.env.WINE_SRC ?? '/opt/wine-src/wine-11.0';
@@ -44,7 +52,7 @@ const GUI_DLLS = [
 ];
 // MinGW's default DLL base, and where the bundle moves those DLLs to.
 const DEFAULT_BASE = x64 ? 0x1_8000_0000 : 0x10000000;
-const PRELINK_BASE = x64 ? 0x1_9000_0000 : 0x60000000;
+const PRELINK_BASE = mem64 ? 0x1_9000_0000 : 0x60000000;
 const PROGRAMS = ['winemine', 'notepad'];
 const NLS = ['locale', 'l_intl', 'sortdefault', 'normnfc', 'normnfd', 'normnfkc', 'normnfkd', 'c_1252', 'c_437', 'c_850', 'c_20127'];
 
@@ -53,11 +61,11 @@ const wwt = ['target/release/wwt', 'target/debug/wwt']
   .filter((p) => existsSync(p))
   .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
 
-const unixDir = join(root, x64 ? 'target/wine-unix64' : 'target/wine-unix');
+const unixDir = join(root, mem32 ? 'target/wine-unix64-m32' : x64 ? 'target/wine-unix64' : 'target/wine-unix');
 const withUnix = existsSync(join(unixDir, 'wine_unix.mjs'));
 
 mkdirSync(out, { recursive: true });
-const manifest = { wine: '11.0', arch: x64 ? 'x64' : 'x86', dlls: {}, nls: [] };
+const manifest = { wine: '11.0', arch: x64 ? 'x64' : 'x86', mem64, dlls: {}, nls: [] };
 const dllPath = (d) => join(wineBuild, 'dlls', d, peDir, `${d}.dll`);
 let nextBase = PRELINK_BASE;
 for (const d of [...DLLS, ...(withUnix ? GUI_DLLS : [])]) {
@@ -68,7 +76,9 @@ for (const d of [...DLLS, ...(withUnix ? GUI_DLLS : [])]) {
   }
   let bytes = readFileSync(pe);
   const info = parsePe(bytes);
-  if (info.imageBase === DEFAULT_BASE) {
+  // On a 32-bit memory every x86_64 DLL moves into the guest region (Wine
+  // links its core DLLs above 4 GB).
+  if (info.imageBase === DEFAULT_BASE || (mem32 && info.imageBase + info.sizeOfImage > 0x8000_0000)) {
     const moved = rebaseImage(bytes, info, nextBase);
     if (moved) {
       bytes = moved;
@@ -76,7 +86,7 @@ for (const d of [...DLLS, ...(withUnix ? GUI_DLLS : [])]) {
     }
   }
   writeFileSync(join(out, `${d}.dll`), bytes);
-  execFileSync(wwt, ['translate', join(out, `${d}.dll`), '-o', join(out, `${d}.dll.wasm`), ...(x64 ? ['--mem64'] : [])], {
+  execFileSync(wwt, ['translate', join(out, `${d}.dll`), '-o', join(out, `${d}.dll.wasm`), ...(mem64 ? ['--mem64'] : [])], {
     stdio: ['ignore', 'ignore', 'inherit'],
   });
   manifest.dlls[`${d}.dll`] = { pe: `${d}.dll`, wasm: `${d}.dll.wasm` };

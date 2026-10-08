@@ -3,10 +3,12 @@
 // headless: each program runs in Node until it goes idle (or for a while),
 // the screen is saved as a PNG, and pixels are checked.
 //
-//   node tests/wine/gui.mjs [--arch x64] [--keep DIR]
+//   node tests/wine/gui.mjs [--arch x64 [--mem32]] [--keep DIR]
 //
 // --arch x64 runs the 64-bit builds on x86_64 Wine (WINE_BUILD64) with the
-// wasm64 Unix side; its table64 needs Node 24.
+// wasm64 Unix side; its table64 needs Node 24. --mem32 runs them on a 32-bit
+// memory with the lowered Unix side (ARCH=x86_64 MEM32=1), as browsers
+// without 64-bit WebAssembly memory do.
 
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync } from 'node:fs';
@@ -18,6 +20,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const args = process.argv.slice(2);
 const x64 = args[0] === '--arch' && args[1] === 'x64';
 if (args[0] === '--arch') args.splice(0, 2);
+const mem32 = args[0] === '--mem32';
+if (mem32) args.shift();
 const wineBuild = x64 ? (process.env.WINE_BUILD64 ?? '/opt/wine-build64') : (process.env.WINE_BUILD ?? '/opt/wine-build');
 const peDir = x64 ? 'x86_64-windows' : 'i386-windows';
 const keep = args[0] === '--keep' ? resolve(args[1]) : join(root, 'target/gui');
@@ -55,8 +59,8 @@ const count = (img, x0, y0, x1, y1, pred) => {
 };
 
 function run(name, exe, extra) {
-  const png = join(keep, `${name}${x64 ? '64' : ''}.png`);
-  const r = spawnSync(process.execPath, [join(root, 'runtime/node/wine.mjs'), '--screenshot', png, ...extra, exe], {
+  const png = join(keep, `${name}${x64 ? '64' : ''}${mem32 ? '-m32' : ''}.png`);
+  const r = spawnSync(process.execPath, [join(root, 'runtime/node/wine.mjs'), ...(mem32 ? ['--mem32'] : []), '--screenshot', png, ...extra, exe], {
     encoding: 'latin1',
     timeout: 300000,
   });

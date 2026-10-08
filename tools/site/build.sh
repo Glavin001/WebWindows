@@ -23,8 +23,11 @@ for d in web wine; do cp -r "$root/runtime/$d" "$out/runtime/$d"; done
 cp "$root"/runtime/*.mjs "$out/runtime/"
 cp "$translator" "$out/target/wasm32-unknown-unknown/release-wasm/"
 cp -r "$bundle" "$out/target/wine-bundle"
-# The x86_64 bundle (64-bit programs on Wine), when built.
-[ -f "$root/target/wine-bundle64/manifest.json" ] && cp -r "$root/target/wine-bundle64" "$out/target/wine-bundle64"
+# The x86_64 bundles (64-bit programs on Wine; -m32 for browsers without
+# 64-bit WebAssembly memory), when built.
+for b in wine-bundle64 wine-bundle64-m32; do
+  if [ -f "$root/target/$b/manifest.json" ]; then cp -r "$root/target/$b" "$out/target/$b"; fi
+done
 cp "$root/tests/programs/hello.exe" "$root/tests/programs/hello64.exe" "$out/tests/programs/"
 cat > "$out/index.html" <<'HTML'
 <!doctype html>

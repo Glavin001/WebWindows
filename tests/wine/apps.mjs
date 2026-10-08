@@ -4,10 +4,12 @@
 // trurl, each given a folder as C:\app and its output checked.
 //
 //   sh tools/apps/fetch.sh                        # once: into target/apps
-//   node tests/wine/apps.mjs [--arch x86|x64] [--keep DIR]
+//   node tests/wine/apps.mjs [--arch x86|x64] [--mem32] [--keep DIR]
 //
 // Both architectures by default. The 64-bit ones need Node 24 (table64) and
-// the x86_64 Wine build (WINE_BUILD64) with the wasm64 Unix side.
+// the x86_64 Wine build (WINE_BUILD64) with the wasm64 Unix side; with
+// --mem32 they run on a 32-bit memory with the lowered Unix side instead, as
+// browsers without 64-bit WebAssembly memory do.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -19,8 +21,10 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const args = process.argv.slice(2);
 let archs = ['x86', 'x64'];
 let keep = join(root, 'target/apps-test');
+let mem32 = false;
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--arch') archs = [args[++i]];
+  else if (args[i] === '--mem32') mem32 = true;
   else if (args[i] === '--keep') keep = resolve(args[++i]);
 }
 rmSync(keep, { recursive: true, force: true });
@@ -37,7 +41,7 @@ const result = (ok, name, detail = '') => {
 function wine(arch, exe, exeArgs, { dir, extra = [] } = {}) {
   const r = spawnSync(
     process.execPath,
-    [join(root, 'runtime/node/wine.mjs'), ...(dir ? ['--dir', dir] : []), ...extra, join(root, 'target/apps', arch, exe), ...exeArgs],
+    [join(root, 'runtime/node/wine.mjs'), ...(mem32 ? ['--mem32'] : []), ...(dir ? ['--dir', dir] : []), ...extra, join(root, 'target/apps', arch, exe), ...exeArgs],
     { encoding: 'latin1', maxBuffer: 1 << 26, timeout: 600_000 },
   );
   const out = (r.stdout ?? '') + (r.stderr ?? '');
