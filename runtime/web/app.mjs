@@ -264,19 +264,36 @@ $('run').onclick = async () => {
   run(name.split('/').pop(), exe, files, name);
 };
 
-// Wine's own programs from the bundle (when it carries Wine's Unix side).
-fetch(new URL('manifest.json', bundleUrl))
-  .then((r) => (r.ok ? r.json() : null))
-  .then((manifest) => {
+// Wine's own programs from the bundle (when it carries Wine's Unix side),
+// then the repository's test programs (./samples.json).
+const sampleArgs = new Map();
+Promise.all([
+  fetch(new URL('manifest.json', bundleUrl)).then((r) => (r.ok ? r.json() : null)),
+  fetch(new URL('samples.json', import.meta.url)).then((r) => (r.ok ? r.json() : [])),
+])
+  .then(([manifest, samples]) => {
     if (!manifest?.programs?.length) return;
-    for (const p of manifest.programs) $('sample').add(new Option(p.split('/').pop(), p));
-    // Direct3D 9 test programs (tests/programs/gui); the benchmark takes
-    // "cubes particles seconds" in the arguments box.
-    for (const [name, label] of [['d3d9bench.exe', 'd3d9bench.exe (Direct3D 9 benchmark)'], ['d3d9tri.exe', 'd3d9tri.exe (Direct3D 9)']])
-      $('sample').add(new Option(label, new URL(`../../tests/programs/gui/${name}`, import.meta.url).href));
+    const groups = new Map();
+    const group = (label) => {
+      if (!groups.has(label)) {
+        const g = document.createElement('optgroup');
+        g.label = label;
+        $('sample').append(g);
+        groups.set(label, g);
+      }
+      return groups.get(label);
+    };
+    for (const p of manifest.programs) group("Wine's programs").append(new Option(p.split('/').pop(), p));
+    for (const s of samples) {
+      const url = new URL(`../../${s.path}`, import.meta.url).href;
+      group(s.group).append(new Option(s.label, url));
+      if (s.args) sampleArgs.set(url, s.args);
+    }
     $('samples').hidden = false;
   })
   .catch(() => {});
+// A sample's suggested arguments go in the arguments box.
+$('sample').onchange = () => ($('args').value = sampleArgs.get($('sample').value) ?? '');
 $('runsample').onclick = async () => {
   const rel = $('sample').value;
   const bytes = await (await fetch(new URL(rel, bundleUrl))).arrayBuffer();

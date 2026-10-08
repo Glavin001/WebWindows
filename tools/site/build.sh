@@ -23,9 +23,12 @@ for d in web wine; do cp -r "$root/runtime/$d" "$out/runtime/$d"; done
 cp "$root"/runtime/*.mjs "$out/runtime/"
 cp "$translator" "$out/target/wasm32-unknown-unknown/release-wasm/"
 cp -r "$bundle" "$out/target/wine-bundle"
-cp "$root/tests/programs/hello.exe" "$out/tests/programs/"
-mkdir -p "$out/tests/programs/gui"
-cp "$root/tests/programs/gui/d3d9tri.exe" "$root/tests/programs/gui/d3d9bench.exe" "$out/tests/programs/gui/"
+# The sample programs the page lists (runtime/web/samples.json).
+node -e 'for (const s of JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))) console.log(s.path)' \
+  "$root/runtime/web/samples.json" | while read -r p; do
+  mkdir -p "$out/$(dirname "$p")"
+  cp "$root/$p" "$out/$p"
+done
 # The d3dgpu demo and test page (runtime/d3dgpu/build.sh), when built.
 if [ -f "$root/runtime/d3dgpu/pkg/d3dgpu_web_bg.wasm" ]; then
   cp -r "$root/runtime/d3dgpu" "$out/runtime/d3dgpu"

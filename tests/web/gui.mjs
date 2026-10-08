@@ -2,7 +2,8 @@
 // Windowed Wine programs in headless Chromium (Milestone 4): runs Wine's
 // Minesweeper and Notepad from the Wine bundle through the web front end,
 // checks the canvas shows them, then clicks and types on the canvas and
-// checks the programs respond. Then (Milestone 5) a DirectDraw and
+// checks the programs respond (after checking the page lists every sample
+// program, runtime/web/samples.json). Then (Milestone 5) a DirectDraw and
 // DirectSound program built here with MinGW (tests/web/ddsound.c): its
 // animation on the canvas, its tone in the page's audio ring. Screens are
 // saved in target/gui.
@@ -16,7 +17,7 @@
 
 import { execFileSync, spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -93,6 +94,19 @@ try {
   const page = await browser.newPage({ viewport: { width: 1000, height: 1100 }, ignoreHTTPSErrors: !!proxy });
   if (site?.searchParams.has('_vercel_share')) await page.goto(site.href);
   page.on('pageerror', (e) => console.error('page error:', e.message));
+
+  // The sample list: Wine's programs and every test program in
+  // runtime/web/samples.json, each one served (the site carries them all).
+  await page.goto(`${base}/runtime/web/`);
+  await page.waitForSelector('#samples:not([hidden])', { timeout: 60000 });
+  const listed = await page.$$eval('#sample option', (os) => os.map((o) => o.value));
+  const samples = JSON.parse(readFileSync(join(repo, 'runtime/web/samples.json'), 'utf8'));
+  const missing = [];
+  for (const s of samples) {
+    const url = listed.find((v) => v.endsWith(`/${s.path}`));
+    if (!url || !(await page.evaluate((u) => fetch(u, { method: 'HEAD' }).then((r) => r.ok), url))) missing.push(s.path);
+  }
+  check('samples: every program listed and served', !missing.length && listed.length > samples.length, missing.length ? `missing ${missing.join(', ')}` : `${listed.length} programs`);
 
   // Minesweeper: LEDs, smiley and the board; a click reveals a square.
   await open(page, 'winemine.exe');
