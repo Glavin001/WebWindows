@@ -1,12 +1,10 @@
 name: CI
 
-# Pull requests, and main once they merge (not every branch push). Run by
-# hand (Actions > CI > Run workflow) it tests everything whatever changed.
+# Pull requests, and main once they merge (not every branch push).
 on:
   pull_request:
   push:
     branches: [main]
-  workflow_dispatch:
 
 # A new push to a pull request cancels its run that is still going.
 concurrency:
@@ -38,12 +36,11 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      code: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.code == 'true' }}
+      code: ${{ steps.filter.outputs.code }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
         id: filter
-        if: github.event_name != 'workflow_dispatch'
         with:
           # A file is code when it matches all of these.
           predicate-quantifier: every
@@ -137,9 +134,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # The linux job's cache: it builds the same debug translator.
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' && matrix.shard == '1/2' }}
+          shared-key: linux
+          save-if: false
       - name: Install toolchains
         run: |
           sudo apt-get update
@@ -167,9 +166,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # Keyed as the wine job that built these before was.
       - uses: Swatinem/rust-cache@v2
         with:
+          shared-key: wine
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Started first, to build while Wine is restored and brought up to
+      # date; the bundle step waits for it.
+      - name: Build the translator and the d3dgpu module (in the background)
+        run: |
+          { cargo build --release -p wwt-cli \
+            && cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm \
+            && runtime/d3dgpu/build.sh; echo $? > "$RUNNER_TEMP/rust.tmp"; mv "$RUNNER_TEMP/rust.tmp" "$RUNNER_TEMP/rust.status"; } > "$RUNNER_TEMP/rust.log" 2>&1 &
       - uses: ./.github/actions/wine
         id: wine
         with:
@@ -200,12 +208,13 @@ jobs:
             target/wine-unix/wine_unix.json
             target/wine-unix/win32u_syscalls.json
           key: ${{ steps.wine-unix.outputs.cache-primary-key }}
-      - name: Build the translator, the d3dgpu module and the Wine bundle
+      - name: Wait for the translator and the d3dgpu module
         run: |
-          cargo build --release -p wwt-cli
-          cargo build -p wwt-wasm --target wasm32-unknown-unknown --profile release-wasm
-          runtime/d3dgpu/build.sh
-          node runtime/node/wine-bundle.mjs
+          while [ ! -f "$RUNNER_TEMP/rust.status" ]; do sleep 1; done
+          cat "$RUNNER_TEMP/rust.log"
+          exit "$(cat "$RUNNER_TEMP/rust.status")"
+      - name: The Wine bundle
+        run: node runtime/node/wine-bundle.mjs
       # One archive: it keeps the translator executable, and it is quicker
       # to move than the bundle's files one by one.
       - name: Pack the build
@@ -245,6 +254,10 @@ jobs:
           name: wine-build
       - name: Unpack the build
         run: zstd -dc wine-build.tar.zst | tar -xf -
+      - uses: actions/cache@v4
+        with:
+          path: ~/.npm/_npx
+          key: npx-vercel-62
       - name: Deploy the site to Vercel
         id: vercel
         env:
