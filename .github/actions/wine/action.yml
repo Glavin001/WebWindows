@@ -24,7 +24,7 @@ runs:
     - name: What to build
       shell: bash
       run: |
-        echo "WINE_TARGETS=ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts hid version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d d3d8 d3d9 d3dcompiler_47 opengl32 dinput dinput8 setupapi apisetschema ws2_32 wsock32 crypt32 dnsapi nsi iphlpapi secur32 bcrypt normaliz wldap32 wininet mpr riched20 riched32 kernel32/tests user32/tests gdi32/tests" >> "$GITHUB_ENV"
+        echo "WINE_TARGETS=ntdll kernelbase kernel32 msvcrt ucrtbase advapi32 sechost user32 gdi32 win32u imm32 combase comctl32 comctl32_v6 coml2 cryptbase ole32 oleaut32 rpcrt4 uxtheme comdlg32 shcore shell32 shlwapi programs/winemine programs/notepad fonts hid version winmm msacm32 dsound mmdevapi winepulse.drv ddraw wined3d d3d8 d3d9 d3dcompiler_47 opengl32 dinput dinput8 setupapi msvfw32 avifil32 apisetschema ws2_32 wsock32 crypt32 dnsapi nsi iphlpapi secur32 bcrypt normaliz wldap32 wininet mpr riched20 riched32 kernel32/tests user32/tests gdi32/tests" >> "$GITHUB_ENV"
     - name: Install Wine's build tools and MinGW
       shell: bash
       run: |

@@ -61,7 +61,7 @@ const GUI_DLLS = [
 // talk to their own server in memory).
 const MEDIA_DLLS = [
   'version', 'winmm', 'msacm32', 'dsound', 'mmdevapi', 'winepulse.drv', 'ddraw', 'wined3d', 'd3d8', 'd3d9',
-  'd3dcompiler_47', 'opengl32', 'dinput', 'dinput8', 'hid', 'setupapi',
+  'd3dcompiler_47', 'opengl32', 'dinput', 'dinput8', 'hid', 'setupapi', 'msvfw32', 'avifil32',
   'ws2_32', 'wsock32', 'iphlpapi', 'dnsapi', 'nsi',
 ];
 // Networking and cryptography (PuTTY, curl): likewise fetched only for
