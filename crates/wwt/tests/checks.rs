@@ -37,9 +37,28 @@ fn redefined_base_is_checked_again() {
 
 #[test]
 fn distant_load_is_checked() {
-    // mov eax, [ecx]; add eax, [ecx+0x2000]; ret
+    // mov eax, [ecx]; add eax, [ecx+0x9000]; ret
     assert_eq!(
-        guest_checks(&[0x8b, 0x01, 0x03, 0x81, 0x00, 0x20, 0x00, 0x00, 0xc3]),
+        guest_checks(&[0x8b, 0x01, 0x03, 0x81, 0x00, 0x90, 0x00, 0x00, 0xc3]),
+        2
+    );
+}
+
+#[test]
+fn bounded_index_shares_the_base_check() {
+    // mov eax, [ecx]; movzx edx, al; add eax, [ecx+edx*4]; ret
+    // edx*4 is at most 1020: within the window of the first check.
+    assert_eq!(
+        guest_checks(&[0x8b, 0x01, 0x0f, 0xb6, 0xd0, 0x03, 0x04, 0x91, 0xc3]),
+        1
+    );
+}
+
+#[test]
+fn unbounded_index_is_checked() {
+    // mov eax, [ecx]; mov edx, eax; add eax, [ecx+edx*4]; ret
+    assert_eq!(
+        guest_checks(&[0x8b, 0x01, 0x89, 0xc2, 0x03, 0x04, 0x91, 0xc3]),
         2
     );
 }

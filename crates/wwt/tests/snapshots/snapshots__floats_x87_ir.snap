@@ -59,7 +59,7 @@ function 0x4013e0:
     v440 = I32Ne v96, v439
     br v440 ? b3 : b4
   b3 @0x401180:
-    v441 = I32Eq edi, eax
+    v441 = I32Eq edi, v96
     br v441 ? b5 : b6
   b4 @0x4011a2:
     v106 = const 0x40d044
@@ -200,7 +200,7 @@ function 0x4013e0:
     v210 = I32Sub esp, v209
     store4.trusted [v210], v208
     esp = v210
-    call [eax] ret=0x401201 -> b23
+    call [v183] ret=0x401201 -> b23
   b22 @0x401209:
     v211 = const 0x401f10
     store4.trusted [esp], v211
@@ -228,14 +228,12 @@ function 0x4013e0:
     v229 = const 0x4
     v230 = I32Sub v223, v229
     store4.trusted [v230], v228
-    esp = v230
     jump b44
   b25 @0x40122a:
     v231 = const 0x40122f
     v232 = const 0x4
-    v233 = I32Sub esp, v232
+    v233 = I32Sub v472, v232
     store4.trusted [v233], v231
-    esp = v233
     jump b46
   b26 @0x40122f:
     v234 = const 0x40d01c
@@ -246,10 +244,10 @@ function 0x4013e0:
     v239 = const 0x4
     v240 = I32Add v238, v239
     edi = v240
-    store4.trusted [esp], v240
+    store4.trusted+0x4 [v233], v240
     v243 = const 0x401244
     v244 = const 0x4
-    v245 = I32Sub esp, v244
+    v245 = I32Sub v478, v244
     store4.trusted [v245], v243
     esp = v245
     call 0x407f80 ret=0x401244 -> b27
@@ -272,7 +270,7 @@ function 0x4013e0:
     v260 = const 0xffffffe0
     v261 = I32Add ebp, v260
     store4.trusted [v261], ecx
-    v264 = I32Add ebx, v256
+    v264 = I32Add v247, v256
     eax = v264
     v267 = const 0xffffffdc
     v268 = I32Add ebp, v267
@@ -280,7 +278,6 @@ function 0x4013e0:
     v271 = const 0xffffffe4
     v272 = I32Add ebp, v271
     store4.trusted [v272], v264
-    esi = esi
     jump b31
   b30 @0x4012a6:
     v274 = const 0x0
@@ -396,7 +393,6 @@ function 0x4013e0:
     v455 = I32Ne v369, ebx
     br v455 ? b31 : b42
   b39 @0x4013c7:
-    esi = esi
     v373 = const 0x1
     v374 = const 0x40d064
     store4.trusted [v374], v373
@@ -472,7 +468,7 @@ function 0x4013e0:
     ret v436
   b44 @0x407950:
     v457 = const 0x4
-    v458 = I32Sub esp, v457
+    v458 = I32Sub v230, v457
     store4.trusted [v458], ebp
     v463 = load4.trusted+0x8 [v458]
     v464 = const 0x40da60
@@ -497,9 +493,9 @@ function 0x4013e0:
     ftop = const 0x0
     v475 = const 0x0
     store1.native+0x5c [cpu], v475
-    v476 = load4.trusted [esp]
+    v476 = load4.trusted [v233]
     v477 = const 0x4
-    v478 = I32Add esp, v477
+    v478 = I32Add v233, v477
     esp = v478
     v479 = const 0x40122f
     v480 = I32Eq v476, v479

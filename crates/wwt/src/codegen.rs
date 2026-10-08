@@ -69,7 +69,9 @@ const G_ZERO_L2: u32 = 4;
 
 /// How far (bytes) a load may be from an address that passed a check and
 /// still skip its own (see `check_covered`).
-const CHECK_WINDOW: u32 = 0x1000 - 16;
+const CHECK_WINDOW: u32 = 0x8000 - 16;
+/// Largest index range `root + [0, r]` tracked for check elimination.
+const MAX_INDEX: u32 = CHECK_WINDOW / 2;
 
 fn val_type(t: Ty) -> ValType {
     match t {
@@ -392,21 +394,30 @@ struct FnGen<'g, 'a> {
     tmp_i64: u32,
     label_local: u32,
     emitted: Vec<bool>,
-    /// Addresses whose guest-limit check passed, as (vreg, offset): loads
+    /// Addresses whose guest-limit check passed, as (vreg, lo, hi): some
+    /// address in `vreg + [lo, hi]` passed (lo = hi: that one did). Loads
     /// near them skip the check (see `check_covered`). `facts_local` holds
     /// any vreg and lasts until the end of the block or the vreg's next
     /// definition; `facts_tree` holds single-definition temporaries and is
     /// scoped to the dominator subtree being emitted.
-    facts_local: Vec<(V, u32)>,
-    facts_tree: Vec<(V, u32)>,
+    facts_local: Vec<(V, u32, u32)>,
+    facts_tree: Vec<(V, u32, u32)>,
     /// Vregs with one definition, in a block that dominates their uses.
     def_block: Vec<u32>,
     structured: bool,
     cur_block: BlockId,
-    /// Within the current block, temporaries known to equal `root + off`.
-    alias: Vec<(V, V, u32)>,
+    /// Within the current block, temporaries known to equal `root + off +
+    /// x` for some x in [0, r] (r = 0: exactly `root + off`), as
+    /// (temporary, root, off, r).
+    alias: Vec<(V, V, u32, u32)>,
+    /// The same, between single-definition temporaries, scoped like
+    /// `facts_tree`.
+    alias_tree: Vec<(V, V, u32, u32)>,
     /// Constant value of single-definition temporaries defined by a constant.
     const_of: Vec<Option<u32>>,
+    /// Upper bound of single-definition temporaries' values, where known
+    /// (masks, shifts, zero-extending loads): u32::MAX otherwise.
+    max_of: Vec<u32>,
 }
 
 const UNASSIGNED: u32 = u32::MAX;
@@ -444,7 +455,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
             structured: true,
             cur_block: 0,
             alias: vec![],
+            alias_tree: vec![],
             const_of: vec![],
+            max_of: vec![],
         };
         g.local_of[CPU as usize] = 0;
         g.assign_locals();
@@ -803,6 +816,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 }
             }
         }
+        self.compute_max_of(&order);
         // Entry: load live state.
         let live = self.a.state_live_in(0) & ALL_STATE;
         self.reload(live);
@@ -886,9 +900,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emitted[x as usize] = true;
         // Everything emitted from here on until this returns is dominated
         // by `x`, so facts established in `x` hold there.
-        let scope = self.facts_tree.len();
+        let scope = (self.facts_tree.len(), self.alias_tree.len());
         self.do_tree_inner(x);
-        self.facts_tree.truncate(scope);
+        self.facts_tree.truncate(scope.0);
+        self.alias_tree.truncate(scope.1);
     }
 
     fn do_tree_inner(&mut self, x: BlockId) {
@@ -1172,62 +1187,133 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             if let Some(d) = inst.dst {
                 // Facts and aliases about the old value of `d` are void.
-                self.facts_local.retain(|&(v, _)| v != d);
-                self.alias.retain(|&(t, r, _)| t != d && r != d);
+                self.facts_local.retain(|&(v, _, _)| v != d);
+                self.alias.retain(|&(t, r, _, _)| t != d && r != d);
                 if let Op::Bin(BinOp::I32Add, x, y) = inst.op {
                     let c = (self.const_of[y as usize], self.const_of[x as usize]);
-                    let (root, off) = match c {
+                    let (mx, my) = (self.max_of[x as usize], self.max_of[y as usize]);
+                    let (root, off, r) = match c {
                         (Some(c), _) => self.resolve(x, c),
                         (None, Some(c)) => self.resolve(y, c),
-                        _ => (d, 0),
+                        // A base plus a small index (an interpreter's
+                        // operand field, a byte table lookup).
+                        _ if my <= MAX_INDEX && mx > MAX_INDEX => {
+                            let (root, off, r) = self.resolve(x, 0);
+                            (root, off, r.saturating_add(my))
+                        }
+                        _ if mx <= MAX_INDEX && my > MAX_INDEX => {
+                            let (root, off, r) = self.resolve(y, 0);
+                            (root, off, r.saturating_add(mx))
+                        }
+                        _ => (d, 0, 0),
                     };
-                    if root != d {
-                        self.alias.push((d, root, off));
+                    if root != d && r <= MAX_INDEX {
+                        let temp = |v: V| self.def_block[v as usize] != u32::MAX;
+                        if self.structured && temp(d) && temp(root) {
+                            self.alias_tree.push((d, root, off, r));
+                        } else {
+                            self.alias.push((d, root, off, r));
+                        }
                     }
                 }
             }
         }
     }
 
+    /// Upper bounds of single-definition temporaries (see `max_of`), in
+    /// one pass over the blocks in reverse postorder (definitions come
+    /// before their uses).
+    fn compute_max_of(&mut self, order: &[BlockId]) {
+        let f = self.f;
+        let mut m = vec![u32::MAX; f.vtypes.len()];
+        for &b in order {
+            for inst in &f.blocks[b as usize].insts {
+                let Some(d) = inst.dst else { continue };
+                if self.def_block[d as usize] == u32::MAX || f.vtypes[d as usize] != Ty::I32 {
+                    continue;
+                }
+                let k = |v: V| self.const_of[v as usize];
+                m[d as usize] = match inst.op {
+                    Op::Const(c) => c as u32,
+                    Op::Copy(a) => m[a as usize],
+                    Op::Bin(BinOp::I32And, a, b) => m[a as usize].min(m[b as usize]),
+                    Op::Bin(BinOp::I32ShrU, a, b) => match k(b) {
+                        Some(s) => m[a as usize] >> (s & 31),
+                        None => u32::MAX,
+                    },
+                    Op::Bin(BinOp::I32Shl, a, b) => match k(b) {
+                        Some(s) if m[a as usize].leading_zeros() >= (s & 31) => {
+                            m[a as usize] << (s & 31)
+                        }
+                        _ => u32::MAX,
+                    },
+                    Op::Bin(BinOp::I32Mul, a, b) => {
+                        m[a as usize].checked_mul(m[b as usize]).unwrap_or(u32::MAX)
+                    }
+                    Op::Bin(BinOp::I32Add, a, b) => {
+                        m[a as usize].checked_add(m[b as usize]).unwrap_or(u32::MAX)
+                    }
+                    Op::Load { mem, .. } if !mem.signed && mem.size < 4 => {
+                        (1u32 << (8 * mem.size as u32)) - 1
+                    }
+                    _ => u32::MAX,
+                };
+            }
+        }
+        self.max_of = m;
+    }
+
     // ---- Check elimination -----------------------------------------------------
     //
     // A passed guest-limit check puts `addr + off` in [NULL_LIMIT,
     // guest limit - 16]. A later load at `addr + off2`, with the same `addr`
-    // value and |off2 - off| below CHECK_WINDOW, then lies within 4 KB of
-    // that range: in the guest's null region or in the first page above the
-    // guest limit (the lookup's first level), so reading it cannot harm
-    // the runtime. Such loads skip their check. The cost is precision: a
-    // load there reads memory instead of faulting, which only a pointer
-    // within 4 KB of those boundaries can notice. Stores are never skipped
+    // value and |off2 - off| up to CHECK_WINDOW, then lies within 32 KB of
+    // that range: in the guest's 64 KB null region or in the lookup's first
+    // level (4 MB) just above the guest limit, so reading it cannot harm
+    // the runtime. Such loads skip their check. Addresses are tracked as a
+    // root plus a constant and, through aliases, a bounded index (an
+    // interpreter's `base + (insn >> 3 & 0xff0)`), so a check of one such
+    // address covers the others within the window. The cost is precision:
+    // a load there reads memory instead of faulting, which only a pointer
+    // within 32 KB of those boundaries can notice. Stores are never skipped
     // (the store map has to see every page they touch).
 
-    /// `v + off` as `root + off'`, following this block's aliases.
-    fn resolve(&self, v: V, off: u32) -> (V, u32) {
-        match self.alias.iter().find(|&&(t, _, _)| t == v) {
-            Some(&(_, r, o)) => (r, o.wrapping_add(off)),
-            None => (v, off),
+    /// `v + off` as `root + off' + x` for some x in [0, r], following this
+    /// block's aliases.
+    fn resolve(&self, v: V, off: u32) -> (V, u32, u32) {
+        match self
+            .alias
+            .iter()
+            .chain(self.alias_tree.iter())
+            .find(|&&(t, _, _, _)| t == v)
+        {
+            Some(&(_, root, o, r)) => (root, o.wrapping_add(off), r),
+            None => (v, off, 0),
         }
     }
 
-    /// Whether a passed check covers a load at `v + off`.
+    /// Whether a passed check covers a load at `v + off`: every address the
+    /// load may access is within CHECK_WINDOW of every address the check
+    /// may have passed.
     fn check_covered(&self, v: V, off: u32) -> bool {
-        let (v, off) = self.resolve(v, off);
+        let (v, lo2, r) = self.resolve(v, off);
+        let hi2 = lo2.wrapping_add(r);
+        let near = |a: u32, b: u32| (a.wrapping_sub(b) as i32).unsigned_abs() <= CHECK_WINDOW;
         self.facts_local
             .iter()
             .chain(self.facts_tree.iter())
-            .any(|&(fv, fo)| {
-                fv == v && (fo.wrapping_sub(off) as i32).unsigned_abs() <= CHECK_WINDOW
-            })
+            .any(|&(fv, lo, hi)| fv == v && near(hi2, lo) && near(hi, lo2))
     }
 
     /// Records that the address `v + off` passed a check.
     fn checked(&mut self, v: V, off: u32) {
-        let (v, off) = self.resolve(v, off);
+        let (v, lo, r) = self.resolve(v, off);
+        let hi = lo.wrapping_add(r);
         let d = self.def_block.get(v as usize).copied().unwrap_or(u32::MAX);
         if self.structured && d != u32::MAX && self.dominates(d, self.cur_block) {
-            self.facts_tree.push((v, off));
+            self.facts_tree.push((v, lo, hi));
         } else {
-            self.facts_local.push((v, off));
+            self.facts_local.push((v, lo, hi));
         }
     }
 

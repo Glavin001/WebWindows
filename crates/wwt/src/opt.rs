@@ -271,7 +271,8 @@ pub fn simplify(f: &mut Function) {
         let mut lconst: HashMap<V, u64> = HashMap::new();
         let mut lcopy: HashMap<V, V> = HashMap::new();
         let mut insts = std::mem::take(&mut f.blocks[bi].insts);
-        for inst in insts.iter_mut() {
+        let mut no_ops = vec![];
+        for (k, inst) in insts.iter_mut().enumerate() {
             for u in inst.op.uses_mut() {
                 let mut v = resolve_g(*u, &gcopy);
                 if let Some(&s) = lcopy.get(&v) {
@@ -312,6 +313,12 @@ pub fn simplify(f: &mut Function) {
                 inst.op = op;
             }
             let _ = ty;
+            // `v = v` (alignment no-ops such as `lea esi, [esi+0]`) changes
+            // nothing; kept, it would make a state vreg look written.
+            if matches!(inst.op, Op::Copy(s) if Some(s) == inst.dst) {
+                no_ops.push(k);
+                continue;
+            }
             if let Some(d) = inst.dst {
                 // Invalidate facts that depend on the redefined vreg.
                 lconst.remove(&d);
@@ -362,6 +369,9 @@ pub fn simplify(f: &mut Function) {
             }
         }
         f.blocks[bi].term = term;
+        for k in no_ops.into_iter().rev() {
+            insts.remove(k);
+        }
         f.blocks[bi].insts = insts;
     }
     f.remove_unreachable();
@@ -932,9 +942,107 @@ pub fn optimize(f: &mut Function, level: u32) {
     simplify(f);
     dce(f);
     simplify(f);
+    propagate_state_copies(f);
     fold_address_offsets(f);
     narrow(f);
     dce(f);
+}
+
+/// Across blocks, a use of a state vreg that on every path holds a copy of
+/// a single-definition temporary (`esi = v777` in a dominating block, not
+/// redefined since) reads the temporary instead. Code generation knows
+/// more about temporaries (address aliases and checks, see
+/// `codegen::check_covered`); the state vreg stays as it was for write-back.
+pub fn propagate_state_copies(f: &mut Function) {
+    let n = f.blocks.len();
+    let mut defs = vec![0u32; f.vtypes.len()];
+    for b in &f.blocks {
+        for inst in &b.insts {
+            if let Some(d) = inst.dst {
+                defs[d as usize] += 1;
+            }
+        }
+    }
+    let single = |v: V| v >= NUM_STATE && defs[v as usize] == 1;
+    type Copies = Option<Vec<(V, V)>>; // None: not yet reached
+    let step = |b: &Block, mut m: Vec<(V, V)>| -> Vec<(V, V)> {
+        for inst in &b.insts {
+            if let Some(d) = inst.dst {
+                if d < NUM_STATE {
+                    m.retain(|&(s, _)| s != d);
+                    if let Op::Copy(t) = inst.op {
+                        if single(t) {
+                            m.push((d, t));
+                        }
+                    }
+                }
+            }
+        }
+        m
+    };
+    let order = f.rpo();
+    let preds = f.predecessors();
+    let mut inn: Vec<Copies> = vec![None; n];
+    inn[0] = Some(vec![]);
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &b in &order {
+            let m = if b == 0 {
+                Some(vec![])
+            } else {
+                let mut acc: Copies = None;
+                for &p in &preds[b as usize] {
+                    let Some(pin) = &inn[p as usize] else {
+                        continue;
+                    };
+                    // After a call the state is reloaded.
+                    let out = if f.blocks[p as usize].term.clobbers_state() {
+                        vec![]
+                    } else {
+                        step(&f.blocks[p as usize], pin.clone())
+                    };
+                    acc = Some(match acc {
+                        None => out,
+                        Some(a) => a.into_iter().filter(|x| out.contains(x)).collect(),
+                    });
+                }
+                acc
+            };
+            if m.is_some() && m != inn[b as usize] {
+                inn[b as usize] = m;
+                changed = true;
+            }
+        }
+    }
+    for b in 0..n {
+        let Some(mut m) = inn[b].clone() else {
+            continue;
+        };
+        let blk = &mut f.blocks[b];
+        for inst in &mut blk.insts {
+            for u in inst.op.uses_mut() {
+                if let Some(&(_, t)) = m.iter().find(|&&(s, _)| s == *u) {
+                    *u = t;
+                }
+            }
+            if let Some(d) = inst.dst {
+                if d < NUM_STATE {
+                    m.retain(|&(s, _)| s != d);
+                    if let Op::Copy(t) = inst.op {
+                        if single(t) {
+                            m.push((d, t));
+                        }
+                    }
+                }
+            }
+        }
+        for u in blk.term.uses_mut() {
+            if let Some(&(_, t)) = m.iter().find(|&&(s, _)| s == *u) {
+                *u = t;
+            }
+        }
+    }
 }
 
 pub fn flag_kind_count() -> u32 {
