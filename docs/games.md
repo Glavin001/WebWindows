@@ -8,6 +8,7 @@ of their files are in the repository.
 | --- | --- | --- |
 | Cave Story (freeware) | DirectDraw | Playable with sound (Milestone 5) |
 | Quake II demo 3.14 | Software renderer (`ref_soft`, DirectDraw/GDI) | `demo1` renders and runs, in Node and in the browser |
+| Quake II demo 3.14 | OpenGL (`ref_gl`, through `native/opengl32` over Direct3D 9) | `demo1` renders (recorded in Node, replayed on the GPU); not yet tried in a browser |
 | Quake (shareware) on FTEQW | Direct3D 9 | Starts; exits before its window opens |
 
 ## Quake II demo
@@ -27,9 +28,16 @@ node runtime/node/wine.mjs --folder --screenshot q2.png --run-for 120000 \
 On the page: choose the `Install/Data` folder, pick `quake2.exe`, give the
 same arguments, tick "on Wine" and run.
 
-Quake II has no Direct3D renderer: `ref_soft` draws with DirectDraw or a DIB
-section, `ref_gl` with OpenGL, which this Wine is built without (an OpenGL
-layer over WebGPU would be its own project).
+`ref_soft` draws with DirectDraw or a DIB section. `ref_gl` draws with
+OpenGL, which runs on `native/opengl32`: OpenGL 1.1 turned into Direct3D 9
+calls on Wine's d3d9, which draws with WebGPU (wined3d's WebGPU backend and
+the d3dgpu core). Run it with `+set vid_ref gl` instead of `soft`. In Node
+there is no GPU: `--d3d-record FILE` keeps the Direct3D command stream, and
+`cargo run --release -p d3dgpu-core --example replay -- FILE OUT_DIR` draws
+it on the native GPU (the frames come back in two readbacks each, 409 and
+71 rows at 640x480).
+
+![Quake II demo1 with ref_gl, replayed from a recording](qa/quake2-demo1-gl.png)
 
 What it needed:
 
@@ -64,6 +72,17 @@ exits with code 5 before opening its window; not looked into yet.
   workers in a loop that makes no system calls. Translated loops now check
   the thread's slice deadline at their back edges and yield (ABI version 6:
   a `preempt` import, a `tick` address, `cpu.PREEMPT_AT`).
+* **Resuming a preempted loop at the wrong place, or from stale state.**
+  Quake II's OpenGL renderer has wined3d compile fixed-function shaders with
+  vkd3d while its sound threads run, so loops there get preempted, and
+  resumed state has to be exact. Two things were not. The optimizer kept
+  state such as `esp` and `ebp` only in temporaries inside a function,
+  writing it back at calls and returns but not at loop back edges, where a
+  preempted thread writes its state back and resumes; back edges now keep
+  all dirty state live (`opt::preempt_points`). And a loop with two entries,
+  made reducible with a dispatch header that carries one entry's address,
+  resumed at that entry whichever was meant; the check now resumes at the
+  entry its label setter names, or is left out where no address is known.
 * **`*.*` matched nothing.** Wine's `FindFirstFile` turns `*.*` into NT's
   DOS wildcards (`<`, `>`, `"`), which the host's directory listing now
   understands; it also answers the `FileIdExtdBothDirectoryInformation` class
