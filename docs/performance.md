@@ -93,6 +93,41 @@ adds the call ABI work, the native heap and relocation-only discovery:
 its real file system; the translated tier's files live in memory. The
 registry workload is not counted: the runtime has no registry yet.)
 
+After merging Milestone 5 (threads, exceptions, sound, DirectDraw and
+Direct3D) and the native string functions, one run of the whole suite
+(same container; native itself ran 5–25% slower than in the table above,
+so compare the ratios):
+
+| Workload | native | emcc | wine | wwt-wine | vs ref |
+| --- | --- | --- | --- | --- | --- |
+| coremark | 1.29 | 1.35 | 1.25 | 2.14 | 60% |
+| sqlite/speedtest1 | 4.65 | 5.03 | 44.8 | 11.51 | 40% |
+| lua/fib | 0.047 | 0.079 | 0.043 | 0.231 | 20% |
+| lua/tables | 0.363 | 0.637 | 0.376 | 1.063 | 34% |
+| lua/strings | 0.231 | 0.252 | 0.254 | 0.810 | 29% |
+| lua/sort | 0.609 | 0.609 | 0.511 | 1.657 | 37% |
+| lua/objects | 0.824 | 1.226 | 0.961 | 3.333 | 25% |
+| lua/float | 0.395 | 0.866 | 0.385 | 1.479 | 27% |
+| apibench/heap | — | — | 0.067 | 0.037 | 181% |
+| apibench/malloc | — | — | 0.067 | 0.042 | 160% |
+| apibench/files | — | — | 1.307 | 0.145 | 901% |
+| apibench/seek | — | — | 0.192 | 0.268 | 72% |
+| apibench/strings | — | — | 0.881 | 1.251 | 70% |
+| apibench/sync | — | — | 0.058 | 0.132 | 44% |
+| apibench/qsort | — | — | 0.250 | 0.985 | 25% |
+| **geometric mean** | | | | | **56%** |
+
+Lua and SQLite run at the same speed before and after the merge when the
+two builds are timed back to back (`ab.mjs`); the lower ratios are the
+machine. System calls got slower with the thread scheduler: apibench's
+`seek` (a system call every few hundred instructions) went from 0.51 s to
+0.78 s at scale 8. Two changes took it back to 0.62 s: a lone thread past
+its time slice starts a new slice instead of polling the other threads at
+every system call, and the system call path looks up its handlers once
+per call number and checks the time slice against the tick count the
+ticker keeps in shared memory (a load) instead of calling
+`performance.now()`.
+
 What running real programs found that CoreMark could not:
 
 - **The Wine runtime's file system** wrote to the wrong offset, copied a
