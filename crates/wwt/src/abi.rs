@@ -112,8 +112,8 @@ pub mod flags {
     }
 }
 
-/// Fault codes passed to the host's `fault` import. Values are the Windows
-/// exception codes the runtime will eventually raise.
+/// Fault codes passed to the host's `fault` import, which returns the
+/// address to continue at. Values are the Windows exception codes.
 pub mod fault {
     pub const ACCESS_VIOLATION: u32 = 0xC000_0005;
     pub const INTEGER_DIVIDE_BY_ZERO: u32 = 0xC000_0094;
@@ -126,6 +126,15 @@ pub mod fault {
     pub const UNSUPPORTED: u32 = 0xE057_0001;
     /// Not a Windows code: `int n` (software interrupt).
     pub const SOFTWARE_INTERRUPT: u32 = 0xE057_0002;
+    /// Not a Windows code: an access violation on a write (the host raises
+    /// ACCESS_VIOLATION with the write flag).
+    pub const ACCESS_VIOLATION_WRITE: u32 = 0xE057_0003;
+    /// Not a Windows code: execution reached an address with no code (the
+    /// runtime raises ACCESS_VIOLATION with the execute flag).
+    pub const ACCESS_VIOLATION_EXECUTE: u32 = 0xE057_0004;
+    /// Not a Windows code: a general protection fault (far transfers and
+    /// selector loads); the host raises ACCESS_VIOLATION [0, 0xffffffff].
+    pub const GENERAL_PROTECTION: u32 = 0xE057_0005;
 }
 
 /// Addresses with special meaning to the dispatcher.
@@ -135,6 +144,9 @@ pub mod addr {
     /// Returning to this address stops the dispatcher loop (used as the
     /// return address of thread entry points).
     pub const STOP: u32 = 0xFFFF_FFF0;
+    /// Returning to this address also stops the dispatcher loop: the host
+    /// switches threads (the thread resumes later where it left off).
+    pub const YIELD: u32 = 0xFFFF_FFE0;
 }
 
 /// Names of the module imports every translated module expects.
@@ -157,7 +169,10 @@ pub const FUNCS_SECTION: &str = "wwt.funcs";
 /// Custom section with JSON metadata about the translation.
 pub const META_SECTION: &str = "wwt.meta";
 /// Bumped whenever generated code changes incompatibly, to invalidate caches.
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
+/// Every translated module exports its lazy-flags evaluator under this
+/// name: `(fk, fr, fa, fb, fc) -> eflags` (the arithmetic flags).
+pub const EFLAGS_EXPORT: &str = "eflags";
 
 #[derive(Serialize)]
 struct AbiJson {
@@ -166,6 +181,7 @@ struct AbiJson {
     flags: std::collections::BTreeMap<&'static str, u32>,
     fault: std::collections::BTreeMap<&'static str, u32>,
     stop_address: u32,
+    yield_address: u32,
     null_limit: u32,
     funcs_section: &'static str,
     meta_section: &'static str,
@@ -226,6 +242,9 @@ pub fn abi_json() -> String {
         ("SINGLE_STEP", fault::SINGLE_STEP),
         ("UNSUPPORTED", fault::UNSUPPORTED),
         ("SOFTWARE_INTERRUPT", fault::SOFTWARE_INTERRUPT),
+        ("ACCESS_VIOLATION_WRITE", fault::ACCESS_VIOLATION_WRITE),
+        ("ACCESS_VIOLATION_EXECUTE", fault::ACCESS_VIOLATION_EXECUTE),
+        ("GENERAL_PROTECTION", fault::GENERAL_PROTECTION),
     ]
     .into_iter()
     .collect();
@@ -235,6 +254,7 @@ pub fn abi_json() -> String {
         flags: fl,
         fault,
         stop_address: addr::STOP,
+        yield_address: addr::YIELD,
         null_limit: addr::NULL_LIMIT,
         funcs_section: FUNCS_SECTION,
         meta_section: META_SECTION,

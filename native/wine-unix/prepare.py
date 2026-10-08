@@ -166,7 +166,9 @@ int wasm_server_poll(void)
     {
         for (i = 0; i < nb_users; i++)
         {
-            if (pollfd[i].revents)
+            /* Removed entries have fd -1: poll() ignores them on Linux,
+             * Emscripten's reports them as invalid. */
+            if (pollfd[i].revents && pollfd[i].fd != -1 && poll_users[i])
             {
                 fd_poll_event( poll_users[i], pollfd[i].revents );
                 if (!--ret) break;
