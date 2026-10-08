@@ -487,14 +487,14 @@ mod tests {
     fn native_heap_names() {
         assert_eq!(native_heap("RtlAllocateHeap"), Some("RtlAllocateHeap"));
         assert_eq!(native_heap("RtlAllocateHeap@12"), None);
-        let f = native_body(0x1000, "RtlFreeHeap");
+        let f = native_body(0x1000, "RtlFreeHeap", false);
         assert_eq!(f.blocks.len(), 1);
         assert_eq!(f.blocks[0].term, Term::Native("RtlFreeHeap"));
     }
 
     #[test]
     fn memmove_returns_dst_and_pops_nothing() {
-        let f = body(0x1000, Builtin::MemMove);
+        let f = body(0x1000, Builtin::MemMove, false);
         assert_eq!(f.blocks.len(), 3);
         assert!(f.blocks[1]
             .insts
