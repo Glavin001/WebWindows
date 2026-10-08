@@ -1,0 +1,28 @@
+{
+  "note": "CoreMark, 30000 iterations, -O2 -march=i586 -mtune=generic -fno-isolate-erroneous-paths-dereference, HAS_FLOAT=0 (freestanding builds). Seconds of the measured part. Rounds interleaved. Built by tools/bench/lanes/coremark-lanes.sh.",
+  "date": "2026-10-08",
+  "checksum": "crcfinal 0x5275 on every lane",
+  "rounds": {
+    "native (Linux, -march=i586)": [1.310, 1.341, 1.421],
+    "qemu-i386 (Linux build)": [4.480, 4.842, 4.689],
+    "exe on native Wine": [1.330, 1.247, 1.335],
+    "ours, ahead of time": [2.438, 2.299, 2.283],
+    "ours, in-browser translator": [2.266, 2.418, 2.285],
+    "theseus, native": [13.076, 13.696, 13.339],
+    "theseus, wasm (Node)": [31.891, 31.746, 32.265],
+    "v86, multiboot kernel (Node)": [13.418, 14.075, 14.289],
+    "wine-assembly (Node)": [82.065]
+  },
+  "versions": {
+    "wwt": "96b3c14 (lanes run); dc901af translator",
+    "machine": "Intel Xeon @ 2.80GHz, 4 vCPU (shared container), Linux 6.18.44",
+    "node": "v22.22.0, V8 12.4.254.21-node.33",
+    "gcc": "13.3.0 (Ubuntu 24.04)",
+    "mingw": "i686-w64-mingw32-gcc 13-win32",
+    "wine": "wine-9.0 (Ubuntu 9.0~repack-4build3)",
+    "qemu": "qemu-i386 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+    "theseus": "github.com/evmar/theseus ec76333 (2026-10-06); rustc 1.99.0 stable for tc and the native build, rustc 1.101.0-nightly (1d81eb4ad 2026-10-07) with -Z build-std for wasm32, wasm-bindgen 0.2.121",
+    "v86": "npm v86 0.5.470+g6db8b15; SeaBIOS/VGA BIOS from github.com/copy/v86 6db8b15 (2026-10-04)",
+    "wine-assembly": "github.com/vgrichina/wine-assembly d1e40e9 (2026-10-08) with tools/bench/wine-assembly-console.patch"
+  }
+}

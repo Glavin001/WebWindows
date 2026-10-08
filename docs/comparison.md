@@ -8,6 +8,9 @@ the Windows API workloads. Every lane must print the reference's checksums.
 
 ## Results
 
+Dated snapshots, with every lane's version and how to rerun them:
+[results/2026-10-08](results/2026-10-08/README.md).
+
 `tools/bench/suite.mjs`, median of 3, one shared 4-vCPU Xeon container,
 Node 22 (V8 12.4), runs interleaved by round. Seconds:
 
@@ -111,7 +114,10 @@ first launch is dominated by translating it, not by compiling the result
 ## Diagnostics
 
 * **Ablations** (one optimization off at a time) and **progress over the
-  commits**: `docs/performance.md`, and the speed log page built from them.
+  commits**: `tools/bench/history/` builds each commit in
+  `checkpoints.txt` in its own worktree, runs the suite's workloads on it
+  (`run.mjs`, `ABL=1` for the ablations) and builds the speed log page
+  (`page.mjs`); `docs/performance.md` explains the optimizations.
 * **Residue counters**: every translated module has a `wwt.residue`
   section with, per function, the x86 registers written back to and loaded
   from the CPU state, memory checks, store-map lookups and calls through the

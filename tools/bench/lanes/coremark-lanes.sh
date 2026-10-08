@@ -67,6 +67,22 @@ if [ -n "$THESEUS" ]; then
   cp "$here/theseus-run.mjs" "$out/theseus-web/run.mjs"
 fi
 
+# What ran: keep this with any results.
+echo "date $(date -u +%Y-%m-%dT%H:%MZ)"
+echo "machine $(awk -F': ' '/model name/ { print $2; exit }' /proc/cpuinfo), $(nproc) CPUs, Linux $(uname -r)"
+echo "wwt $(git -C "$root" rev-parse --short HEAD)"
+echo "node $(node --version) (V8 $(node -p process.versions.v8))"
+echo "gcc $(gcc -dumpfullversion); mingw $(i686-w64-mingw32-gcc -dumpversion)"
+command -v wine > /dev/null && echo "wine $(wine --version)"
+command -v qemu-i386 > /dev/null && echo "qemu $(qemu-i386 --version | head -1)"
+if [ -n "$THESEUS" ]; then
+  echo "theseus $(git -C "$THESEUS" rev-parse --short HEAD) ($(git -C "$THESEUS" log -1 --format=%cs)); $(rustc --version); $(rustc +nightly --version); $(wasm-bindgen --version)"
+fi
+if [ -n "$V86_DIR" ]; then
+  echo "v86 $(node -p "require('$V86_DIR/node_modules/v86/package.json').version") (npm); BIOS from $(git -C "$V86_BIOS/.." rev-parse --short HEAD 2> /dev/null || echo "$V86_BIOS")"
+fi
+[ -n "$WINE_ASSEMBLY" ] && echo "wine-assembly $(git -C "$WINE_ASSEMBLY" rev-parse --short HEAD) ($(git -C "$WINE_ASSEMBLY" log -1 --format=%cs))"
+
 lane() { printf '%-26s %s\n' "$1" "${2:-—}"; }
 for r in $(seq "$rounds"); do
   echo "round $r"

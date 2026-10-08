@@ -1,0 +1,386 @@
+<title>WebWindows Speed Log</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,500..800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<style>
+/* Layout: one reading column of measured sections; each section is a question, a one-line answer, and the chart that shows it. */
+:root {
+  --bg: #f3f5f8;
+  --surface: #ffffff;
+  --ink: #141922;
+  --muted: #5a6474;
+  --rule: #dbe0e8;
+  --wwt: #2252d1;      /* translated Wine: the tier we ship */
+  --native: #687384;
+  --emcc: #0d8587;
+  --wine: #8a3ea6;
+  --amber: #c26a05;
+  --rust: #b8461b;
+  --good: #1f8a4c;
+  --bad: #c23b3b;
+  --heat-lo: #f6e3dc;
+  --heat-hi: #2252d1;
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1117; --surface: #151a22; --ink: #e5e9f0; --muted: #98a2b3; --rule: #273040;
+    --wwt: #7b98ff; --native: #9aa4b4; --emcc: #3cc1c3; --wine: #c27fe0; --amber: #f0a234; --rust: #f07a4c;
+    --good: #4cc27f; --bad: #ef6b6b; --heat-lo: #2a1f22; --heat-hi: #7b98ff; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1117; --surface: #151a22; --ink: #e5e9f0; --muted: #98a2b3; --rule: #273040;
+  --wwt: #7b98ff; --native: #9aa4b4; --emcc: #3cc1c3; --wine: #c27fe0; --amber: #f0a234; --rust: #f07a4c;
+  --good: #4cc27f; --bad: #ef6b6b; --heat-lo: #2a1f22; --heat-hi: #7b98ff; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.55 var(--body); }
+.wrap { max-width: 1100px; margin: 0 auto; padding-inline: 20px; padding-block: 40px 64px; display: grid; gap: 44px; }
+header { display: grid; gap: 12px; }
+.eyebrow { font: 500 12px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font: 800 clamp(30px, 5vw, 46px)/1.05 var(--display); font-stretch: 85%; margin: 0; text-wrap: balance; letter-spacing: -.01em; }
+h1 .arrow { color: var(--wwt); }
+.lede { max-width: 68ch; margin: 0; color: var(--muted); font-size: 16px; }
+h2 { font: 700 22px/1.2 var(--display); font-stretch: 90%; margin: 0; text-wrap: balance; }
+section { display: grid; gap: 14px; min-width: 0; }
+section > p { margin: 0; max-width: 72ch; color: var(--muted); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.stat { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 16px 18px; display: grid; gap: 4px; align-content: start; }
+.stat .k { font: 500 11px/1.3 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.stat .v { font: 800 30px/1.1 var(--display); font-stretch: 85%; font-variant-numeric: tabular-nums; }
+.stat .v small { font: 500 15px var(--body); color: var(--muted); }
+.stat .d { font-size: 13px; color: var(--muted); }
+.up { color: var(--good); }
+.panel { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 16px; min-width: 0; }
+.chart { position: relative; height: 380px; }
+.chart.tall { height: 520px; }
+.chart.short { height: 300px; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; }
+.controls button { font: 500 13px var(--body); color: var(--ink); background: transparent; border: 1px solid var(--rule); border-radius: 999px; padding: 5px 12px; cursor: pointer; }
+.controls button[aria-pressed="true"] { background: var(--wwt); border-color: var(--wwt); color: var(--surface); }
+.controls button:focus-visible { outline: 2px solid var(--wwt); outline-offset: 2px; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.scroll { overflow-x: auto; }
+table.heat { border-collapse: separate; border-spacing: 2px; font: 12px/1.2 var(--mono); font-variant-numeric: tabular-nums; }
+table.heat th { font-weight: 500; color: var(--muted); text-align: left; white-space: nowrap; padding: 2px 6px; }
+table.heat thead th { writing-mode: vertical-rl; transform: rotate(180deg); height: 150px; vertical-align: bottom; text-align: left; padding: 4px 2px; }
+table.heat td { text-align: center; padding: 5px 4px; min-width: 40px; border-radius: 3px; }
+table.heat td.na { color: var(--muted); }
+.legend-note { font-size: 13px; color: var(--muted); }
+ol.steps { margin: 0; padding-left: 1.4em; display: grid; gap: 4px; max-width: 80ch; }
+ol.steps li { color: var(--muted); }
+ol.steps b { color: var(--ink); font-weight: 600; }
+.mono { font-family: var(--mono); font-size: 13px; }
+footer { color: var(--muted); font-size: 13px; display: grid; gap: 6px; max-width: 80ch; }
+@media (max-width: 520px) { .chart { height: 320px; } .chart.tall { height: 560px; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">x86 → WebAssembly · translated Wine in Node</div>
+    <h1>Speed log: <span id="h-from">–</span> <span class="arrow">→</span> <span id="h-to">–</span> of native speed</h1>
+    <p class="lede">Every checkpoint from the last day's performance work, rebuilt from its commit and run on the same machine against the same reference times. Speed is reference time divided by translated time: 100% means as fast as native code (or, for the Windows API workloads, as fast as Wine running natively).</p>
+  </header>
+
+  <div class="stats" id="stats"></div>
+
+  <section>
+    <h2>Progress across the checkpoints</h2>
+    <p>Geometric mean of each workload group. The bold line is the whole suite (15 measurements); the grey one takes the benchmarks the code before this work ran correctly (its runtime could not run SQLite, and its file system got the file benchmark wrong), so it reaches back to the start. Hover a point for the commit.</p>
+    <div class="controls" role="group" aria-label="Scale">
+      <button id="lin" aria-pressed="false">Linear</button>
+      <button id="log" aria-pressed="true">Log scale</button>
+    </div>
+    <div class="panel"><div class="chart tall"><canvas id="c-progress" aria-label="Speed over checkpoints"></canvas></div></div>
+  </section>
+
+  <section>
+    <h2>Every benchmark at every checkpoint</h2>
+    <p>Speed as a percentage of the reference. Blank cells are runs that failed or printed a wrong checksum (the early Wine file system could not run SQLite; the early runtime could not load Lua's script).</p>
+    <div class="panel scroll"><table class="heat" id="heat"></table></div>
+  </section>
+
+  <section>
+    <h2>Where we are now, next to the other ways to run it</h2>
+    <p>Speed relative to native Linux code (portable workloads) or native Wine (Windows API workloads), log scale. Emscripten compiles the C source to WebAssembly and is the ceiling for code in the browser; translated Wine runs the unmodified Windows <span class="mono">.exe</span>.</p>
+    <div class="panel"><div class="chart tall"><canvas id="c-now" aria-label="Tiers compared"></canvas></div></div>
+  </section>
+
+  <section>
+    <h2>What each optimization is worth today</h2>
+    <p>The current build with one optimization switched off at a time: how much slower each workload group gets. "No memory checks" is the other direction: an unsafe build that shows what checking every guest access still costs.</p>
+    <div class="panel"><div class="chart tall"><canvas id="c-abl" aria-label="Ablations"></canvas></div></div>
+  </section>
+
+  <section>
+    <h2>Start-up and code size</h2>
+    <p>Cold start boots Wine with nothing translated yet (every DLL translated and compiled); warm start reuses the translation cache. Code size is all translated WebAssembly the four programs needed, Wine's DLLs included. The browser ships Wine's DLLs translated ahead of time, so the cold start is a one-time cost in Node; its jump at the second checkpoint (reducible loops) is worth a look.</p>
+    <div class="two">
+      <div class="panel"><div class="chart short"><canvas id="c-start" aria-label="Start-up time"></canvas></div></div>
+      <div class="panel"><div class="chart short"><canvas id="c-size" aria-label="Code size"></canvas></div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Where the time goes now</h2>
+    <p>V8's sampling profiler on the current build. Translated x86 is the program and Wine's DLLs; native WebAssembly is the heap and string modules; JavaScript is the runtime (system calls, file system, the loader); start-up shows up as JavaScript and compilation.</p>
+    <div class="panel"><div class="chart tall"><canvas id="c-prof" aria-label="Profile categories"></canvas></div></div>
+  </section>
+
+  <section>
+    <h2>The checkpoints</h2>
+    <ol class="steps" id="steps"></ol>
+  </section>
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+const DATA = /*DATA*/null;
+
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const pct = (x) => (x == null ? '–' : x >= 10 ? `${Math.round(x * 100)}%` : `${(x * 100).toFixed(x < 0.1 ? 1 : 0)}%`);
+const geo = (xs) => { const v = xs.filter((x) => x > 0); return v.length ? Math.exp(v.reduce((a, x) => a + Math.log(x), 0) / v.length) : null; };
+
+// The benchmarks the code before this work ran correctly (right checksum).
+const BEFORE = new Set(DATA.benches.filter((k) => DATA.checkpoints[0].speed?.[k] > 0));
+const GROUPS = [
+  ['Suite (15)', (k) => true, '--wwt'],
+  [`Suite, the ${BEFORE.size} that ran before`, (k) => BEFORE.has(k), '--native'],
+  ['CoreMark', (k) => k.startsWith('coremark/'), '--amber'],
+  ['SQLite', (k) => k.startsWith('sqlite/'), '--emcc'],
+  ['Lua (6)', (k) => k.startsWith('lua/'), '--wine'],
+  ['Windows API (7)', (k) => k.startsWith('apibench/'), '--rust'],
+];
+const cps = DATA.checkpoints.filter((c) => !c.missing);
+// A group's mean counts only when every one of its benchmarks ran.
+function groupSpeed(c, test) {
+  const ks = DATA.benches.filter(test);
+  const v = ks.map((k) => c.speed[k]);
+  return v.every((x) => x > 0) ? geo(v) : null;
+}
+const suiteNow = groupSpeed(cps[cps.length - 1], () => true);
+const firstSuite = cps.find((c) => groupSpeed(c, () => true));
+const noSql = (k) => BEFORE.has(k);
+
+// Header and stat tiles.
+document.getElementById('h-from').textContent = pct(groupSpeed(cps[0], noSql));
+document.getElementById('h-to').textContent = pct(groupSpeed(cps[cps.length - 1], noSql));
+{
+  const last = cps[cps.length - 1], base = cps[0];
+  const tiles = [
+    [`The ${BEFORE.size} benchmarks that ran before`, pct(groupSpeed(last, noSql)), `from ${pct(groupSpeed(base, noSql))} before this work: ${(groupSpeed(last, noSql) / groupSpeed(base, noSql)).toFixed(1)}× faster`],
+    ['Whole suite', pct(suiteNow), `from ${pct(groupSpeed(firstSuite, () => true))} at the first checkpoint that runs SQLite`],
+    ['CoreMark', pct(last.speed['coremark/coremark']), `from ${pct(base.speed['coremark/coremark'])} before this work`],
+    ['SQLite speedtest1', pct(last.speed['sqlite/speedtest1']), `${(DATA.ref['sqlite/speedtest1'] / last.speed['sqlite/speedtest1']).toFixed(1)} s vs ${DATA.ref['sqlite/speedtest1'].toFixed(1)} s native`],
+    ['Windows API vs native Wine', pct(groupSpeed(last, (k) => k.startsWith('apibench/'))), `heap ${pct(last.speed['apibench/heap'])}, files ${pct(last.speed['apibench/files'])}, strings ${pct(last.speed['apibench/strings'])}`],
+  ];
+  document.getElementById('stats').innerHTML = tiles.map(([k, v, d]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div><div class="d">${d}</div></div>`).join('');
+}
+
+// Checkpoint list.
+document.getElementById('steps').innerHTML = DATA.checkpoints.map((c) => `<li><b>${c.title}</b> <span class="mono">${c.commit}</span>${c.missing ? ' (not measured)' : ''}</li>`).join('');
+document.getElementById('foot').innerHTML = `<div>Measured ${new Date(DATA.date).toUTCString().slice(5, 22)} UTC on a shared 4-vCPU container, Node ${DATA.node}; medians of 3 runs. Runs on this machine vary by 5–10%, so steps smaller than that are noise. References: native <span class="mono">gcc -m32 -O2</span>, Emscripten, and Ubuntu's Wine, from one full suite run of the current build.</div><div>Each checkpoint runs its own translator and runtime from its commit; the programs (<span class="mono">.exe</span>) and Wine's DLLs are the same for all.</div>`;
+
+// Heat table.
+{
+  const short = (k) => k.replace('apibench/', 'api/').replace('coremark/coremark', 'coremark').replace('sqlite/speedtest1', 'sqlite');
+  let h = '<thead><tr><th></th>' + cps.map((c) => `<th title="${c.commit}">${c.title}</th>`).join('') + '</tr></thead><tbody>';
+  for (const k of DATA.benches) {
+    h += `<tr><th>${short(k)}</th>`;
+    for (const c of cps) {
+      const s = c.speed[k];
+      if (s == null) { h += '<td class="na">·</td>'; continue; }
+      // Log colour scale, 10% .. 300%.
+      const t = Math.max(0, Math.min(1, (Math.log(s) - Math.log(0.1)) / (Math.log(3) - Math.log(0.1))));
+      h += `<td data-t="${t.toFixed(3)}" title="${short(k)} at ${c.title}: ${pct(s)}">${pct(s)}</td>`;
+    }
+    h += '</tr>';
+  }
+  document.getElementById('heat').innerHTML = h + '</tbody>';
+}
+function paintHeat() {
+  const mix = (a, b, t) => `color-mix(in oklab, ${b} ${Math.round(t * 100)}%, ${a})`;
+  for (const td of document.querySelectorAll('#heat td[data-t]')) {
+    const t = Number(td.dataset.t);
+    td.style.background = mix(css('--heat-lo'), css('--heat-hi'), t);
+    td.style.color = t > 0.55 ? css('--surface') : css('--ink');
+  }
+}
+
+let charts = [];
+let logScale = true;
+function base() {
+  Chart.defaults.font.family = css('--body').split(',')[0].replace(/"/g, '');
+  Chart.defaults.color = css('--muted');
+  Chart.defaults.borderColor = css('--rule');
+}
+function pctAxis(log, min, max) {
+  return {
+    type: log ? 'logarithmic' : 'linear', min, max,
+    ticks: { callback: (v) => { const ok = [0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1, 2, 3, 5, 10]; return !log || ok.some((o) => Math.abs(o - v) < 1e-9) ? `${Math.round(v * 100)}%` : ''; } },
+    grid: { color: css('--rule') },
+  };
+}
+
+function draw() {
+  charts.forEach((c) => c.destroy());
+  charts = [];
+  base();
+  const labels = cps.map((c) => c.title);
+  const shortLabels = cps.map((c, i) => `${i}`);
+
+  // Progress.
+  charts.push(new Chart(document.getElementById('c-progress'), {
+    type: 'line',
+    data: {
+      labels: shortLabels,
+      datasets: GROUPS.map(([name, test, color], i) => ({
+        label: name,
+        data: cps.map((c) => groupSpeed(c, test)),
+        borderColor: css(color), backgroundColor: css(color),
+        borderWidth: i === 0 ? 4 : 2, pointRadius: i === 0 ? 4 : 2.5, tension: 0.15, spanGaps: false,
+      })),
+    },
+    options: {
+      maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+      scales: {
+        y: pctAxis(logScale, logScale ? 0.05 : 0, logScale ? 3 : undefined),
+        x: { title: { display: true, text: 'Checkpoint (see list below)' }, grid: { display: false } },
+      },
+      plugins: {
+        legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 8 } },
+        tooltip: { callbacks: { title: (it) => `${it[0].label}. ${labels[it[0].dataIndex]} (${cps[it[0].dataIndex].commit})`, label: (it) => ` ${it.dataset.label}: ${pct(it.raw)}` } },
+      },
+    },
+  }));
+
+  // Now, by tier.
+  const last = cps[cps.length - 1];
+  const now = DATA.benches;
+  const tierSpeed = (tier) => now.map((k) => (DATA.tiers[k][tier] ? DATA.ref[k] / DATA.tiers[k][tier] : null));
+  const nm = (k) => k.replace('apibench/', 'api/').replace('coremark/coremark', 'coremark').replace('sqlite/speedtest1', 'sqlite');
+  charts.push(new Chart(document.getElementById('c-now'), {
+    type: 'bar',
+    data: {
+      labels: now.map(nm),
+      datasets: [
+        { label: 'Native (gcc)', data: tierSpeed('native'), backgroundColor: css('--native') },
+        { label: 'Emscripten', data: tierSpeed('emcc'), backgroundColor: css('--emcc') },
+        { label: 'Wine, native', data: tierSpeed('wine'), backgroundColor: css('--wine') },
+        { label: 'Translated Wine (now)', data: now.map((k) => last.speed[k]), backgroundColor: css('--wwt') },
+        { label: 'Translated Wine (before)', data: now.map((k) => cps[0].speed[k]), backgroundColor: css('--rule') },
+      ],
+    },
+    options: {
+      indexAxis: 'y', maintainAspectRatio: false,
+      scales: { x: pctAxis(true, 0.02, 12), y: { grid: { display: false } } },
+      plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } }, tooltip: { callbacks: { label: (it) => ` ${it.dataset.label}: ${pct(it.raw)}` } } },
+    },
+  }));
+
+  // Ablations: slowdown per group with one optimization off.
+  const full = DATA.ablations.find((a) => a.label === 'full');
+  if (full) {
+    const rows = DATA.ablations.filter((a) => a.label !== 'full');
+    const groups = GROUPS.slice(1);
+    const slow = (a, test) => {
+      const ks = DATA.benches.filter(test).filter((k) => a.times?.[k] && full.times?.[k]);
+      return ks.length ? geo(ks.map((k) => a.times[k] / full.times[k])) - 1 : null;
+    };
+    charts.push(new Chart(document.getElementById('c-abl'), {
+      type: 'bar',
+      data: {
+        labels: rows.map((a) => a.title),
+        datasets: groups.map(([name, test, color]) => ({ label: name, data: rows.map((a) => slow(a, test)), backgroundColor: css(color) })),
+      },
+      options: {
+        indexAxis: 'y', maintainAspectRatio: false,
+        scales: {
+          x: { ticks: { callback: (v) => `${v > 0 ? '+' : ''}${Math.round(v * 100)}%` }, title: { display: true, text: 'Time change with the optimization off (+ = slower)' }, grid: { color: css('--rule') } },
+          y: { grid: { display: false } },
+        },
+        plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } }, tooltip: { callbacks: { label: (it) => ` ${it.dataset.label}: ${it.raw == null ? 'n/a' : `${it.raw > 0 ? '+' : ''}${(it.raw * 100).toFixed(1)}%`}` } } },
+      },
+    }));
+  }
+
+  // Start-up.
+  charts.push(new Chart(document.getElementById('c-start'), {
+    type: 'line',
+    data: {
+      labels: shortLabels,
+      datasets: [
+        { label: 'Cold start (s)', data: cps.map((c) => c.coldStart), borderColor: css('--rust'), backgroundColor: css('--rust'), yAxisID: 'y', tension: 0.15 },
+        { label: 'Warm start (s)', data: cps.map((c) => c.warmStart), borderColor: css('--wwt'), backgroundColor: css('--wwt'), yAxisID: 'y2', tension: 0.15 },
+      ],
+    },
+    options: {
+      maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+      scales: {
+        y: { title: { display: true, text: 'Cold (s)' }, beginAtZero: true, grid: { color: css('--rule') } },
+        y2: { position: 'right', title: { display: true, text: 'Warm (s)' }, beginAtZero: true, grid: { display: false } },
+        x: { grid: { display: false } },
+      },
+      plugins: { legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 8 } }, tooltip: { callbacks: { title: (it) => labels[it[0].dataIndex], label: (it) => ` ${it.dataset.label.replace(' (s)', '')}: ${it.raw?.toFixed(2)} s` } } },
+    },
+  }));
+  charts.push(new Chart(document.getElementById('c-size'), {
+    type: 'bar',
+    data: { labels: shortLabels, datasets: [{ label: 'Translated WebAssembly (MB)', data: cps.map((c) => c.codeBytes / 1e6), backgroundColor: css('--wwt') }] },
+    options: {
+      maintainAspectRatio: false,
+      scales: { y: { beginAtZero: true, title: { display: true, text: 'MB' }, grid: { color: css('--rule') } }, x: { grid: { display: false } } },
+      plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } }, tooltip: { callbacks: { title: (it) => labels[it[0].dataIndex], label: (it) => ` ${it.raw.toFixed(1)} MB` } } },
+    },
+  }));
+
+  // Profiles.
+  const P = DATA.prof;
+  const order = ['coremark', 'sqlite', 'lua', 'api-heap', 'api-malloc', 'api-files', 'api-seek', 'api-strings', 'api-sync', 'api-qsort'].filter((k) => P[k]);
+  const cats = [
+    ['translated x86', '--wwt'], ['WebAssembly', '--emcc'], ['JavaScript', '--amber'], ['(garbage collector)', '--wine'], ['other', '--native'],
+  ];
+  const share = (p, c) => {
+    if (c === 'other') return Math.max(0, 100 - ['translated x86', 'WebAssembly', 'JavaScript', '(garbage collector)'].reduce((a, k) => a + (p.cats[k] ?? 0), 0));
+    return p.cats[c] ?? 0;
+  };
+  charts.push(new Chart(document.getElementById('c-prof'), {
+    type: 'bar',
+    data: {
+      labels: order.map((k) => k.replace('api-', 'api/')),
+      datasets: cats.map(([c, color]) => ({ label: c === 'WebAssembly' ? 'native WebAssembly (heap, strings)' : c === 'other' ? 'idle, compile, other' : c, data: order.map((k) => share(P[k], c)), backgroundColor: css(color) })),
+    },
+    options: {
+      indexAxis: 'y', maintainAspectRatio: false,
+      scales: { x: { stacked: true, max: 100, ticks: { callback: (v) => `${v}%` }, grid: { color: css('--rule') } }, y: { stacked: true, grid: { display: false } } },
+      plugins: {
+        legend: { position: 'bottom', labels: { boxWidth: 12 } },
+        tooltip: { callbacks: { label: (it) => ` ${it.dataset.label}: ${it.raw.toFixed(1)}%`, afterBody: (it) => { const p = P[order[it[0].dataIndex]]; return p.top ? ['', 'Hottest:', ...p.top.slice(0, 5).map(([v, n]) => `  ${v}% ${n.slice(0, 60)}`)] : []; } } },
+      },
+    },
+  }));
+  paintHeat();
+}
+
+for (const [id, log] of [['lin', false], ['log', true]]) {
+  document.getElementById(id).addEventListener('click', () => {
+    logScale = log;
+    document.getElementById('lin').setAttribute('aria-pressed', String(!log));
+    document.getElementById('log').setAttribute('aria-pressed', String(log));
+    draw();
+  });
+}
+if (window.Chart) {
+  draw();
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+  new MutationObserver(draw).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  document.fonts?.ready.then(draw);
+} else {
+  paintHeat();
+}
+</script>
