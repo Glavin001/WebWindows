@@ -34,6 +34,60 @@ WebAssembly interpreter about 35×. The in-browser translator (the
 WebAssembly build of `wwt`, `WWT_TRANSLATOR=wasm`) produces code as fast as
 the ahead-of-time one.
 
+## Theseus and v86
+
+Neither runs our MinGW programs as they are: Theseus's C runtime is a stub
+(no `printf`, `malloc`) and v86 emulates a whole PC. So these lanes run one
+CoreMark built three ways from the same source and flags (30,000
+iterations, `-O2 -march=i586`, integer only):
+
+* a Windows `.exe` with no C runtime, importing only `GetTickCount`,
+  `WriteFile`, `GetStdHandle` and `ExitProcess` (for native Wine, ours,
+  Theseus and Wine-Assembly);
+* a multiboot kernel printing to the serial port, timed by the host between
+  `@@START` and `@@STOP` (for v86: no Linux image, no guest clock);
+* a Linux program (native and qemu-i386).
+
+`-march=i586` because Theseus does not translate `cmov` yet, and
+`-fno-isolate-erroneous-paths-dereference` because it stops at the `ud2`
+GCC puts on provably-null paths. Every lane prints the reference checksums.
+`tools/bench/lanes/coremark-lanes.sh` builds all three and runs the lanes
+that are installed (`THESEUS=`, `V86_DIR=` and `V86_BIOS=`,
+`WINE_ASSEMBLY=`).
+
+Median of 3 (Wine-Assembly: 1 run), seconds:
+
+| Lane | Kind | Time | vs native |
+| --- | --- | --- | --- |
+| Native (Linux) | | 1.34 | 100% |
+| `.exe` on native Wine | | 1.33 | 100% |
+| Ours, ahead of time | static translation to WebAssembly | 2.30 | 58% |
+| Ours, in-browser translator | same, translated in the page | 2.29 | 58% |
+| qemu-i386 | native software translator | 4.69 | 29% |
+| Theseus, native | static: x86 → Rust → LLVM, x86-64 | 13.3 | 10% |
+| v86 | JIT to WebAssembly, whole PC | 14.1 | 9.5% |
+| Theseus, WebAssembly | static: x86 → Rust → LLVM → WebAssembly | 31.9 | 4.2% |
+| Wine-Assembly | interpreter in WebAssembly | 82.1 | 1.6% |
+
+Ours is 6× faster than v86 and 14× faster than Theseus in WebAssembly;
+Theseus compiled natively by LLVM is still a sixth of our speed in the
+browser engine. Its output explains why: one Rust function per x86 basic
+block (735 for CoreMark), each returning a continuation that a trampoline
+calls; the x86 registers and flags live in a context struct between
+blocks; flags are computed eagerly by helper calls; every memory access
+goes through a bounds-checked slice. LLVM optimizes each block on its own
+but cannot keep anything in registers across blocks, which is what our
+translator's whole-function IR, register locals and flag elimination do.
+(Theseus also needed two rounds of `--entry-points-file` for CoreMark's
+indirect calls, from addresses its runtime reported missing.)
+
+To run Theseus here, `tc` links SDL3 through its Windows layer: an empty
+`libSDL3.so` lets it build, and `theseus-sdl-stub.c` (headless `SDL_Init`,
+`SDL_GetTicks` and the rest) runs the native build. The WebAssembly build
+follows its `build-wasm.sh` (nightly Rust, `-Z build-std`, `wasm-bindgen`)
+and runs in Node through `theseus-run.mjs`, which does what its web worker
+does (shared memory, `console_write`, `main`).
+
 ## First launch
 
 `tools/bench/firstlaunch.mjs` (seconds; output size as a multiple of the
@@ -77,7 +131,8 @@ first launch is dominated by translating it, not by compiling the result
 | qemu user mode | in the suite | `qemu` (`qemu-i386` on the Linux build) |
 | Wine-Assembly | in the suite, CoreMark only | `wine-assembly`, opt-in (below) |
 | Ours, ahead of time / in-browser translator | in the suite | `wwt-wine` / `wwt-fast` |
-| BottleShip, v86, Theseus | next | need headless Chromium and each project's build |
+| Theseus, v86 | CoreMark | `tools/bench/lanes/coremark-lanes.sh` (above) |
+| BottleShip | next | headless Chromium and its build |
 | QEMU's WebAssembly port, container2wasm, Boxedwine, CheerpX | not started | optional lanes |
 | Rosetta 2, FEX/Box64, native Windows | not here | need an Apple silicon Mac, an ARM Linux machine, a Windows PC |
 | Chrome | partly | `tests/web` runs translated programs in headless Chromium; no timed lane yet |
