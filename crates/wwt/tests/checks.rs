@@ -120,9 +120,11 @@ fn trap_module(code: &[u8]) -> (Vec<u8>, Vec<(u32, u32, u32, u32)>) {
 #[test]
 fn trapping_accesses_replace_checks_and_are_mapped() {
     use wwt::abi::trap::*;
-    // mov eax, [ecx]; mov [edx+4], eax; mov eax, [ecx+esi*4+0x9000]; ret
+    // mov eax, [ecx]; add eax, [ecx+4]; mov [edx+4], eax;
+    // mov eax, [ecx+esi*4+0x9000]; ret
     let code = [
-        0x8b, 0x01, 0x89, 0x42, 0x04, 0x8b, 0x84, 0xb1, 0x00, 0x90, 0x00, 0x00, 0xc3,
+        0x8b, 0x01, 0x03, 0x41, 0x04, 0x89, 0x42, 0x04, 0x8b, 0x84, 0xb1, 0x00, 0x90, 0x00, 0x00,
+        0xc3,
     ];
     let (wasm, sites) = trap_module(&code);
     let text = wasmprinter::print_bytes(&wasm).unwrap();
@@ -139,11 +141,14 @@ fn trapping_accesses_replace_checks_and_are_mapped() {
         sites.iter().map(|s| (s.1, s.2, s.3)).collect::<Vec<_>>(),
         [
             (0x401000, operand(2, 0, 0), 0),
-            (0x401002, WRITE | operand(3, 0, 0), 4),
-            (0x401005, operand(2, 7, 2), 0x9000),
+            (0x401002, operand(2, 0, 0), 4),
+            (0x401005, WRITE | operand(3, 0, 0), 4),
+            (0x401008, operand(2, 7, 2), 0x9000),
         ]
     );
-    // Each offset is a load or store with the null region's offset.
+    // Each offset is a load or store: with the null region's offset, but
+    // for the access the first one covers (which traps only above the top
+    // of memory).
     let mut found = 0;
     for p in wasmparser::Parser::new(0).parse_all(&wasm) {
         if let Ok(wasmparser::Payload::CodeSectionEntry(body)) = p {
@@ -152,7 +157,8 @@ fn trapping_accesses_replace_checks_and_are_mapped() {
                 let (op, at) = r.read_with_offset().unwrap();
                 if sites.iter().any(|s| s.0 as u64 == at as u64) {
                     let s = format!("{op:?}");
-                    assert!(s.contains("offset: 65536"), "{s}");
+                    assert!(s.contains("Load") || s.contains("Store"), "{s}");
+                    assert_eq!(s.contains("offset: 65536"), found != 1, "{s}");
                     found += 1;
                 }
             }

@@ -2202,6 +2202,16 @@ impl<'g, 'a> FnGen<'g, 'a> {
             && self.f.ty(v) == Ty::I32
     }
 
+    /// Records the access emitted next, which a nearby trapping access
+    /// covered, as a trap site too: its address is not rotated, so the
+    /// engine traps only above the top of memory (or past 4 GB, where x86
+    /// would wrap), which then still raises an access violation there.
+    fn covered_trap_site(&mut self, v: V, mem: &Mem, eip: u64, write: bool) {
+        if self.trap_access(v, mem) {
+            self.trap_sites.push((self.out.len(), eip, write));
+        }
+    }
+
     /// Pushes the address of a trapping access (see `trap_access`).
     fn trap_addr(&mut self, la: u32, off: u32) {
         self.residue.traps += 1;
@@ -2277,6 +2287,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     self.emit(W::End);
                 } else {
                     self.emit(W::LocalGet(la));
+                    self.covered_trap_site(*addr, mem, inst.eip, false);
                     self.emit(load_instr(ty, mem, mem.atomic));
                 }
             }
@@ -2315,6 +2326,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 } else {
                     self.emit(W::LocalGet(la));
                     self.get(*val);
+                    self.covered_trap_site(*addr, mem, inst.eip, true);
                     self.emit(store_instr(vty, mem, mem.atomic));
                 }
             }
