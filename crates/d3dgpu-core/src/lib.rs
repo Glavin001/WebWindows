@@ -36,7 +36,7 @@ use std::sync::Arc;
 use d3dgpu_emu::format::{self as fmt, Conversion, FormatOptions};
 use d3dgpu_proto::d3d9::*;
 use d3dgpu_proto::{
-    buffer_usage, texture_usage, Command, Data, Handle, Rect, Stage, TextureDesc, TextureKind, TextureRegion,
+    buffer_usage, Command, Data, Handle, Rect, Stage, TextureDesc, TextureKind, TextureRegion,
 };
 
 pub use present::{HeadlessPresenter, PresentContext, Presenter, SurfacePresenter};
@@ -703,8 +703,17 @@ impl Core {
                 usage |= wgpu::TextureUsages::COPY_DST;
             }
         }
-        let renderable = desc.kind != TextureKind::Volume && !format.is_compressed();
-        if renderable && (desc.usage & (texture_usage::RENDER_TARGET | texture_usage::DEPTH_STENCIL) != 0 || depth) {
+        // Any surface Direct3D can colour-fill or blit to is drawn into
+        // here (ColorFill on an offscreen plain surface, StretchRect to a
+        // texture): render-attachable whenever the format allows it, not
+        // only when it is a render target.
+        let renderable = desc.kind != TextureKind::Volume
+            && !format.is_compressed()
+            && format
+                .guaranteed_format_features(self.device.features())
+                .allowed_usages
+                .contains(wgpu::TextureUsages::RENDER_ATTACHMENT);
+        if renderable {
             usage |= wgpu::TextureUsages::RENDER_ATTACHMENT;
         }
         let srgb = plan.gpu.srgb().map(convert::texture_format);
