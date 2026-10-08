@@ -2,15 +2,17 @@
 //! stream read back from textures (the frames wined3d presents) as PNGs.
 //!
 //! Recordings come from `node runtime/node/wine.mjs --d3d-record FILE ...`:
-//! "D3GR", then each batch as a little-endian u32 length and its bytes.
+//! "D3GR", then each batch as a little-endian u32 length and its bytes,
+//! gzip-compressed when the file name ends in .gz.
 //!
 //! cargo run --release -p d3dgpu-core --example replay -- FILE [OUT_DIR]
 //! (DUMP=1 also prints the commands; PRESENTS=N also saves every Nth
 //! presented frame as present-NNNNN.png, as Node has no canvas to show them,
 //! and then saves the recorded readbacks only with READS=1; READ_EVERY=N
-//! saves every Nth readback, BATCHES=N stops after N batches)
+//! saves every Nth readback, BATCHES=N stops after N batches, FROM=N draws
+//! nothing before batch N, to get to a late frame quickly)
 
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 
 use d3dgpu_core::{Core, Options};
 use d3dgpu_proto::{Command, Reader};
@@ -23,8 +25,12 @@ fn main() {
     let path = args.get(1).expect("usage: replay FILE [OUT_DIR]");
     let out = std::path::PathBuf::from(args.get(2).map(String::as_str).unwrap_or("target/replay"));
     std::fs::create_dir_all(&out).unwrap();
-    // Streamed a batch at a time: recordings of long runs are gigabytes.
-    let mut file = std::io::BufReader::new(std::fs::File::open(path).unwrap());
+    // Streamed a batch at a time: recordings of long runs are gigabytes
+    // (gzip-compressed when the recorder's file name ended in .gz).
+    let mut raw = std::io::BufReader::new(std::fs::File::open(path).unwrap());
+    let gzip = raw.fill_buf().unwrap().starts_with(&[0x1f, 0x8b]);
+    let mut file: Box<dyn Read> =
+        if gzip { Box::new(std::io::BufReader::new(flate2::bufread::MultiGzDecoder::new(raw))) } else { Box::new(raw) };
     let mut magic = [0u8; 4];
     file.read_exact(&mut magic).unwrap();
     assert_eq!(&magic, b"D3GR", "not a d3dgpu recording");
@@ -54,6 +60,7 @@ fn main() {
     let save_reads = std::env::var("PRESENTS").is_err() || std::env::var_os("READS").is_some();
     // READ_EVERY=N saves only every Nth readback; BATCHES=N stops after N batches.
     let read_every: usize = std::env::var("READ_EVERY").ok().and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
+    let from: usize = std::env::var("FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     let max_batches: usize = std::env::var("BATCHES").ok().and_then(|v| v.parse().ok()).unwrap_or(usize::MAX);
     let mut reads_seen = 0usize;
     let (mut batches, mut frames) = (0, 0);
@@ -67,7 +74,23 @@ fn main() {
         if file.read_exact(&mut original).is_err() {
             break;
         }
-        let filtered = skip_commands(&original);
+        let mut filtered = skip_commands(&original);
+        // Readbacks that will not be saved are dropped: each one would wait
+        // for the GPU, which is most of the time of a long replay.
+        if !save_reads || read_every > 1 {
+            filtered = drop_reads(&filtered, |_| {
+                if !save_reads {
+                    return false;
+                }
+                reads_seen += 1;
+                (reads_seen - 1) % read_every == 0
+            });
+        }
+        // FROM=N skips drawing before batch N (state and uploads still run),
+        // to get to a late frame quickly.
+        if batches < from {
+            filtered = drop_ops(&filtered, |op| (0x30..=0x35).contains(&op) || op == 0x40 || op == 0x50);
+        }
         let batch = &filtered[..];
         batches += 1;
         // DUMP=1 prints every command.
@@ -134,10 +157,6 @@ fn main() {
         }
         if save_reads && !reads.is_empty() {
             for (w, h, offset, pitch) in reads {
-                reads_seen += 1;
-                if (reads_seen - 1) % read_every != 0 {
-                    continue;
-                }
                 frames += 1;
                 let file = out.join(format!("read-{frames:04}.png"));
                 write_png(&file, w, h, &shared[offset..], pitch);
@@ -153,6 +172,40 @@ fn main() {
         println!("webgpu: {e}");
     }
     println!("{batches} batches, {frames} readbacks, {presents} presents; {:?}", core.stats());
+}
+
+/// The batch without the ReadTexture commands `keep` turns down.
+fn drop_reads(batch: &[u8], mut keep: impl FnMut(&[u8]) -> bool) -> Vec<u8> {
+    let mut out = batch[..12].to_vec();
+    let mut q = 12;
+    while q + 8 <= batch.len() {
+        let op = u32::from_le_bytes(batch[q..q + 4].try_into().unwrap()) & 0xffff;
+        let size = u32::from_le_bytes(batch[q + 4..q + 8].try_into().unwrap()) as usize;
+        if op != d3dgpu_proto::Op::ReadTexture as u32 || keep(&batch[q..q + size]) {
+            out.extend_from_slice(&batch[q..q + size]);
+        }
+        q += size;
+    }
+    let len = out.len() as u32;
+    out[8..12].copy_from_slice(&len.to_le_bytes());
+    out
+}
+
+/// The batch without the commands whose opcode `drop` picks.
+fn drop_ops(batch: &[u8], drop: impl Fn(u32) -> bool) -> Vec<u8> {
+    let mut out = batch[..12].to_vec();
+    let mut q = 12;
+    while q + 8 <= batch.len() {
+        let op = u32::from_le_bytes(batch[q..q + 4].try_into().unwrap()) & 0xffff;
+        let size = u32::from_le_bytes(batch[q + 4..q + 8].try_into().unwrap()) as usize;
+        if !drop(op) {
+            out.extend_from_slice(&batch[q..q + size]);
+        }
+        q += size;
+    }
+    let len = out.len() as u32;
+    out[8..12].copy_from_slice(&len.to_le_bytes());
+    out
 }
 
 /// SKIP=a-b,c drops those commands (0-based, in the whole recording) to

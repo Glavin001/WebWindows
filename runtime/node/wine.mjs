@@ -49,6 +49,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -379,23 +380,45 @@ if (existsSync(tw)) {
   });
 }
 // The recording streams to the file ("D3GR", then each batch as a u32
-// length and its bytes), so a long game session does not fill memory.
+// length and its bytes), so a long game session does not fill memory. A
+// FILE ending in .gz is written as gzip members of about 8 MB each (long
+// runs record gigabytes, most of it vertex data and constants that compress
+// tenfold); the replayer reads either.
 let recordFd = null;
+const recordGzip = d3dRecord?.endsWith('.gz');
+let recordPending = [];
+let recordPendingBytes = 0;
+const flushRecording = () => {
+  if (!recordPendingBytes) return;
+  const chunk = Buffer.concat(recordPending, recordPendingBytes);
+  writeSync(recordFd, recordGzip ? gzipSync(chunk, { level: 1 }) : chunk);
+  recordPending = [];
+  recordPendingBytes = 0;
+};
+const recordBytes = (bytes) => {
+  recordPending.push(Buffer.from(bytes));
+  recordPendingBytes += bytes.length;
+  if (recordPendingBytes >= 8 << 20) flushRecording();
+};
 const d3d = d3dRecord
   ? new D3DRecorder((batch) => {
       if (recordFd === null) {
         recordFd = openSync(d3dRecord, 'w');
-        writeSync(recordFd, Uint8Array.of(0x44, 0x33, 0x47, 0x52));
+        recordBytes(Uint8Array.of(0x44, 0x33, 0x47, 0x52));
       }
       const len = new Uint8Array(4);
       new DataView(len.buffer).setUint32(0, batch.length, true);
-      writeSync(recordFd, len);
-      writeSync(recordFd, batch);
+      recordBytes(len);
+      recordBytes(batch);
     })
   : null;
 const saveRecording = () => {
   if (!d3d) return;
-  if (recordFd === null) writeFileSync(d3dRecord, Uint8Array.of(0x44, 0x33, 0x47, 0x52));
+  if (recordFd === null) {
+    recordFd = openSync(d3dRecord, 'w');
+    recordBytes(Uint8Array.of(0x44, 0x33, 0x47, 0x52));
+  }
+  flushRecording();
   stderr(`recorded ${d3d.count} Direct3D batches in ${d3dRecord}\n`);
 };
 /** What the program plays, kept for --audio-out (float stereo at 48 kHz). */
