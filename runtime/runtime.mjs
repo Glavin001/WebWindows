@@ -255,6 +255,8 @@ export class Machine {
     this.table.set(0, this.kernel.miss_entry);
     this.table.grow(1);
     this.table.set(1, this.kernel.resume);
+    /** Table slots in use; the table itself grows ahead of it (see instantiateModule). */
+    this.tableUsed = 2;
   }
 
   /**
@@ -447,8 +449,15 @@ export class Machine {
           `${this.guestLimit >>> 20} MB (translate with --guest-limit-mb ${this.guestLimit >>> 20})`,
       );
     }
-    const base = this.table.length;
-    this.table.grow(addrs.length);
+    // The table grows by at least its own size. Growing it updates every
+    // instance that imports it, and fast mode makes one per function (Far
+    // Cry: about 100,000), so growing by each module's size made a game's
+    // startup quadratic; doubling keeps the number of grows small. (Making
+    // it big up front instead makes each instance slower to create: V8's
+    // cost follows the size of the table imported.)
+    const base = this.tableUsed;
+    this.tableUsed += addrs.length;
+    if (this.tableUsed > this.table.length) this.table.grow(Math.max(this.tableUsed - this.table.length, this.table.length));
     const env = {
       ...this.natives,
       memory: this.memory,

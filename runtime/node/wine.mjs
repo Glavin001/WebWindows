@@ -51,6 +51,11 @@
 //                          where they happened and the frames above
 //   WWT_THREAD_DUMP=MS     the scheduler's thread states after MS, and when
 //                          nothing can run
+//   WWT_PROFILES=1         keep each image's run-time profile (the code fast
+//                          mode translated) and translate it ahead of time on
+//                          later runs (target/wine-cache/profiles); being tested
+//   WWT_TAIL=FILE          new lines the program writes to FILE in its folder,
+//                          timed from start (a game's log.txt)
 //   WWT_STATUS=1           a status line every 2 s (runtime/wine/status.mjs:
 //                          busiest thread and where, system calls, screen,
 //                          input); WWT_STATUS=json prints the whole sample
@@ -117,8 +122,31 @@ let translateMs = 0;
 /** The translator compiled to WebAssembly (fast mode), once loaded. */
 let fastTranslator = null;
 
+// Run-time profiles: the code fast mode had to translate in each image, by
+// the image's content and base (target/wine-cache/profiles), so the next
+// launch translates it ahead of time with the rest (`wwt translate
+// --profile`) instead of one function at a time again. Far Cry finds about
+// 100,000 functions that way on every launch without them.
+const profileDir = () => join(cacheDir, 'profiles');
+/** base -> profile file of each image translated this run */
+const imageProfiles = new Map();
+const readProfile = (file) => (existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean) : []);
+/** Adds this run's fast-mode addresses to each image's profile. */
+function saveProfiles() {
+  if (process.env.WWT_PROFILES !== '1' || !host || !machine?.profile?.size) return;
+  mkdirSync(profileDir(), { recursive: true });
+  for (const [base, { size }] of host.images) {
+    const file = imageProfiles.get(base);
+    if (!file) continue;
+    const found = [...machine.profile].filter((a) => a >= base && a < base + size).map((a) => a.toString(16));
+    if (!found.length) continue;
+    const all = new Set([...readProfile(file), ...found]);
+    writeFileSync(file, [...all].join('\n') + '\n');
+  }
+}
+
 /** Translates an image with the CLI, caching by content hash. */
-function translate(path, bytes) {
+function translate(path, bytes, { base } = {}) {
   // WWT_TRANSLATOR=wasm: the program translated in place by the WebAssembly
   // build, as the page does without an ahead-of-time translation (Wine's
   // DLLs stay ahead of time, as the bundle ships them).
@@ -145,7 +173,18 @@ function translate(path, bytes) {
   ];
   if (nativeHeap && !x64 && path.toLowerCase().endsWith('\\ntdll.dll')) extra.push(NATIVE_HEAP_FLAG);
   if (nativeStrings && !x64 && NATIVE_STRINGS_DLLS.includes(path.split('\\').pop().toLowerCase())) extra.push(NATIVE_STRINGS_FLAG);
-  const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}:${extra.join(' ')}`).digest('hex').slice(0, 16);
+  // The image's run-time profile, at this base.
+  let profileHash = '';
+  if (base !== undefined && process.env.WWT_PROFILES === '1') {
+    const file = join(profileDir(), `${createHash('sha256').update(bytes).digest('hex').slice(0, 16)}-${base.toString(16)}.txt`);
+    imageProfiles.set(base, file);
+    const entries = readProfile(file);
+    if (entries.length) {
+      extra.push('--profile', file);
+      profileHash = createHash('sha256').update(entries.join(',')).digest('hex').slice(0, 8);
+    }
+  }
+  const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}:${extra.filter((x) => !x.includes('/profiles/')).join(' ')}${profileHash ? `:${profileHash}` : ''}`).digest('hex').slice(0, 16);
   const out = join(cacheDir, `${path.split('\\').pop()}-${hash}.wasm`);
   if (!existsSync(out)) {
     // Several runners share the cache: write under a per-process name and
@@ -511,6 +550,24 @@ if (process.env.WWT_STATUS) {
     emit: (st) => stderr(process.env.WWT_STATUS === 'json' ? `webwindows:status ${JSON.stringify(st)}\n` : formatStatus(st) + '\n'),
   });
 }
+// WWT_TAIL=log.txt: new lines the program writes to that file in its
+// folder, with the time since start (to time a game's own milestones).
+if (process.env.WWT_TAIL) {
+  const want = `c:\\app\\${process.env.WWT_TAIL.toLowerCase().replaceAll('/', '\\')}`;
+  const t0 = performance.now();
+  let printed = 0;
+  host.onFileWrite = (path) => {
+    if (path?.toLowerCase() !== want) return;
+    const bytes = host.files.get(path);
+    if (!bytes || bytes.length <= printed) return;
+    const text = new TextDecoder('latin1').decode(bytes.subarray(printed));
+    const end = text.lastIndexOf('\n');
+    if (end < 0) return;
+    printed += end + 1;
+    const t = ((performance.now() - t0) / 1000).toFixed(1);
+    for (const line of text.slice(0, end).split('\n')) if (line.trim()) stderr(`[tail ${t} s] ${line.replace(/\r$/, '')}\n`);
+  };
+}
 host.boot(`${sys32}\\ntdll.dll`, exeDos);
 // A program that never waits (a game's busy frame loop) still stops on time.
 if (screenshot) host.threads.onSlice = () => {
@@ -524,6 +581,7 @@ if (host.unimplemented.size) {
   stderr(`unimplemented syscalls: ${[...host.unimplemented.keys()].join(', ')}\n`);
 }
 saveRecording();
+saveProfiles();
 if (r.error instanceof ProgramIdle || r.error?.cause instanceof ProgramIdle) {
   writeFileSync(screenshot, await display.png());
   stderr(`idle; screenshot in ${screenshot}\n`);
