@@ -53,7 +53,7 @@
   },
   "offscreen_test": {
     "status": "done",
-    "failures": 1
+    "failures": 0
   },
   "ds_size_test": {
     "status": "done",
@@ -61,7 +61,7 @@
   },
   "test_blend": {
     "status": "done",
-    "failures": 2
+    "failures": 0
   },
   "test_shademode": {
     "status": "done",
@@ -85,7 +85,7 @@
   },
   "pixelshader_blending_test": {
     "status": "done",
-    "failures": 6
+    "failures": 3
   },
   "test_generate_mipmap": {
     "status": "done",
@@ -213,7 +213,7 @@
   },
   "unbound_sampler_test": {
     "status": "done",
-    "failures": 3
+    "failures": 0
   },
   "nested_loop_test": {
     "status": "done",
@@ -225,15 +225,15 @@
   },
   "vface_register_test": {
     "status": "done",
-    "failures": 2
+    "failures": 0
   },
   "test_fragment_coords": {
     "status": "done",
-    "failures": 4
+    "failures": 0
   },
   "multiple_rendertargets_test": {
     "status": "done",
-    "failures": 2
+    "failures": 0
   },
   "texop_test": {
     "status": "done",
@@ -253,7 +253,7 @@
   },
   "depth_buffer_test": {
     "status": "done",
-    "failures": 5
+    "failures": 0
   },
   "depth_buffer2_test": {
     "status": "done",
@@ -261,7 +261,7 @@
   },
   "depth_blit_test": {
     "status": "done",
-    "failures": 12
+    "failures": 0
   },
   "intz_test": {
     "status": "done",
@@ -285,7 +285,7 @@
   },
   "srgbwrite_format_test": {
     "status": "done",
-    "failures": 4
+    "failures": 2
   },
   "update_surface_test": {
     "status": "done",

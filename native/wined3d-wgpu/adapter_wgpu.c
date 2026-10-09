@@ -2283,6 +2283,9 @@ static void wgpu_blitter_clear(struct wined3d_blitter *blitter, struct wined3d_d
         wgpu_invalidate_targets(device_wgpu);
     }
 
+    /* Clears write sRGB-encoded under D3DRS_SRGBWRITEENABLE as it is now,
+     * which only draws send otherwise. */
+    wgpu_set_render_state(device_wgpu, WINED3D_RS_SRGBWRITEENABLE, device->cs->state.extra_ps_args.srgb_write);
     if (!(cmd = wgpu_cmd(device_wgpu, D3DGPU_OP_CLEAR, sizeof(*cmd) + (rect_count ? rect_count : 1) * 16)))
     {
         context_release(context);
@@ -2309,6 +2312,10 @@ static void wgpu_blitter_clear(struct wined3d_blitter *blitter, struct wined3d_d
         ++n;
     }
     cmd->rect_count = n;
+    /* Rectangles that were all empty clear nothing (no rectangle would mean
+     * the whole target). */
+    if (rect_count && !n)
+        cmd->flags = 0;
     cmd->h.size = sizeof(*cmd) + n * 16;
     device_wgpu->cmd_size -= ((rect_count ? rect_count : 1) - n) * 16;
 
@@ -2497,6 +2504,40 @@ static bool wgpu_present_on_gpu(struct wined3d_swapchain *swapchain, struct wine
     return true;
 }
 
+/* With several back buffers, presenting moves each one's contents to the
+ * one before it, back buffer 0's to the last (as wined3d's Vulkan backend
+ * does, by passing the GPU textures along). */
+static void wgpu_swapchain_rotate(struct wined3d_swapchain *swapchain)
+{
+    static const DWORD gpu = WINED3D_LOCATION_TEXTURE_RGB;
+    struct wined3d_texture_wgpu *texture, *prev;
+    struct wined3d_context *context;
+    DWORD locations0;
+    unsigned int i;
+    uint32_t id0;
+
+    if (swapchain->state.desc.backbuffer_count < 2)
+        return;
+    context = context_acquire(swapchain->device, NULL, 0);
+    prev = wined3d_texture_wgpu(swapchain->back_buffers[0]);
+    id0 = prev->id;
+    locations0 = prev->t.sub_resources[0].locations;
+    for (i = 1; i < swapchain->state.desc.backbuffer_count; ++i)
+    {
+        texture = wined3d_texture_wgpu(swapchain->back_buffers[i]);
+        if (!(texture->t.sub_resources[0].locations & gpu))
+            wined3d_texture_load_location(&texture->t, 0, context, gpu);
+        prev->id = texture->id;
+        wined3d_texture_validate_location(&prev->t, 0, gpu);
+        wined3d_texture_invalidate_location(&prev->t, 0, ~gpu);
+        prev = texture;
+    }
+    prev->id = id0;
+    wined3d_texture_validate_location(&prev->t, 0, locations0 & gpu);
+    wined3d_texture_invalidate_location(&prev->t, 0, ~(locations0 & gpu));
+    context_release(context);
+}
+
 static void swapchain_wgpu_present(struct wined3d_swapchain *swapchain,
         const RECT *src_rect, const RECT *dst_rect, unsigned int swap_interval, uint32_t flags)
 {
@@ -2508,8 +2549,9 @@ static void swapchain_wgpu_present(struct wined3d_swapchain *swapchain,
     /* Else read the frame back and draw it into the window with GDI. */
     if (!wgpu_present_on_gpu(swapchain, back, swap_interval))
         wgpu_present_to_window(swapchain, back, src_rect, dst_rect);
-    if (swapchain->state.desc.swap_effect == WINED3D_SWAP_EFFECT_DISCARD)
-        wined3d_texture_validate_location(back, 0, WINED3D_LOCATION_DISCARDED);
+    /* wined3d discards the last back buffer after this, for the
+     * discarding swap effects. */
+    wgpu_swapchain_rotate(swapchain);
 }
 
 static void swapchain_wgpu_frontbuffer_updated(struct wined3d_swapchain *swapchain)

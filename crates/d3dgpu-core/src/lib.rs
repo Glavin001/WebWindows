@@ -724,7 +724,9 @@ impl Core {
     }
 
     fn create_texture(&mut self, id: Handle, desc: TextureDesc) {
-        let opts = FormatOptions { bc_supported: self.opts.bc };
+        // Block-compressed volumes need a feature WebGPU makes optional
+        // (texture-compression-bc-sliced-3d): they are decoded instead.
+        let opts = FormatOptions { bc_supported: self.opts.bc && desc.kind != TextureKind::Volume };
         let Some(plan) = fmt::plan(desc.format, &opts) else {
             return self.warn(format!("CreateTexture {id:?}: unsupported format {:?}", desc.format));
         };
@@ -1310,7 +1312,16 @@ impl Core {
         if flags & clear::TARGET != 0 {
             for (i, c) in targets.colors.iter().enumerate() {
                 if c.is_some() {
-                    want.colors[i] = Some(convert::color(color));
+                    let mut c = convert::color(color);
+                    // D3DRS_SRGBWRITEENABLE: the clear colour is linear and
+                    // written sRGB-encoded, to formats that have an sRGB form.
+                    let srgb_target = matches!(self.objects.get(&targets.colors[i].unwrap().texture.0),
+                        Some(Object::Texture(t)) if t.srgb_view.is_some());
+                    if self.st.r(RenderState::SrgbWriteEnable) != 0 && srgb_target {
+                        let enc = |v: f64| if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+                        (c.r, c.g, c.b) = (enc(c.r), enc(c.g), enc(c.b));
+                    }
+                    want.colors[i] = Some(c);
                 }
             }
         }
@@ -1378,7 +1389,8 @@ impl Core {
         let pipeline = self.caches.clear_pipeline(&self.device, &key, &mut self.stats);
         let pass = self.pass.as_mut().unwrap();
         pass.set_pipeline(&pipeline);
-        let c = convert::color(color);
+        // The colour as the clear computed it (sRGB writes encode it).
+        let c = want.colors.iter().flatten().next().copied().unwrap_or_else(|| convert::color(color));
         pass.set_blend_constant(c);
         let z = want.depth.unwrap_or(0.0);
         pass.set_viewport(0.0, 0.0, targets.width as f32, targets.height as f32, z, z);
