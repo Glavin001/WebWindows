@@ -41,6 +41,8 @@ enum d3dgpu_op
     D3DGPU_OP_CREATE_SHADER          = 0x0006,
     D3DGPU_OP_CREATE_VERTEX_DECL     = 0x0007,
     D3DGPU_OP_SET_PALETTE            = 0x0008,
+    /* WRITE_BUFFER for a NOOVERWRITE map: it need not wait for earlier commands. */
+    D3DGPU_OP_WRITE_BUFFER_NO_OVERWRITE = 0x0009,
     /* State. */
     D3DGPU_OP_SET_RENDER_TARGET      = 0x0010,
     D3DGPU_OP_SET_DEPTH_STENCIL      = 0x0011,

@@ -154,8 +154,17 @@ impl Writer {
     }
 
     pub fn write_buffer<'a>(&mut self, id: Handle, offset: u32, data: impl Into<DataSrc<'a>>) {
+        self.write_buffer_op(Op::WriteBuffer, id, offset, data);
+    }
+
+    /// WriteBuffer for a NOOVERWRITE map (see `Op::WriteBufferNoOverwrite`).
+    pub fn write_buffer_no_overwrite<'a>(&mut self, id: Handle, offset: u32, data: impl Into<DataSrc<'a>>) {
+        self.write_buffer_op(Op::WriteBufferNoOverwrite, id, offset, data);
+    }
+
+    fn write_buffer_op<'a>(&mut self, op: Op, id: Handle, offset: u32, data: impl Into<DataSrc<'a>>) {
         let data = data.into();
-        self.cmd(Op::WriteBuffer, |w| {
+        self.cmd(op, |w| {
             w.u32(id.0);
             w.u32(offset);
             w.data(data);

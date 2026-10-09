@@ -445,7 +445,7 @@
   },
   "test_map_synchronisation": {
     "status": "done",
-    "failures": 2
+    "failures": 0
   },
   "test_color_vertex": {
     "status": "done",
@@ -505,7 +505,7 @@
   },
   "test_format_conversion": {
     "status": "done",
-    "failures": 2
+    "failures": 0
   },
   "test_ffp_w": {
     "status": "done",
@@ -517,7 +517,7 @@
   },
   "test_dynamic_map_synchronization": {
     "status": "done",
-    "failures": 1
+    "failures": 0
   },
   "test_fog": {
     "status": "done",

@@ -463,9 +463,11 @@ impl Core {
                 // A pending clear of the texture goes first: once it is
                 // gone, that clear's pass would have no attachment, an
                 // error that loses everything recorded with it.
-                if self.clear.as_ref().is_some_and(|(t, _)| {
-                    t.colors.iter().flatten().chain(t.depth.iter()).any(|a| a.texture == id)
-                }) {
+                if self
+                    .clear
+                    .as_ref()
+                    .is_some_and(|(t, _)| t.colors.iter().flatten().chain(t.depth.iter()).any(|a| a.texture == id))
+                {
                     self.flush_clear();
                 }
                 self.objects.remove(&id.0);
@@ -483,9 +485,9 @@ impl Core {
                 self.d11.dirty = d3d11::dirty::ALL;
                 self.d11.caches.forget_handles();
             }
-            Command::WriteBuffer { id, offset, data } => {
+            Command::WriteBuffer { id, offset, data, no_overwrite } => {
                 if let Some(bytes) = self.resolve(data, shared) {
-                    self.write_buffer(id, offset, bytes);
+                    self.write_buffer(id, offset, bytes, no_overwrite);
                 }
             }
             Command::CreateTexture { id, desc } => self.create_texture(id, desc),
@@ -676,11 +678,15 @@ impl Core {
         });
         self.stats.buffers_created += 1;
         let bid = self.id();
-        let b = Buffer { gpu, id: bid, size, shadow: vec![0; padded as usize], last_use: 0 };
+        let b = Buffer { gpu, id: bid, size, shadow: vec![0; padded as usize], last_use: 0, ordered: (0, 0, 0) };
         self.objects.insert(id.0, Object::Buffer(b));
     }
 
-    fn write_buffer(&mut self, id: Handle, offset: u32, bytes: &[u8]) {
+    /// `no_overwrite`: the bytes are none that recorded commands read
+    /// (a Direct3D NOOVERWRITE map), so they can be written ahead of those
+    /// commands, without ending the render pass; as on Direct3D hardware,
+    /// commands not yet run that read them see them (test_map_synchronisation).
+    fn write_buffer(&mut self, id: Handle, offset: u32, bytes: &[u8], no_overwrite: bool) {
         let epoch = self.epoch;
         let Some(Object::Buffer(b)) = self.objects.get_mut(&id.0) else {
             return self.warn(format!("WriteBuffer: {id:?} is not a buffer"));
@@ -696,8 +702,11 @@ impl Core {
         let start = offset as usize & !3;
         let stop = end.next_multiple_of(4);
         let in_use = b.last_use == epoch;
+        // Not over bytes copied in command order this epoch, which would
+        // land after it.
+        let ahead = no_overwrite && (b.ordered.0 != epoch || stop <= b.ordered.1 || start >= b.ordered.2);
         self.stats.bytes_uploaded += (stop - start) as u64;
-        if !in_use {
+        if !in_use || ahead {
             let Some(Object::Buffer(b)) = self.objects.get(&id.0) else { unreachable!() };
             self.queue.write_buffer(&b.gpu, start as u64, &b.shadow[start..stop]);
             return;
@@ -718,7 +727,13 @@ impl Core {
             }
         };
         let upload = self.uploads.buffer.clone();
-        let Some(Object::Buffer(b)) = self.objects.get(&id.0) else { unreachable!() };
+        let epoch = self.epoch;
+        let Some(Object::Buffer(b)) = self.objects.get_mut(&id.0) else { unreachable!() };
+        b.ordered = if b.ordered.0 == epoch {
+            (epoch, b.ordered.1.min(start), b.ordered.2.max(stop))
+        } else {
+            (epoch, start, stop)
+        };
         let dst = b.gpu.clone();
         self.encoder().copy_buffer_to_buffer(&upload, src, &dst, start as u64, (stop - start) as u64);
     }
@@ -925,7 +940,9 @@ impl Core {
     /// Copies the top-left `w` x `h` of colour target `src` to `dst`.
     fn copy_color(&mut self, src: Target, dst: Target, w: u32, h: u32) {
         let gpu = |t: Target| match self.objects.get(&t.texture.0) {
-            Some(Object::Texture(tex)) => Some((tex.gpu.clone(), if tex.desc.kind == TextureKind::Cube { t.face } else { 0 })),
+            Some(Object::Texture(tex)) => {
+                Some((tex.gpu.clone(), if tex.desc.kind == TextureKind::Cube { t.face } else { 0 }))
+            }
             _ => None,
         };
         let (Some((src_gpu, src_z)), Some((dst_gpu, dst_z))) = (gpu(src), gpu(dst)) else {
@@ -1270,7 +1287,8 @@ impl Core {
         }
         if !self.st.ds.texture.is_none() && flags & (clear::ZBUFFER | clear::STENCIL) != 0 {
             let ds = self.st.ds;
-            if matches!(self.objects.get(&ds.texture.0), Some(Object::Texture(t)) if t.is_depth() && ds.level < t.levels) {
+            if matches!(self.objects.get(&ds.texture.0), Some(Object::Texture(t)) if t.is_depth() && ds.level < t.levels)
+            {
                 singles.push((PassTargets { depth: Some(ds), ..Default::default() }, self.target_size(ds)));
             }
         }
@@ -1758,7 +1776,8 @@ struct Out { @builtin(frag_depth) depth: f32 }
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &dst_view,
                 depth_ops: Some(keep),
-                stencil_ops: stencil.then_some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                stencil_ops: stencil
+                    .then_some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
             }),
             timestamp_writes: None,
             occlusion_query_set: None,

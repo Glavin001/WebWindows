@@ -649,6 +649,9 @@ struct wined3d_bo_wgpu
     bool gpu;
     /* Bytes written since the constants in it were last sent. */
     size_t dirty_lo, dirty_hi;
+    /* Mapped with WINED3D_MAP_NOOVERWRITE: its writes need not wait for
+     * the draws before them (D3DGPU_OP_WRITE_BUFFER_NO_OVERWRITE). */
+    bool no_overwrite;
 };
 
 static inline struct wined3d_bo_wgpu *wined3d_bo_wgpu(struct wined3d_bo *bo)
@@ -675,7 +678,8 @@ static void wgpu_write_bo(struct wined3d_device_wgpu *device, struct wined3d_bo_
         size_t chunk = min(size, wgpu_host.max_batch / 2);
         struct d3dgpu_cmd_write_buffer *cmd;
 
-        if (!(cmd = wgpu_cmd_data(device, D3DGPU_OP_WRITE_BUFFER, sizeof(*cmd), bo->shadow + offset, chunk)))
+        if (!(cmd = wgpu_cmd_data(device, bo->no_overwrite ? D3DGPU_OP_WRITE_BUFFER_NO_OVERWRITE
+                : D3DGPU_OP_WRITE_BUFFER, sizeof(*cmd), bo->shadow + offset, chunk)))
             return;
         cmd->id = bo->id;
         cmd->offset = offset;
@@ -772,9 +776,13 @@ void wined3d_buffer_wgpu_unload_location(struct wined3d_buffer *buffer,
 static void *adapter_wgpu_map_bo_address(struct wined3d_context *context,
         const struct wined3d_bo_address *data, size_t size, uint32_t map_flags)
 {
+    struct wined3d_bo_wgpu *bo;
+
     if (!data->buffer_object)
         return data->addr;
-    return wined3d_bo_wgpu(data->buffer_object)->shadow + (uintptr_t)data->addr;
+    bo = wined3d_bo_wgpu(data->buffer_object);
+    bo->no_overwrite = !!(map_flags & WINED3D_MAP_NOOVERWRITE);
+    return bo->shadow + (uintptr_t)data->addr;
 }
 
 static void adapter_wgpu_unmap_bo_address(struct wined3d_context *context,
@@ -789,6 +797,7 @@ static void adapter_wgpu_unmap_bo_address(struct wined3d_context *context,
     bo = wined3d_bo_wgpu(data->buffer_object);
     for (i = 0; i < range_count; ++i)
         wgpu_write_bo(device, bo, (uintptr_t)data->addr + ranges[i].offset, ranges[i].size);
+    bo->no_overwrite = false;
 }
 
 static void adapter_wgpu_copy_bo_address(struct wined3d_context *context,
@@ -808,7 +817,10 @@ static void adapter_wgpu_copy_bo_address(struct wined3d_context *context,
         for (i = 0; i < range_count; ++i)
             wgpu_write_bo(device, wined3d_bo_wgpu(dst->buffer_object),
                     (uintptr_t)dst->addr + ranges[i].offset, ranges[i].size);
+        wined3d_bo_wgpu(dst->buffer_object)->no_overwrite = false;
     }
+    if (src->buffer_object)
+        wined3d_bo_wgpu(src->buffer_object)->no_overwrite = false;
 }
 
 static void adapter_wgpu_flush_bo_address(struct wined3d_context *context,
@@ -2008,6 +2020,50 @@ static void wgpu_target_written(struct wined3d_rendertarget_view *rtv)
     wined3d_rendertarget_view_invalidate_location(rtv, ~WINED3D_LOCATION_TEXTURE_RGB);
 }
 
+/* For an indexed draw: sends the indices it reads when the index buffer is
+ * mapped, and returns the vertices they cover when a vertex buffer is
+ * mapped (first, count; count 0 otherwise). */
+static void wgpu_write_mapped_indices(struct wined3d_device_wgpu *device, const struct wined3d_state *state,
+        const struct wined3d_direct_draw_parameters *direct, unsigned int *first, unsigned int *count)
+{
+    struct wined3d_buffer *ib = state->index_buffer;
+    unsigned int index_size = state->index_format == WINED3DFMT_R32_UINT ? 4 : 2;
+    unsigned int i, lo = ~0u, hi = 0, index;
+    bool vertices_mapped = false;
+    struct wined3d_bo_wgpu *bo;
+    size_t offset;
+    uint32_t map;
+
+    *first = *count = 0;
+    if (!ib->buffer_object)
+        return;
+    bo = wined3d_bo_wgpu(ib->buffer_object);
+    offset = state->index_offset + (size_t)direct->start_idx * index_size;
+    if (offset >= bo->size)
+        return;
+    if (ib->resource.map_count)
+        wgpu_write_bo(device, bo, offset, (size_t)direct->index_count * index_size);
+    for (map = device->bound_streams; map;)
+    {
+        const struct wined3d_buffer *buffer = state->streams[wined3d_bit_scan(&map)].buffer;
+
+        vertices_mapped |= buffer->resource.map_count && buffer->buffer_object;
+    }
+    if (!vertices_mapped)
+        return;
+    for (i = 0; i < direct->index_count && offset + (i + 1) * index_size <= bo->size; ++i)
+    {
+        index = index_size == 4 ? ((const uint32_t *)(bo->shadow + offset))[i]
+                : ((const uint16_t *)(bo->shadow + offset))[i];
+        lo = min(lo, index);
+        hi = max(hi, index);
+    }
+    if (lo > hi || (int)lo + direct->base_vertex_idx < 0)
+        return;
+    *first = lo + direct->base_vertex_idx;
+    *count = hi - lo + 1;
+}
+
 static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
         const struct wined3d_state *state, const struct wined3d_draw_parameters *parameters)
 {
@@ -2017,6 +2073,7 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
     struct d3dgpu_cmd_set_object *obj;
     unsigned int i, prim_count;
     uint32_t vs, ps, decl, map;
+    unsigned int first, count;
     bool extras_ps, extras_vs;
     bool all;
 
@@ -2109,6 +2166,16 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
                         stream->frequency ? stream->frequency : 1);
         }
     }
+    if (parameters->indexed && state->index_buffer)
+    {
+        wined3d_buffer_load(state->index_buffer, context, state);
+        wgpu_write_mapped_indices(device_wgpu, state, direct, &first, &count);
+    }
+    else
+    {
+        first = direct->start_idx;
+        count = direct->index_count;
+    }
     for (map = device_wgpu->bound_streams; map;)
     {
         const struct wined3d_stream_state *stream;
@@ -2116,6 +2183,19 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
         i = wined3d_bit_scan(&map);
         stream = &state->streams[i];
         wined3d_buffer_load(stream->buffer, context, state);
+        if (stream->buffer->resource.map_count && stream->buffer->buffer_object)
+        {
+            /* Drawn from while mapped (as Castlevania: Lords of Shadow 2
+             * does): send what the draw reads as it is now, as the GPU of a
+             * persistently mapped buffer would read it. */
+            struct wined3d_bo_wgpu *bo = wined3d_bo_wgpu(stream->buffer->buffer_object);
+
+            if (stream->flags & WINED3DSTREAMSOURCE_INSTANCEDATA || !stream->stride)
+                wgpu_write_bo(device_wgpu, bo, stream->offset, bo->size);
+            else if (count)
+                wgpu_write_bo(device_wgpu, bo, stream->offset + (size_t)first * stream->stride,
+                        (size_t)count * stream->stride);
+        }
         wgpu_set_stream(device_wgpu, i, stream->buffer->buffer_object
                 ? wined3d_bo_wgpu(stream->buffer->buffer_object)->id : 0, stream->offset, stream->stride,
                 (stream->flags & WINED3DSTREAMSOURCE_INDEXEDDATA ? 0x40000000 : 0)
@@ -3233,6 +3313,9 @@ static BOOL wgpu_init_format_info(struct wined3d_adapter *adapter)
         {WINED3DFMT_D32_FLOAT, DS},
         {WINED3DFMT_S8_UINT_D24_FLOAT, DS},
         {WINED3DFMT_INTZ, DS | WINED3D_FORMAT_CAP_FILTERING},
+        /* Plain surfaces only: the CPU blitter converts them to RGB
+         * (StretchRect, CheckDeviceFormatConversion). */
+        {WINED3DFMT_YUY2, WINED3D_FORMAT_CAP_BLIT},
 #undef TEX
 #undef RT
 #undef DS

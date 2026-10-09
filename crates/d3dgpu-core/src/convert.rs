@@ -188,5 +188,8 @@ pub fn color(c: u32) -> wgpu::Color {
 /// `float32-blendable` feature).
 pub fn is_blendable(f: wgpu::TextureFormat, features: wgpu::Features) -> bool {
     features.contains(wgpu::Features::FLOAT32_BLENDABLE)
-        || !matches!(f, wgpu::TextureFormat::R32Float | wgpu::TextureFormat::Rg32Float | wgpu::TextureFormat::Rgba32Float)
+        || !matches!(
+            f,
+            wgpu::TextureFormat::R32Float | wgpu::TextureFormat::Rg32Float | wgpu::TextureFormat::Rgba32Float
+        )
 }

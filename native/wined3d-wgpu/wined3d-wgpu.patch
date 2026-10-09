@@ -351,3 +351,14 @@ diff -ruN a/dlls/wined3d/ffp_hlsl.c b/dlls/wined3d/ffp_hlsl.c
      {
          WARN("Shader version %u.%u not supported by the current shader backend.\n",
                  version->major, version->minor);
+diff -ruN a/dlls/wined3d/surface.c b/dlls/wined3d/surface.c
+--- a/dlls/wined3d/surface.c
++++ b/dlls/wined3d/surface.c
+@@ -224,6 +224,7 @@
+     {WINED3DFMT_B8G8R8A8_UNORM, WINED3DFMT_B8G8R8X8_UNORM,  convert_a8r8g8b8_x8r8g8b8},
+     {WINED3DFMT_B8G8R8X8_UNORM, WINED3DFMT_B8G8R8A8_UNORM,  convert_a8r8g8b8_x8r8g8b8},
+     {WINED3DFMT_YUY2,           WINED3DFMT_B8G8R8X8_UNORM,  convert_yuy2_x8r8g8b8},
++    {WINED3DFMT_YUY2,           WINED3DFMT_B8G8R8A8_UNORM,  convert_yuy2_x8r8g8b8},
+     {WINED3DFMT_YUY2,           WINED3DFMT_B5G6R5_UNORM,    convert_yuy2_r5g6b5},
+ };
+ 

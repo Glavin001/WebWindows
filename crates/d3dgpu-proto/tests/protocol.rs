@@ -75,6 +75,7 @@ fn every_command() -> Vec<(&'static str, Vec<u8>)> {
     one("d3dgpu_cmd_destroy", &|w| w.destroy(Handle(1)));
     one("", &|w| w.write_buffer(Handle(1), 16, &[1u8, 2, 3, 4, 5]));
     one("", &|w| w.write_buffer(Handle(1), 16, DataSrc::Shared { offset: 64, len: 128 }));
+    one("", &|w| w.write_buffer_no_overwrite(Handle(1), 16, &[1u8, 2, 3, 4, 5]));
     one("d3dgpu_cmd_create_texture", &|w| {
         w.create_texture(Handle(2), &TextureDesc::d2(Format::A8R8G8B8, 64, 32, 1, texture_usage::RENDER_TARGET))
     });
@@ -269,7 +270,10 @@ fn round_trip_values() {
         }
         c => panic!("{c:?}"),
     }
-    assert_eq!(cmds[2], Command::WriteBuffer { id: Handle(1), offset: 16, data: Data::Inline(&[1, 2, 3, 4, 5]) });
+    assert_eq!(
+        cmds[2],
+        Command::WriteBuffer { id: Handle(1), offset: 16, data: Data::Inline(&[1, 2, 3, 4, 5]), no_overwrite: false }
+    );
     assert_eq!(
         cmds[3],
         Command::DrawIndexed {
@@ -303,7 +307,10 @@ fn reencode(c: &Command) -> Vec<u8> {
     match c {
         Command::CreateBuffer { id, size, usage } => w.create_buffer(*id, *size, *usage),
         Command::Destroy { id } => w.destroy(*id),
-        Command::WriteBuffer { id, offset, data } => w.write_buffer(*id, *offset, data_src(data)),
+        Command::WriteBuffer { id, offset, data, no_overwrite: false } => w.write_buffer(*id, *offset, data_src(data)),
+        Command::WriteBuffer { id, offset, data, no_overwrite: true } => {
+            w.write_buffer_no_overwrite(*id, *offset, data_src(data))
+        }
         Command::CreateTexture { id, desc } => w.create_texture(*id, desc),
         Command::WriteTexture { region, row_pitch, slice_pitch, data } => {
             w.write_texture(region, *row_pitch, *slice_pitch, data_src(data))

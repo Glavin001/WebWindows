@@ -131,6 +131,9 @@ ops! {
     CreateShader = 0x0006,
     CreateVertexDecl = 0x0007,
     SetPalette = 0x0008,
+    /// WriteBuffer for a Direct3D NOOVERWRITE map: the bytes are none that
+    /// commands already given read, so it need not wait for them.
+    WriteBufferNoOverwrite = 0x0009,
     // State.
     SetRenderTarget = 0x0010,
     SetDepthStencil = 0x0011,

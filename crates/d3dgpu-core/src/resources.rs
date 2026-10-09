@@ -18,6 +18,9 @@ pub struct Buffer {
     pub shadow: Vec<u8>,
     /// Submission epoch this buffer was last read in by recorded commands.
     pub last_use: u64,
+    /// Bytes copied in command order in submission epoch `.0` (`.1...2`):
+    /// a NOOVERWRITE write there can't go ahead of those copies.
+    pub ordered: (u64, usize, usize),
 }
 
 pub struct Texture {
