@@ -25,7 +25,7 @@
   },
   "clear_test": {
     "status": "done",
-    "failures": 6
+    "failures": 0
   },
   "test_clear_different_size_surfaces": {
     "status": "done",
@@ -313,7 +313,7 @@
   },
   "volume_dxtn_test": {
     "status": "done",
-    "failures": 23
+    "failures": 0
   },
   "add_dirty_rect_test": {
     "status": "done",
@@ -385,7 +385,7 @@
   },
   "test_flip": {
     "status": "done",
-    "failures": 5
+    "failures": 0
   },
   "test_uninitialized_varyings": {
     "status": "done",

@@ -151,6 +151,9 @@ struct wined3d_device_wgpu
         uint32_t tex_known;
         uint32_t ttff[4];
         uint32_t ttff_known;
+        /* D3DTSS_BUMPENVMAT00..11, LSCALE, LOFFSET per stage. */
+        uint32_t bumpenv[WINED3D_MAX_FFP_TEXTURES][6];
+        uint32_t bumpenv_known;
         uint32_t target[5][3]; /* render targets 0-3, then depth/stencil */
         uint32_t target_known;
         uint32_t viewport[6];
@@ -1795,6 +1798,35 @@ static void wgpu_apply_render_states(struct wined3d_device_wgpu *device, struct 
         device->sent.ttff[i] = flags;
         device->sent.ttff_known |= 1u << i;
     }
+    /* texbem's matrix and luminance scale and offset, which wined3d keeps
+     * with its fixed-function constants. */
+    for (i = 0; ps_consts && i < WINED3D_MAX_FFP_TEXTURES; ++i)
+    {
+        static const uint32_t states[6] = {7, 8, 9, 10, 22, 23}; /* D3DTSS_BUMPENVMAT00..11, LSCALE, LOFFSET */
+        const struct wined3d_ffp_bumpenv_constants *b = &ps_consts->bumpenv;
+        uint32_t values[6] =
+        {
+            float_bits(b->matrices[i]._00), float_bits(b->matrices[i]._01),
+            float_bits(b->matrices[i]._10), float_bits(b->matrices[i]._11),
+            float_bits(b->lscale[i]), float_bits(b->loffset[i]),
+        };
+        unsigned int j;
+
+        for (j = 0; j < 6; ++j)
+        {
+            struct d3dgpu_cmd_set_texture_stage_state *cmd;
+
+            if ((device->sent.bumpenv_known & (1u << i)) && device->sent.bumpenv[i][j] == values[j])
+                continue;
+            if (!(cmd = wgpu_cmd(device, D3DGPU_OP_SET_TEXTURE_STAGE_STATE, sizeof(*cmd))))
+                break;
+            cmd->stage = i;
+            cmd->state = states[j];
+            cmd->value = values[j];
+            device->sent.bumpenv[i][j] = values[j];
+        }
+        device->sent.bumpenv_known |= 1u << i;
+    }
     /* Fog, applied by the core after pixel shaders before 3.0. wined3d's
      * fixed-function vertex shaders output the fog coordinate, which the
      * core turns into the factor with FOGVERTEXMODE's equation; a program's
@@ -3279,7 +3311,10 @@ static void wgpu_init_d3d_info(struct wined3d_adapter *adapter, unsigned int win
     d3d_info->vertex_bgra = true;
     d3d_info->texture_swizzle = true;
     d3d_info->clip_control = true;
-    d3d_info->full_ffp_varyings = true;
+    /* The core links varyings by semantic: fixed-function shaders write
+     * only the texture coordinates the vertices have, and the others read
+     * 0 as on Windows (pretransformed_varying_test). */
+    d3d_info->full_ffp_varyings = false;
     d3d_info->pbo = false;
     d3d_info->feature_level = WINED3D_FEATURE_LEVEL_9_3;
     d3d_info->subpixel_viewport = true;

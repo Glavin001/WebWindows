@@ -831,8 +831,12 @@ impl<'a> Gen<'a> {
             Opcode::TexBem | Opcode::TexBemL => {
                 let s = src0(self)?;
                 let m = format!("drv.bump_env[{n}]");
+                // A projected stage divides the texture coordinate, not the
+                // displacement.
+                let proj = self.pkey.map(|k| k.samplers[n as usize].projected).unwrap_or(false);
+                let base = if proj { format!("({tc}.xy / {tc}.w)") } else { format!("{tc}.xy") };
                 let coord = format!(
-                    "vec4<f32>({tc}.x + {m}.x * {s}.x + {m}.z * {s}.y, {tc}.y + {m}.y * {s}.x + {m}.w * {s}.y, 0.0, 1.0)"
+                    "vec4<f32>({base}.x + {m}.x * {s}.x + {m}.z * {s}.y, {base}.y + {m}.y * {s}.x + {m}.w * {s}.y, 0.0, 1.0)"
                 );
                 let mut v = self.sample(n, &coord, Lod::Implicit, false)?;
                 if ins.opcode == Opcode::TexBemL {
