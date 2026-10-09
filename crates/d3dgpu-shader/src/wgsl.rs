@@ -1375,6 +1375,10 @@ impl<'a> Gen<'a> {
                 m.push_str("    o_c0 = vec4<f32>(mix(drv.fog_color.xyz, o_c0.xyz, fog), o_c0.w);\n");
             }
         }
+        if key.srgb_write && outputs & 1 != 0 {
+            m.push_str("    let srgb_c = clamp(o_c0.xyz, vec3<f32>(0.0), vec3<f32>(1.0));\n");
+            m.push_str("    o_c0 = vec4<f32>(select(1.055 * pow(srgb_c, vec3<f32>(1.0 / 2.4)) - 0.055, srgb_c * 12.92, srgb_c <= vec3<f32>(0.0031308)), o_c0.w);\n");
+        }
         if key.alpha_test != cmp::ALWAYS && outputs & 1 != 0 {
             // Direct3D compares the 8-bit alpha with the 8-bit reference.
             let a = "round(clamp(o_c0.w, 0.0, 1.0) * 255.0)";

@@ -192,6 +192,10 @@ pub struct PixelKey {
     /// bias is in units of the depth format's precision, which for float
     /// formats (what `depth24plus` is on many GPUs) scales with the depth.
     pub depth_bias: bool,
+    /// `D3DRS_SRGBWRITEENABLE` on a target with an sRGB form: colour output
+    /// 0 is written sRGB-encoded (by the shader, as wined3d's GLSL backend
+    /// does; Direct3D 9 hardware blends the encoded value).
+    pub srgb_write: bool,
 }
 
 impl Default for PixelKey {
@@ -204,6 +208,7 @@ impl Default for PixelKey {
             clip: ClipMode::None,
             flat_shading: false,
             depth_bias: false,
+            srgb_write: false,
         }
     }
 }

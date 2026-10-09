@@ -589,6 +589,8 @@ impl Core {
         key.clip = self.clip_mode();
         key.flat_shading = self.st.r(RenderState::ShadeMode) == D3DSHADE_FLAT;
         key.depth_bias = self.st.r(RenderState::DepthBias) != 0 || self.st.r(RenderState::SlopeScaleDepthBias) != 0;
+        key.srgb_write = self.st.r(RenderState::SrgbWriteEnable) != 0
+            && matches!(self.objects.get(&self.st.rts[0].texture.0), Some(Object::Texture(t)) if t.srgb_view.is_some());
         key
     }
 
