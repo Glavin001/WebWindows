@@ -29,6 +29,8 @@
   /* Frame rate and load over the screen, for programs that show none. */
   #perf { position: absolute; top: 6px; left: 6px; z-index: 2; pointer-events: none; padding: 3px 7px; border-radius: 5px; background: rgba(0, 0, 0, .6); color: #fff; font: 12px/1.4 ui-monospace, monospace; white-space: pre; }
   #perf[hidden] { display: none; }
+  details.status { margin: 0 0 12px; }
+  details.status summary { cursor: pointer; margin-bottom: 8px; }
 </style>
 </head>
 <body>
@@ -43,10 +45,40 @@
     <input id="args" placeholder="arguments" size="16">
     <button id="run" disabled>Run</button>
     <label class="status"><input id="wine" type="checkbox"> on Wine</label>
-    <label class="status"><input id="nocache" type="checkbox"> no cache</label>
-    <label class="status"><input id="showperf" type="checkbox" checked> stats</label>
+    <label class="status" title="?nocache=1: translate again instead of using the cached translation"><input id="nocache" type="checkbox"> no cache</label>
+    <label class="status" title="?stats=0 hides it: frame rate and load over the screen"><input id="showperf" type="checkbox" checked> stats</label>
     <button id="debugreport" title="Save a file with the logs, settings, GPU details and screenshots for a bug report">Debug report</button>
-    <label class="status" title="Check every guest memory access explicitly instead of relying on the engine's bounds traps: slower, but an access violation reports every register exactly (docs/memory-traps.md). Safari always does."><input id="faithful" type="checkbox"> faithful memory checks</label>
+  </div>
+  <div class="row">
+    <label class="status" title="?d3dpresent=: how Direct3D frames reach the screen">Direct3D frames
+      <select id="d3dpresent">
+        <option value="canvas">GPU canvas (default)</option>
+        <option value="gdi">read back, drawn with GDI</option>
+        <option value="offscreen">offscreen (tests)</option>
+      </select></label>
+    <label class="status" title="?memtraps=: how guest memory accesses are checked (docs/memory-traps.md)">Memory checks
+      <select id="memtraps">
+        <option value="auto">automatic (default)</option>
+        <option value="1">bounds traps</option>
+        <option value="0">faithful (slower, exact)</option>
+      </select></label>
+    <label class="status" title="?d3dstats=1: the render worker logs how busy it is, once a second"><input id="d3dstats" type="checkbox"> GPU worker log</label>
+  </div>
+  <details class="status" id="advanced">
+    <summary>Debugging options</summary>
+    <div class="row">
+      <label title="?debug=: Wine's debug channels (WINEDEBUG), e.g. +d3d,+seh">Wine debug channels <input id="debug" size="18" placeholder="+d3d"></label>
+      <label title="?unixtrace=: channels of Wine's Unix side (win32u, wineserver, the display driver browser; all for every one)">Unix-side channels <input id="unixtrace" size="14" placeholder="win,key"></label>
+    </div>
+    <div class="row">
+      <label title="?translator=: URL of the translator's WebAssembly module (applies on reload)">Translator <input id="translator" size="34" placeholder="default"></label>
+      <label title="?bundle=: URL of the Wine bundle (applies on reload)">Wine bundle <input id="bundle" size="24" placeholder="default"></label>
+    </div>
+    <div class="row">
+      <label title="?bundle64=: URL of the x86_64 Wine bundle (applies on reload)">64-bit bundle <input id="bundle64" size="24" placeholder="default"></label>
+      <label title="?bundle64m32=: URL of the x86_64 bundle for a 32-bit memory (applies on reload)">64-bit, 32-bit memory <input id="bundle64m32" size="24" placeholder="default"></label>
+    </div>
+  </details>
   </div>
   <div class="row" id="samples" hidden>
     <span class="status">Or try one of these:</span>

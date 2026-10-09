@@ -14,22 +14,81 @@ const logEl = $('log');
 let folder = new Map(); // relative path -> File
 
 const params = new URLSearchParams(location.search);
-const translatorUrl = params.get('translator') ?? new URL('../../target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm', import.meta.url).href;
 
-const bundleUrl = params.get('bundle') ?? new URL('../../target/wine-bundle/', import.meta.url).href;
+// ---- Settings ----------------------------------------------------------------
+//
+// Every setting is both a URL parameter and a control on the page: the URL
+// wins when the page loads, and changing a control rewrites the URL (without
+// reloading), so the address can always be copied to reproduce a run.
+// key: [element id, default, kind]; checkboxes are "1"/"0" in the URL.
+const SETTINGS = {
+  wine: ['wine', false, 'check'],
+  nocache: ['nocache', false, 'check'],
+  stats: ['showperf', true, 'check'],
+  d3dpresent: ['d3dpresent', 'canvas', 'value'],
+  memtraps: ['memtraps', 'auto', 'value'],
+  d3dstats: ['d3dstats', false, 'check'],
+  args: ['args', '', 'value'],
+  debug: ['debug', '', 'value'],
+  unixtrace: ['unixtrace', '', 'value'],
+  translator: ['translator', '', 'value'],
+  bundle: ['bundle', '', 'value'],
+  bundle64: ['bundle64', '', 'value'],
+  bundle64m32: ['bundle64m32', '', 'value'],
+};
+/** A setting's current value, from its control. */
+function setting(key) {
+  const [id, , kind] = SETTINGS[key];
+  return kind === 'check' ? $(id).checked : $(id).value.trim();
+}
+/** Every setting that differs from its default, as the URL carries them. */
+function settings() {
+  return Object.fromEntries(
+    Object.entries(SETTINGS)
+      .filter(([k, [, def]]) => setting(k) !== def)
+      .map(([k, [, , kind]]) => [k, kind === 'check' ? (setting(k) ? '1' : '0') : setting(k)]),
+  );
+}
+function writeUrl() {
+  const q = new URLSearchParams(location.search);
+  for (const [k, [, def, kind]] of Object.entries(SETTINGS)) {
+    const v = setting(k);
+    if (v === def) q.delete(k);
+    else q.set(k, kind === 'check' ? (v ? '1' : '0') : v);
+  }
+  const search = q.toString();
+  history.replaceState(null, '', search ? `?${search}` : location.pathname);
+}
+// The stats overlay is remembered between visits too.
+try {
+  if (!params.has('stats') && localStorage.getItem('webwindows:stats') !== null) params.set('stats', localStorage.getItem('webwindows:stats'));
+} catch {}
+for (const [k, [id, , kind]] of Object.entries(SETTINGS)) {
+  const el = $(id);
+  if (params.has(k)) {
+    const v = params.get(k);
+    if (kind === 'check') el.checked = v !== '0' && v !== '' && v !== 'false';
+    else if (el.tagName === 'SELECT' && ![...el.options].some((o) => o.value === v)) el.add(new Option(v, v));
+    if (kind !== 'check') el.value = v;
+  }
+  el.addEventListener(kind === 'check' || el.tagName === 'SELECT' ? 'change' : 'input', writeUrl);
+}
+// The debugging options start open when one of them is set.
+if (['debug', 'unixtrace', 'translator', 'bundle', 'bundle64', 'bundle64m32'].some((k) => setting(k))) $('advanced').open = true;
+writeUrl();
+
+const translatorUrl = setting('translator') || new URL('../../target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm', import.meta.url).href;
+const bundleUrl = setting('bundle') || new URL('../../target/wine-bundle/', import.meta.url).href;
 // 64-bit programs run on Wine's x86_64 DLLs from their own bundle.
-const bundle64Url = params.get('bundle64') ?? new URL('../../target/wine-bundle64/', import.meta.url).href;
+const bundle64Url = setting('bundle64') || new URL('../../target/wine-bundle64/', import.meta.url).href;
 // ... or, in browsers without 64-bit WebAssembly memory, from a bundle for a
 // 32-bit memory (the DLLs below 2 GB, the Unix side lowered to wasm32).
-const bundle64m32Url = params.get('bundle64m32') ?? new URL('../../target/wine-bundle64-m32/', import.meta.url).href;
-if (params.get('wine')) $('wine').checked = true;
+const bundle64m32Url = setting('bundle64m32') || new URL('../../target/wine-bundle64-m32/', import.meta.url).href;
 // 64-bit WebAssembly memory: WebKit (Safari, and every browser on iOS) does
 // not ship it yet. Without it 64-bit programs run below 4 GB on a 32-bit
 // memory, on Wine from the 32-bit-memory bundle.
 const memory64 = hasMemory64();
 $('mem64note').hidden = memory64;
-// ?args=a+b: the program's command line (with ?exe=).
-if (params.get('args')) $('args').value = params.get('args');
 
 if (!crossOriginIsolated) {
   $('status').textContent = 'This page needs cross-origin isolation (COOP/COEP headers) for shared memory; serve it with runtime/web/serve.mjs.';
@@ -115,14 +174,10 @@ requestAnimationFrame(paint);
 // Over the screen, since programs rarely show their own: Direct3D's
 // presented frames (the render worker's {type: 'perf'}, twice a second),
 // else how often the screen changed, and the system calls and threads from
-// the latest status sample. The "stats" box (or ?stats=0) hides it.
+// the latest status sample. The "stats" box (?stats=0) hides it.
 let d3dPerf = null; // the latest {type: 'perf'}, with when it came
 const perfBox = $('perf');
 const showPerf = $('showperf');
-try {
-  const saved = params.get('stats') ?? localStorage.getItem('webwindows:stats');
-  if (saved !== null) showPerf.checked = saved !== '0';
-} catch {}
 showPerf.onchange = () => {
   try {
     localStorage.setItem('webwindows:stats', showPerf.checked ? '1' : '0');
@@ -251,7 +306,7 @@ function newD3DCanvas() {
   d3dCanvas = null;
   d3dPort?.close();
   d3dPort = null;
-  const mode = params.get('d3dpresent');
+  const mode = setting('d3dpresent');
   if (mode === 'gdi' || !HTMLCanvasElement.prototype.transferControlToOffscreen) return null;
   // The render worker's messages, and window.d3dSnapshot() for tests: the
   // next presented frame as {width, height, pixels} (RGBA).
@@ -266,7 +321,7 @@ function newD3DCanvas() {
   };
   const port = d3dPort;
   // ?d3dstats=1: the render worker reports how busy it is, once a second.
-  if (params.get('d3dstats')) port.postMessage({ type: 'stats' });
+  if (setting('d3dstats')) port.postMessage({ type: 'stats' });
   window.d3dSnapshot = () => new Promise((resolve) => (snapshots.push(resolve), port.postMessage({ type: 'snapshot' })));
   if (mode === 'offscreen') return { offscreen: true, port: channel.port2 };
   d3dCanvas = document.createElement('canvas');
@@ -379,7 +434,7 @@ async function debugReport() {
   saveRecord();
   const r = { kind: 'webwindows debug report', created: new Date().toISOString(), notes };
   r.build = await fetch(new URL('../../version.txt', location.href)).then((x) => (x.ok ? x.text() : null), () => null);
-  r.page = { url: location.href, options: Object.fromEntries(params), crossOriginIsolated, memory64 };
+  r.page = { url: location.href, settings: settings(), crossOriginIsolated, memory64 };
   r.browser = {
     userAgent: navigator.userAgent,
     platform: navigator.userAgentData?.platform ?? navigator.platform,
@@ -538,22 +593,22 @@ async function run(exeName, exeBytes, files, exePath, times = {}) {
         times,
         argv: args ? args.split(/\s+/) : [],
         translatorUrl,
-        noCache: $('nocache').checked,
+        noCache: setting('nocache'),
         // The program is translated with bounds traps instead of memory
         // checks (wwt translate --mem-traps) where the engine reports where
         // a trap happened (Chrome, Firefox; not Safari). "faithful memory
         // checks" (?memtraps=0) turns them off; ?memtraps=1 forces them.
-        memTraps: $('faithful').checked ? false : params.get('memtraps') === '1' ? true : undefined,
+        memTraps: setting('memtraps') === '0' ? false : setting('memtraps') === '1' ? true : undefined,
         wine,
         bundleUrl,
         bundle64Url,
         bundle64m32Url,
         memory64,
         // ?debug=+d3d: Wine's debug channels (WINEDEBUG), on stderr.
-        debug: params.get('debug') ?? '',
+        debug: setting('debug'),
         // ?unixtrace=win,key: the channels of Wine's Unix side (win32u,
         // wineserver, the display driver "browser"; "all" for every one).
-        unixTrace: params.get('unixtrace') ?? '',
+        unixTrace: setting('unixtrace'),
         display: screen && { width: screen.width, height: screen.height, screen: screen.screen, frame: screen.frame, input: screen.input },
         audio,
         d3dCanvas: d3dOffscreen?.canvas,
@@ -626,6 +681,7 @@ $('runsample').onclick = async () => {
   const url = $('sample').value;
   const bytes = await (await fetch(url)).arrayBuffer();
   $('wine').checked = true;
+  writeUrl();
   // A sample with files runs from C:\app, with them beside it.
   const files = {};
   for (const [name, path] of Object.entries(sampleFiles.get(url) ?? {})) {
@@ -636,10 +692,8 @@ $('runsample').onclick = async () => {
 };
 
 // ?exe=<url> runs a program directly (used by tests and demos).
-if (params.get('memtraps') === '0') $('faithful').checked = true;
 if (params.get('exe')) {
   const url = params.get('exe');
   const bytes = await (await fetch(url)).arrayBuffer();
-  if (params.get('nocache')) $('nocache').checked = true;
   run(url.split('/').pop(), bytes, {});
 }
