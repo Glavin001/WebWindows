@@ -420,14 +420,14 @@ game ─► d3d9.dll ─► wined3d.dll (adapter_wgpu) ─► d3dgpu batches in 
   UAVs, compute, queries), GPU colour blits (`StretchRect` between colour
   surfaces runs on the CPU blitter; depth surfaces are copied on the GPU),
   point sprites, MSAA, mipmap generation, presenting other than 32-bit
-  back buffers, YUV surfaces.
+  back buffers, UYVY surfaces (YUY2 plain surfaces blit to RGB).
 * **Wine's Direct3D 9 rendering tests** (`node tests/web/d3d9-visual.mjs`,
   `dlls/d3d9/tests/visual.c`; `--native` for native Wine): the baseline is
-  `tests/web/baseline/d3d9_visual.json`. What remains is mostly where
-  WebGPU differs from Direct3D 9 hardware: cube maps always filter across
-  faces (`test_cube_wrap`), division rounding at exact integers
-  (`test_texture_transform_flags`), the 5-bit `L6V5U5` format's
-  precision, and writes outside a locked buffer range.
+  `tests/web/baseline/d3d9_visual.json`: 17 failures in 2 of 133
+  functions, both where WebGPU differs from Direct3D 9 hardware: cube
+  maps always filter across faces (`test_cube_wrap`), and a projected
+  texture coordinate that divides to just under an integer lands on it
+  (`test_texture_transform_flags`; WGSL division is accurate to 2.5 ULP).
 
 ![d3d9tri on translated Wine in headless Chromium](d3d9tri-browser.png)
 
