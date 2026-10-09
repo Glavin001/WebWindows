@@ -77,11 +77,13 @@ if (isD3d9) {
     return `    if (wwt_run(${names.length - 1}, "${name}")) ${name}();`;
   });
 } else {
-  // Test calls: "    test_x(...);" / "    x_test(...);", or queued ones
-  // ("    queue_test(test_x);", possibly over several lines), run at once.
-  numbered = body.replace(/^ {4}(queue_\w+\([^;]*?\)|(?:test_\w+|\w+_test)\([^;\n]*\));$/gm, (call) => {
+  // Test calls: "    test_x(...);" / "    x_test(...);", queued ones
+  // ("    queue_test(test_x);", possibly over several lines), run at once,
+  // and ones run by a helper ("    run_for_each_device_type(test_x);").
+  numbered = body.replace(/^ {4}(queue_\w+\([^;]*?\)|run_\w+\(\s*test_\w+[^;\n]*\)|(?:test_\w+|\w+_test)\([^;\n]*\));$/gm, (call) => {
     const q = call.trimStart().startsWith('queue_');
-    const name = q ? [...call.matchAll(/\b(test_\w+|\w+_test)\b/g)].pop()?.[1] ?? 'queued' : call.trim().split('(')[0];
+    const byHelper = q || call.trimStart().startsWith('run_');
+    const name = byHelper ? [...call.matchAll(/\b(test_\w+|\w+_test)\b/g)].pop()?.[1] ?? 'queued' : call.trim().split('(')[0];
     queued ||= q;
     names.push(name);
     return `    if (wwt_run(${names.length - 1}, "${name}")) { ${call.trim()}; ${q ? 'wwt_flush(); ' : ''}}`;

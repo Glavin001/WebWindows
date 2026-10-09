@@ -23,7 +23,19 @@
     "status": "done",
     "failures": 0
   },
+  "test_depth_blit": {
+    "status": "done",
+    "failures": 0
+  },
   "test_texture_load_ckey": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_zenable": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_ck_rgba": {
     "status": "done",
     "failures": 0
   },
@@ -120,6 +132,10 @@
     "failures": 0
   },
   "test_unsupported_formats": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_rt_caps": {
     "status": "done",
     "failures": 0
   },
@@ -415,11 +431,19 @@
     "status": "done",
     "failures": 0
   },
+  "test_texture_wrong_caps": {
+    "status": "done",
+    "failures": 0
+  },
   "test_filling_convention": {
     "status": "done",
     "failures": 0
   },
   "test_enum_devices": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_user_memory": {
     "status": "done",
     "failures": 0
   },
