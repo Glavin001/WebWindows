@@ -493,8 +493,12 @@ fn quantize(v: u8, bits: u32) -> u32 {
 }
 
 /// A signed `bits`-bit field (sign-extended) as snorm8, using the `max(v / max, -1)` rule.
+/// A signed `v` of range `-(max + 1)..=max` as snorm8: as Direct3D 9
+/// hardware does (test_signed_formats), negative values are in steps of
+/// 1 / (max + 1), so min + 1 is not -1.0 as it would be on OpenGL.
 fn snorm8(v: i32, max: i32) -> u8 {
-    ((v as f32 / max as f32).max(-1.0) * 127.0).round() as i8 as u8
+    let scale = if v < 0 { max + 1 } else { max };
+    (v as f32 / scale as f32 * 127.0).round() as i8 as u8
 }
 
 fn sext(v: u32, bits: u32) -> i32 {

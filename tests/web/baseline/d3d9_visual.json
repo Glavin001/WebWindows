@@ -361,7 +361,7 @@
   },
   "test_signed_formats": {
     "status": "done",
-    "failures": 5
+    "failures": 0
   },
   "test_multisample_mismatch": {
     "status": "done",

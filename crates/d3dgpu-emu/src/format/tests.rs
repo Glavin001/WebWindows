@@ -274,6 +274,8 @@ fn signed_formats() {
     // U = 1, V = -1, L = 0.
     let v = 0b11111 << 5 | 1;
     assert_eq!(up(Format::L6V5U5, &[v], 2), [8, (-8i8) as u8, 0, 127]);
+    // U = -15 is -15/16, not -1.0 (test_signed_formats).
+    assert_eq!(up(Format::L6V5U5, &[0b10001], 2), [(-119i8) as u8, 0, 0, 127]);
     // X8L8V8U8: U, V copied; L 255 -> 127, 128 -> 64.
     assert_eq!(up(Format::X8L8V8U8, &[0x00ff_8001, 0x0080_0000], 4), [1, 0x80, 127, 127, 0, 0, 64, 127]);
     // A2W10V10U10: U = 511 (1.0), V = -512 (-1.0), W = 0, A = 3 (1.0).
