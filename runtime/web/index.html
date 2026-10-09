@@ -26,8 +26,8 @@
   /* Direct3D frames, over the window that shows them (input goes to #screen). */
   #screenbox canvas.d3d { position: absolute; pointer-events: none; }
   #screenbox canvas.d3d[hidden] { display: none; }
-  /* Frame rate and load over the screen, for programs that show none. */
-  #perf { position: absolute; top: 6px; left: 6px; z-index: 2; pointer-events: none; padding: 3px 7px; border-radius: 5px; background: rgba(0, 0, 0, .6); color: #fff; font: 12px/1.4 ui-monospace, monospace; white-space: pre; }
+  /* Frame rate and load, above the screen (programs rarely show their own). */
+  #perf { margin: 0 0 6px; color: var(--muted); font: 12px/1.5 ui-monospace, monospace; display: flex; flex-wrap: wrap; column-gap: 18px; }
   #perf[hidden] { display: none; }
   details.status { margin: 0 0 12px; }
   details.status summary { cursor: pointer; margin-bottom: 8px; }
@@ -46,7 +46,7 @@
     <button id="run" disabled>Run</button>
     <label class="status"><input id="wine" type="checkbox"> on Wine</label>
     <label class="status" title="?nocache=1: translate again instead of using the cached translation"><input id="nocache" type="checkbox"> no cache</label>
-    <label class="status" title="?stats=0 hides it: frame rate and load over the screen"><input id="showperf" type="checkbox" checked> stats</label>
+    <label class="status" title="?stats=0 hides it: frame rate and load above the screen"><input id="showperf" type="checkbox" checked> stats</label>
     <button id="debugreport" title="Save a file with the logs, settings, GPU details and screenshots for a bug report">Debug report</button>
   </div>
   <div class="row">
@@ -86,7 +86,8 @@
     <button id="runsample">Run</button>
   </div>
   <div id="status" class="status"></div>
-  <div id="screenbox"><canvas id="screen" width="800" height="600" tabindex="0" hidden aria-label="Windows screen"></canvas><div id="perf" hidden aria-live="off"></div></div>
+  <div id="perf" hidden aria-live="off"></div>
+  <div id="screenbox"><canvas id="screen" width="800" height="600" tabindex="0" hidden aria-label="Windows screen"></canvas></div>
   <pre id="out"></pre>
   <div id="log" class="log"></div>
 </main>

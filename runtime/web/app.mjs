@@ -171,7 +171,7 @@ requestAnimationFrame(paint);
 
 // ---- Frame rate and load --------------------------------------------------
 //
-// Over the screen, since programs rarely show their own: Direct3D's
+// Above the screen, since programs rarely show their own: Direct3D's
 // presented frames (the render worker's {type: 'perf'}, twice a second),
 // else how often the screen changed, and the system calls and threads from
 // the latest status sample. The "stats" box (?stats=0) hides it.
@@ -208,7 +208,7 @@ function updatePerf() {
     const running = s.threads?.filter((t) => t.state === 'running').length ?? 0;
     lines.push(`CPU: ${fmt(s.syscalls.perSec)} syscalls/s, ${threads} threads (${running} running)`);
   }
-  perfBox.textContent = lines.join('\n');
+  perfBox.replaceChildren(...lines.map((l) => Object.assign(document.createElement('span'), { textContent: l })));
 }
 setInterval(updatePerf, 500);
 
