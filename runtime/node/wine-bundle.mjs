@@ -30,6 +30,7 @@
 // would download it and map it for nothing).
 
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -146,9 +147,16 @@ for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS, ...NET_DLL
   if (process.env.WWT_MEM_TRAPS === '1') flags.push('--mem-traps');
   if (withHeap && !x64 && d === 'ntdll') flags.push(NATIVE_HEAP_FLAG);
   if (withStrings && !x64 && NATIVE_STRINGS_DLLS.includes(name)) flags.push(NATIVE_STRINGS_FLAG);
-  execFileSync(wwt, ['translate', ...flags, join(out, name), '-o', join(out, `${name}.wasm`)], {
-    stdio: ['ignore', 'ignore', 'inherit'],
-  });
+  // Translated again only when the DLL, the flags or the translator changed
+  // (the key file next to the translation records them).
+  const key = createHash('sha256').update(bytes).update(JSON.stringify(flags)).update(String(statSync(wwt).mtimeMs)).digest('hex');
+  const keyFile = join(out, `${name}.wasm.key`);
+  if (!existsSync(join(out, `${name}.wasm`)) || !existsSync(keyFile) || readFileSync(keyFile, 'utf8') !== key) {
+    execFileSync(wwt, ['translate', ...flags, join(out, name), '-o', join(out, `${name}.wasm`)], {
+      stdio: ['ignore', 'ignore', 'inherit'],
+    });
+    writeFileSync(keyFile, key);
+  }
   manifest.dlls[name] = { pe: name, wasm: `${name}.wasm`, ...(group && { group }) };
 }
 if (withHeap && !x64) {

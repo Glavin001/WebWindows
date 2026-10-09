@@ -77,8 +77,8 @@ diff -ruN a/dlls/wined3d/buffer.c b/dlls/wined3d/buffer.c
          struct wined3d_context *context, unsigned int location)
  {
 diff -ruN a/dlls/wined3d/cs.c b/dlls/wined3d/cs.c
---- a/dlls/wined3d/cs.c	2026-10-07 22:25:53.626305302 +0000
-+++ b/dlls/wined3d/cs.c	2026-10-07 22:25:53.641436602 +0000
+--- a/dlls/wined3d/cs.c
++++ b/dlls/wined3d/cs.c
 @@ -1191,7 +1191,10 @@
      op->parameters.u.direct.instance_count = instance_count;
      op->parameters.indexed = indexed;
@@ -91,7 +91,28 @@ diff -ruN a/dlls/wined3d/cs.c b/dlls/wined3d/cs.c
  
      wined3d_device_context_submit(context, WINED3D_CS_QUEUE_DEFAULT);
  }
-@@ -3242,6 +3245,12 @@
+@@ -2099,6 +2102,11 @@
+ {
+     struct wined3d_cs_set_extra_vs_args *op;
+ 
++    /* The client state too, as the other setters do: the fixed-function
++     * shader settings are computed from it (get_ffp_vertex_shader()), and a
++     * stale pixel_fog leaves pre-transformed vertices without the fog
++     * coordinate that table fog reads. */
++    context->state->extra_vs_args = *args;
+     op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
+     op->opcode = WINED3D_CS_OP_SET_EXTRA_VS_ARGS;
+     op->args = *args;
+@@ -2119,6 +2127,8 @@
+ {
+     struct wined3d_cs_set_extra_ps_args *op;
+ 
++    /* The client state too, as for the vertex shader arguments above. */
++    context->state->extra_ps_args = *args;
+     op = wined3d_device_context_require_space(context, sizeof(*op), WINED3D_CS_QUEUE_DEFAULT);
+     op->opcode = WINED3D_CS_OP_SET_EXTRA_PS_ARGS;
+     op->args = *args;
+@@ -3242,6 +3252,12 @@
          return true;
      }
  
@@ -268,8 +289,9 @@ diff -ruN a/include/wine/wined3d.h b/include/wine/wined3d.h
  };
  
  enum wined3d_light_type
---- a/dlls/wined3d/ffp_hlsl.c	2026-10-08 13:34:35.380812117 +0000
-+++ b/dlls/wined3d/ffp_hlsl.c	2026-10-08 13:34:35.397459168 +0000
+diff -ruN a/dlls/wined3d/ffp_hlsl.c b/dlls/wined3d/ffp_hlsl.c
+--- a/dlls/wined3d/ffp_hlsl.c
++++ b/dlls/wined3d/ffp_hlsl.c
 @@ -329,8 +329,28 @@
                      continue;
                  break;
@@ -298,6 +320,22 @@ diff -ruN a/include/wine/wined3d.h b/include/wine/wined3d.h
 +                shader_addline(&texcoord, "float4(0.0, 0.0, 0.0, 1.0)");
                  break;
          }
+ 
+@@ -357,10 +377,14 @@
+             break;
+ 
+         case WINED3D_FFP_VS_FOG_DEPTH:
++            /* As the GLSL backend does: eye-space Z for vertex fog, the
++             * output Z for table fog under an orthographic projection. */
+             if (settings->transformed)
+                 shader_addline(buffer, "    o.fogcoord = ec_pos.z;\n");
++            else if (settings->ortho_fog)
++                shader_addline(buffer, "    o.fogcoord = o.pos.z;\n");
+             else
+-                shader_addline(buffer, "    o.fogcoord = abs(o.pos.z);\n");
++                shader_addline(buffer, "    o.fogcoord = abs(ec_pos.z);\n");
+             break;
+     }
  
 --- a/dlls/wined3d/shader.c	2026-10-08 17:54:17.780287686 +0000
 +++ b/dlls/wined3d/shader.c	2026-10-08 17:54:17.795187427 +0000

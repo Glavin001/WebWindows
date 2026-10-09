@@ -1630,6 +1630,10 @@ static inline bool wgpu_state_dirty(const struct wined3d_context *context, unsig
 
 /* Whether the constant buffer was written since this was last asked
  * (the fixed-function extra constants: alpha test, clip planes). */
+/* Whether the fixed-function extra constants changed since the last draw.
+ * Read before wgpu_upload_constants(), which clears the range when the same
+ * buffer holds the shader's constants (wined3d's fixed-function shaders);
+ * wgpu_extra_constants_clean() clears it after. */
 static bool wgpu_extra_constants_dirty(const struct wined3d_constant_buffer_state *cb)
 {
     struct wined3d_bo_wgpu *bo;
@@ -1637,17 +1641,24 @@ static bool wgpu_extra_constants_dirty(const struct wined3d_constant_buffer_stat
     if (!cb->buffer || !cb->buffer->buffer_object)
         return !!cb->buffer;
     bo = wined3d_bo_wgpu(cb->buffer->buffer_object);
-    if (bo->dirty_hi <= bo->dirty_lo)
-        return false;
+    return bo->dirty_hi > bo->dirty_lo;
+}
+
+static void wgpu_extra_constants_clean(const struct wined3d_constant_buffer_state *cb)
+{
+    struct wined3d_bo_wgpu *bo;
+
+    if (!cb->buffer || !cb->buffer->buffer_object)
+        return;
+    bo = wined3d_bo_wgpu(cb->buffer->buffer_object);
     bo->dirty_lo = ~(size_t)0;
     bo->dirty_hi = 0;
-    return true;
 }
 
 /* Render states from wined3d's blend, depth/stencil and rasterizer objects
  * and the fixed-function extras, each part when wined3d changed it. */
 static void wgpu_apply_render_states(struct wined3d_device_wgpu *device, struct wined3d_context *context,
-        const struct wined3d_state *state)
+        const struct wined3d_state *state, bool extras_ps, bool extras_vs)
 {
     const struct wined3d_rasterizer_state *r = state->rasterizer_state;
     const struct wined3d_depth_stencil_state *ds = state->depth_stencil_state;
@@ -1657,7 +1668,6 @@ static void wgpu_apply_render_states(struct wined3d_device_wgpu *device, struct 
     const struct wined3d_ffp_ps_constants *ps_consts = NULL;
     const struct wined3d_ffp_vs_constants *vs_consts = NULL;
     bool all = !device->sent.states_known;
-    bool extras_ps = wgpu_extra_constants_dirty(ps_extra), extras_vs = wgpu_extra_constants_dirty(vs_extra);
     const BYTE *data;
     uint32_t cull;
     unsigned int i;
@@ -1792,21 +1802,37 @@ static void wgpu_apply_render_states(struct wined3d_device_wgpu *device, struct 
      * which FOGVERTEXMODE NONE tells it. Start and end come back from the
      * constants (end, 1 / (end - start)); a zero scale fogs everything. */
     wgpu_set_render_state(device, WINED3D_RS_FOGENABLE, state->extra_ps_args.fog_enable);
-    wgpu_set_render_state(device, WINED3D_RS_FOGTABLEMODE, state->extra_ps_args.fog_mode);
     /* The core's own state 1: table fog reads eye depth (W) under a
      * perspective projection, pixel Z under an orthographic one. */
     wgpu_set_render_state(device, 1, !state->extra_vs_args.ortho_fog);
     {
         const struct wined3d_shader *vs = state->shader[WINED3D_SHADER_TYPE_VERTEX];
         bool rhw = state->vertex_declaration && state->vertex_declaration->position_transformed;
+        bool ffp_vs = !vs || vs->is_ffp_vs;
+        enum wined3d_fog_mode table = state->extra_ps_args.fog_mode;
 
-        wgpu_set_render_state(device, WINED3D_RS_FOGVERTEXMODE, (!vs || vs->is_ffp_vs) && !rhw
-                ? state->render_states[WINED3D_RS_FOGVERTEXMODE] : WINED3D_FOG_NONE);
+        /* Pre-transformed vertices with table fog under an orthographic
+         * projection: wined3d's vertex shader writes their original Z as
+         * the fog coordinate (its output Z is flushed to 0 when depth
+         * testing is off, so that they are not clipped), and the table
+         * equation reads that, as wined3d's own pixel shaders do. */
+        if (ffp_vs && rhw && table != WINED3D_FOG_NONE && state->extra_vs_args.ortho_fog)
+        {
+            wgpu_set_render_state(device, WINED3D_RS_FOGTABLEMODE, WINED3D_FOG_NONE);
+            wgpu_set_render_state(device, WINED3D_RS_FOGVERTEXMODE, table);
+        }
+        else
+        {
+            wgpu_set_render_state(device, WINED3D_RS_FOGTABLEMODE, table);
+            wgpu_set_render_state(device, WINED3D_RS_FOGVERTEXMODE, ffp_vs && !rhw
+                    ? state->render_states[WINED3D_RS_FOGVERTEXMODE] : WINED3D_FOG_NONE);
+        }
     }
     if (ps_consts)
     {
         const struct wined3d_ffp_fog_constants *fog = &ps_consts->fog;
-        float start = fog->scale > 0.0f ? fog->end - 1.0f / fog->scale : fog->end;
+        /* scale is 1 / (end - start), negative for reversed fog. */
+        float start = fog->scale != 0.0f ? fog->end - 1.0f / fog->scale : fog->end;
 
         wgpu_set_render_state(device, WINED3D_RS_FOGCOLOR, d3dcolor_from_wined3d(&fog->colour));
         wgpu_set_render_state(device, WINED3D_RS_FOGSTART, float_bits(start));
@@ -1955,6 +1981,7 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
     struct d3dgpu_cmd_set_object *obj;
     unsigned int i, prim_count;
     uint32_t vs, ps, decl, map;
+    bool extras_ps, extras_vs;
     bool all;
 
     TRACE("device %p, state %p, parameters %p.\n", device, state, parameters);
@@ -2107,11 +2134,15 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
     if (decl != device_wgpu->decl_id && (obj = wgpu_cmd(device_wgpu, D3DGPU_OP_SET_VERTEX_DECL, sizeof(*obj))))
         obj->id = device_wgpu->decl_id = decl;
 
+    extras_ps = wgpu_extra_constants_dirty(&state->cb[WINED3D_SHADER_TYPE_PIXEL][WINED3D_FFP_CONSTANTS_EXTRA_REGISTER]);
+    extras_vs = wgpu_extra_constants_dirty(&state->cb[WINED3D_SHADER_TYPE_VERTEX][WINED3D_FFP_CONSTANTS_EXTRA_REGISTER]);
     wgpu_upload_constants(device_wgpu, context, state, WINED3D_SHADER_TYPE_VERTEX);
     wgpu_upload_constants(device_wgpu, context, state, WINED3D_SHADER_TYPE_PIXEL);
     device_wgpu->consts_valid = true;
 
-    wgpu_apply_render_states(device_wgpu, context, state);
+    wgpu_apply_render_states(device_wgpu, context, state, extras_ps, extras_vs);
+    wgpu_extra_constants_clean(&state->cb[WINED3D_SHADER_TYPE_PIXEL][WINED3D_FFP_CONSTANTS_EXTRA_REGISTER]);
+    wgpu_extra_constants_clean(&state->cb[WINED3D_SHADER_TYPE_VERTEX][WINED3D_FFP_CONSTANTS_EXTRA_REGISTER]);
     if (all || wgpu_state_dirty(context, STATE_VIEWPORT) || wgpu_state_dirty(context, STATE_SCISSORRECT))
     {
         const struct wined3d_viewport *vp = &state->viewports[0];
@@ -2119,8 +2150,12 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
         if (!device_wgpu->sent.viewport_from_known
                 || !wgpu_words_equal(vp, &device_wgpu->sent.viewport_from, sizeof(*vp) / sizeof(uint32_t)))
         {
+            float min_z, max_z;
+
+            /* wined3d's depth range: at least 0.001 deep (test_viewport). */
+            wined3d_viewport_get_z_range(vp, &min_z, &max_z);
             wgpu_set_viewport(device_wgpu, max(0, lrintf(vp->x)), max(0, lrintf(vp->y)),
-                    lrintf(vp->width), lrintf(vp->height), vp->min_z, vp->max_z);
+                    lrintf(vp->width), lrintf(vp->height), min_z, max_z);
             device_wgpu->sent.viewport_from = *vp;
             device_wgpu->sent.viewport_from_known = true;
         }

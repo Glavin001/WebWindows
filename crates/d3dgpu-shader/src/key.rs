@@ -187,6 +187,11 @@ pub struct PixelKey {
     pub clip: ClipMode,
     /// `D3DSHADE_FLAT`: colour varyings use flat interpolation.
     pub flat_shading: bool,
+    /// Depth bias: the shader writes the depth plus `Driver::depth_bias`,
+    /// as Direct3D adds it, after clipping and in depth units. WebGPU's own
+    /// bias is in units of the depth format's precision, which for float
+    /// formats (what `depth24plus` is on many GPUs) scales with the depth.
+    pub depth_bias: bool,
 }
 
 impl Default for PixelKey {
@@ -198,6 +203,7 @@ impl Default for PixelKey {
             fog_w: false,
             clip: ClipMode::None,
             flat_shading: false,
+            depth_bias: false,
         }
     }
 }
@@ -242,6 +248,7 @@ pub const DRIVER_WGSL: &str = "struct Driver {
     alpha_ref: vec4<f32>,
     bump_env: array<vec4<f32>, 8>,
     bump_lum: array<vec4<f32>, 8>,
+    depth_bias: vec4<f32>,
 }
 @group(0) @binding(2) var<uniform> drv: Driver;
 ";
@@ -264,6 +271,9 @@ pub struct Driver {
     pub bump_env: [[f32; 4]; 8],
     /// `D3DTSS_BUMPENVLSCALE, LOFFSET` per texture stage.
     pub bump_lum: [[f32; 4]; 8],
+    /// `D3DRS_DEPTHBIAS` (x) and `D3DRS_SLOPESCALEDEPTHBIAS` (y), applied
+    /// by the pixel shader ([`PixelKey::depth_bias`]).
+    pub depth_bias: [f32; 4],
 }
 
 impl Default for Driver {
@@ -276,12 +286,13 @@ impl Default for Driver {
             alpha_ref: [0.0; 4],
             bump_env: [[0.0; 4]; 8],
             bump_lum: [[0.0; 4]; 8],
+            depth_bias: [0.0; 4],
         }
     }
 }
 
 impl Driver {
-    pub const SIZE: usize = 16 * (1 + 6 + 1 + 1 + 1 + 8 + 8);
+    pub const SIZE: usize = 16 * (1 + 6 + 1 + 1 + 1 + 8 + 8 + 1);
 
     /// The uniform buffer bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -298,6 +309,7 @@ impl Driver {
         put(&self.alpha_ref);
         self.bump_env.iter().for_each(&mut put);
         self.bump_lum.iter().for_each(&mut put);
+        put(&self.depth_bias);
         out
     }
 }

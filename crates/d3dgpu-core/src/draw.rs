@@ -86,8 +86,6 @@ struct DepthKey {
     write: bool,
     compare: wgpu::CompareFunction,
     stencil: Option<(wgpu::StencilFaceState, wgpu::StencilFaceState, u32, u32)>,
-    bias: i32,
-    slope: u32,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -590,6 +588,7 @@ impl Core {
         }
         key.clip = self.clip_mode();
         key.flat_shading = self.st.r(RenderState::ShadeMode) == D3DSHADE_FLAT;
+        key.depth_bias = self.st.r(RenderState::DepthBias) != 0 || self.st.r(RenderState::SlopeScaleDepthBias) != 0;
         key
     }
 
@@ -620,6 +619,7 @@ impl Core {
         let scale = if end != start { 1.0 / (end - start) } else { 0.0 };
         d.fog_params = [start, end, st.rf(RenderState::FogDensity), scale];
         d.alpha_ref = [(st.r(RenderState::AlphaRef) & 0xff) as f32, 0.0, 0.0, 0.0];
+        d.depth_bias = [st.rf(RenderState::DepthBias), st.rf(RenderState::SlopeScaleDepthBias), 0.0, 0.0];
         for (i, t) in st.tss.iter().enumerate() {
             let f = |s: TextureStageState| f32::from_bits(t[s.0 as usize]);
             d.bump_env[i] = [
@@ -803,12 +803,25 @@ impl Core {
         let vopts = VertexOptions { bgra_supported: true };
         let mut slots: Vec<(u32, VertexBufferKey)> = Vec::new();
         let mut zero_attrs = Vec::new();
+        // Instancing: stream 0's frequency is D3DSTREAMSOURCE_INDEXEDDATA
+        // with the instance count, and streams of per-instance data have
+        // D3DSTREAMSOURCE_INSTANCEDATA (stepped per instance even for one).
         let freq0 = self.st.streams[0].freq;
-        let instances = if freq0 & (1 << 30) != 0 { (freq0 & 0x3fff_ffff).max(1) } else { 1 };
+        let instancing = freq0 & (1 << 30) != 0;
+        let instances = if instancing { (freq0 & 0x3fff_ffff).max(1) } else { 1 };
         for (reg, sem) in &vs_refl.vs_inputs {
             let el =
                 decl.iter().find(|e| e.usage.0 == sem.usage && e.usage_index == sem.index && e.ty != DeclType::Unused);
-            let Some(el) = el else {
+            // A missing element, or one from a stream without a buffer, reads
+            // (0, 0, 0, 1) (test_default_diffuse).
+            let unbound = |stream: u16| {
+                !matches!(src, Source::Up { .. })
+                    && !matches!(
+                        self.st.streams.get(stream as usize).and_then(|s| self.objects.get(&s.buffer.0)),
+                        Some(Object::Buffer(_))
+                    )
+            };
+            let Some(el) = el.filter(|e| !unbound(e.stream)) else {
                 zero_attrs.push((wgpu::VertexFormat::Float32x4, 0, *reg));
                 continue;
             };
@@ -834,8 +847,7 @@ impl Core {
                     el.offset
                 ));
             }
-            let instance =
-                self.st.streams.get(stream as usize).is_some_and(|s| s.freq & (1 << 31) != 0) && instances > 1;
+            let instance = instancing && self.st.streams.get(stream as usize).is_some_and(|s| s.freq & (1 << 31) != 0);
             let attr = (convert::vertex_format(gf), el.offset as u32, *reg);
             match slots.iter_mut().find(|(s, _)| *s == stream) {
                 Some((_, k)) => k.attrs.push(attr),
@@ -868,7 +880,7 @@ impl Core {
         let layout = self.caches.layout(&self.device, bound.iter().map(|b| b.entry.clone()).collect());
 
         let colors = self.color_states(targets, psv.translation.color_outputs);
-        let depth = self.depth_state(targets, topology);
+        let depth = self.depth_state(targets);
         let cull = match Cull(self.st.r(RenderState::CullMode)) {
             Cull::Cw => Some(wgpu::Face::Front),
             Cull::Ccw => Some(wgpu::Face::Back),
@@ -1225,7 +1237,8 @@ impl Core {
                 pc.set_index_buffer(pass, id, &buf, off, f);
                 pass.draw_indexed(start..start + n, base, 0..instances);
             }
-            None => pass.draw(vertex_range.0..vertex_range.1, 0..instances),
+            // Direct3D 9 instances only indexed draws.
+            None => pass.draw(vertex_range.0..vertex_range.1, 0..1),
         }
         self.stats.record_ns += self.now_ns() - t_record;
     }
@@ -1331,7 +1344,7 @@ impl Core {
         out
     }
 
-    fn depth_state(&self, targets: &crate::PassTargets, topology: wgpu::PrimitiveTopology) -> Option<DepthKey> {
+    fn depth_state(&self, targets: &crate::PassTargets) -> Option<DepthKey> {
         let st = &self.st;
         let d = targets.depth?;
         let Some(Object::Texture(t)) = self.objects.get(&d.texture.0) else { return None };
@@ -1367,17 +1380,7 @@ impl Core {
             };
             (front, back, st.r(RenderState::StencilMask) & 0xff, st.r(RenderState::StencilWriteMask) & 0xff)
         });
-        // WebGPU rejects depth bias on point and line topologies.
-        let tri = matches!(topology, wgpu::PrimitiveTopology::TriangleList | wgpu::PrimitiveTopology::TriangleStrip);
-        let (bias, slope) = if tri {
-            (
-                (st.rf(RenderState::DepthBias) * convert::depth_bias_scale(format)) as i32,
-                st.rf(RenderState::SlopeScaleDepthBias),
-            )
-        } else {
-            (0, 0.0)
-        };
-        Some(DepthKey { format, write, compare, stencil, bias, slope: slope.to_bits() })
+        Some(DepthKey { format, write, compare, stencil })
     }
 
     fn pipeline(
@@ -1435,7 +1438,8 @@ impl Core {
                 Some((front, back, read_mask, write_mask)) => wgpu::StencilState { front, back, read_mask, write_mask },
                 None => wgpu::StencilState::default(),
             },
-            bias: wgpu::DepthBiasState { constant: d.bias, slope_scale: f32::from_bits(d.slope), clamp: 0.0 },
+            // Depth bias is applied by the pixel shader (PixelKey::depth_bias).
+            bias: wgpu::DepthBiasState::default(),
         });
         let p = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("d3dgpu pipeline"),

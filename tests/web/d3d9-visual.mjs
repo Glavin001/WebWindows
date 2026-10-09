@@ -2,7 +2,7 @@
 // test functions that draw and read pixels back) on translated Wine in
 // headless Chromium, whose WebGPU draws the frames.
 //
-//   node tests/web/d3d9-visual.mjs [--batch N] [--timeout S] [--only A-B] [--present gdi|canvas]
+//   node tests/web/d3d9-visual.mjs [--batch N] [--timeout S] [--only A-B,C,...] [--present gdi|canvas]
 //        [--native] [--baseline FILE] [--write-baseline FILE] [--build-only]
 //
 // visual.c runs every function from one START_TEST, and some hang or crash
@@ -102,9 +102,12 @@ if (process.argv.includes('--build-only')) process.exit(0);
 
 // ---- Running ---------------------------------------------------------------
 
-let [lo, hi] = only ? only.split('-').map(Number) : [0, names.length];
+// --only A-B[,C-D...]: function ranges (a function's number alone: just it).
 const ranges = [];
-for (let a = lo; a < hi; a += batch) ranges.push([a, Math.min(a + batch, hi)]);
+for (const r of only ? only.split(',') : [`0-${names.length}`]) {
+  const [lo, hi = lo + 1] = r.split('-').map(Number);
+  for (let a = lo; a < hi; a += batch) ranges.push([a, Math.min(a + batch, hi)]);
+}
 
 const results = {};
 // One batch: its output, and whether the program exited (not stopped for time).

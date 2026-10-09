@@ -1074,9 +1074,9 @@ impl<'a> Gen<'a> {
             m += "var<private> o: array<vec4<f32>, 12>;\n";
         } else {
             m += "var<private> o_pos: vec4<f32>;\nvar<private> o_fog: vec4<f32>;\nvar<private> o_pts: vec4<f32>;\n";
-            for i in 0..2 {
-                let _ = writeln!(m, "var<private> o_d{i}: vec4<f32>;");
-            }
+            // Unwritten diffuse components are 1, specular ones 0 (as
+            // wined3d's GLSL backend has them; test_default_diffuse).
+            m += "var<private> o_d0: vec4<f32> = vec4<f32>(1.0);\nvar<private> o_d1: vec4<f32>;\n";
             for i in 0..8 {
                 let _ = writeln!(m, "var<private> o_t{i}: vec4<f32>;");
             }
@@ -1219,19 +1219,22 @@ impl<'a> Gen<'a> {
         if !written && sem.usage == usage::FOG {
             // No oFog: the fog factor is the specular alpha, as fixed
             // function's FOGVERTEXMODE NONE has it (wined3d's vertex
-            // shaders leave the fog output to it), else no fog.
+            // shaders leave the fog output to it); unwritten, it is 0 like
+            // any output, which fogs fully (fog_with_shader_test).
             return if self.refl.vs_outputs.contains(&Semantic::new(usage::COLOR, 1)) {
-                "vec4<f32>(o_d1.w, 0.0, 0.0, 1.0)".into()
+                "vec4<f32>(clamp(o_d1.w, 0.0, 1.0), 0.0, 0.0, 1.0)".into()
             } else {
-                "vec4<f32>(1.0, 0.0, 0.0, 1.0)".into()
+                "vec4<f32>(0.0, 0.0, 0.0, 1.0)".into()
             };
         }
         if !written {
-            return "vec4<f32>(0.0)".into();
+            return if sem == Semantic::new(usage::COLOR, 0) { "vec4<f32>(1.0)" } else { "vec4<f32>(0.0)" }.into();
         }
         match sem.usage {
             usage::POSITION => "o_pos".into(),
-            usage::COLOR => format!("o_d{}", sem.index),
+            // Vertex shaders before 3.0 have their colour outputs clamped
+            // to 0..1 per vertex, before interpolation.
+            usage::COLOR => format!("clamp(o_d{}, vec4<f32>(0.0), vec4<f32>(1.0))", sem.index),
             usage::TEXCOORD => format!("o_t{}", sem.index),
             usage::FOG => "vec4<f32>(o_fog.x, 0.0, 0.0, 1.0)".into(),
             usage::PSIZE => "o_pts".into(),
@@ -1289,7 +1292,10 @@ impl<'a> Gen<'a> {
             outputs = 1;
         }
         // Output struct.
-        let has_out = outputs != 0 || self.refl.writes_depth || self.ps1_writes_depth();
+        let shader_depth = self.refl.writes_depth || self.ps1_writes_depth();
+        // Depth bias applies to the rasterized depth, not a shader's own.
+        let bias = key.depth_bias && !shader_depth;
+        let has_out = outputs != 0 || shader_depth || bias;
         if has_out {
             m.push_str("struct PsOut {\n");
             for i in 0..4 {
@@ -1297,13 +1303,21 @@ impl<'a> Gen<'a> {
                     let _ = writeln!(m, "    @location({i}) c{i}: vec4<f32>,");
                 }
             }
-            if self.refl.writes_depth || self.ps1_writes_depth() {
+            if shader_depth || bias {
                 m.push_str("    @builtin(frag_depth) depth: f32,\n");
             }
             m.push_str("}\n\n");
         }
         let ret = if has_out { " -> PsOut" } else { "" };
         let _ = writeln!(m, "@fragment\nfn main({}){ret} {{", params.join(", "));
+        // The biased depth (Direct3D: DEPTHBIAS + SLOPESCALEDEPTHBIAS times
+        // the depth's largest slope), before any discard. Table fog reads it
+        // as is; the depth buffer gets it clamped.
+        if bias {
+            m.push_str("    let z_slope = max(abs(dpdx(frag_pos.z)), abs(dpdy(frag_pos.z)));\n");
+            m.push_str("    let z_biased = frag_pos.z + drv.depth_bias.x + drv.depth_bias.y * z_slope;\n");
+        }
+        let z = if bias { "z_biased" } else { "frag_pos.z" };
         if let ClipMode::Varying(mask) = key.clip {
             for i in 0..6 {
                 if mask & (1 << i) != 0 {
@@ -1336,7 +1350,7 @@ impl<'a> Gen<'a> {
                 // Table fog: eye depth (W; the fragment position's w is
                 // its reciprocal) or pixel Z.
                 Fog::Linear | Fog::Exp | Fog::Exp2 => {
-                    let d = if key.fog_w { "(1.0 / frag_pos.w)" } else { "frag_pos.z" };
+                    let d = if key.fog_w { "(1.0 / frag_pos.w)" } else { z };
                     Some(match key.fog {
                         Fog::Linear => format!("(drv.fog_params.y - {d}) * drv.fog_params.w"),
                         Fog::Exp => format!("exp(-drv.fog_params.z * {d})"),
@@ -1379,8 +1393,10 @@ impl<'a> Gen<'a> {
                     let _ = writeln!(m, "    out.c{i} = o_c{i};");
                 }
             }
-            if self.refl.writes_depth || self.ps1_writes_depth() {
+            if shader_depth {
                 m.push_str("    out.depth = clamp(o_depth.x, 0.0, 1.0);\n");
+            } else if bias {
+                m.push_str("    out.depth = clamp(z_biased, 0.0, 1.0);\n");
             }
             m.push_str("    return out;\n");
         }
