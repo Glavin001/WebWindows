@@ -130,6 +130,9 @@ struct wined3d_device_wgpu
      * textures (pixel 0-15, vertex 16-19), vertex streams, and targets
      * (render targets 0-3, depth/stencil 4). */
     uint32_t bound_textures, bound_streams, bound_targets;
+    /* A clear bound its own targets (wgpu_invalidate_targets) since the
+     * draw being prepared bound the draw's. */
+    bool targets_disturbed;
     /* The dirty-state bits a draw applies (wined3d_context.dirty_graphics_states
      * words and masks of their representatives). */
     unsigned int applied_words[13];
@@ -308,6 +311,7 @@ static void wgpu_set_viewport(struct wined3d_device_wgpu *device, uint32_t x, ui
  * draw's again. */
 static void wgpu_invalidate_targets(struct wined3d_device_wgpu *device)
 {
+    device->targets_disturbed = true;
     context_invalidate_state(&device->context, STATE_FRAMEBUFFER);
     context_invalidate_state(&device->context, STATE_VIEWPORT);
 }
@@ -1990,6 +1994,7 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
         if (!state->fb.depth_stencil)
             wgpu_set_target(device_wgpu, 4, 0, 0, 0);
     }
+    device_wgpu->targets_disturbed = false;
     for (map = device_wgpu->bound_targets; map;)
     {
         i = wined3d_bit_scan(&map);
@@ -2060,6 +2065,24 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
         wgpu_set_indices(device_wgpu, state->index_buffer->buffer_object
                 ? wined3d_bo_wgpu(state->index_buffer->buffer_object)->id : 0,
                 state->index_format == WINED3DFMT_R32_UINT ? 102 : 101); /* D3DFMT_INDEX32/16 */
+    }
+
+    /* Loading a texture or buffer that was never written clears it, through
+     * a binding of its own (wgpu_clear_sub_resource), after this draw bound
+     * its targets: bind them again, or the draw renders into that texture. */
+    if (device_wgpu->targets_disturbed)
+    {
+        for (i = 0; i < 5; ++i)
+        {
+            if (!(device_wgpu->bound_targets & (1u << i)))
+                wgpu_set_target(device_wgpu, i, 0, 0, 0);
+        }
+        for (map = device_wgpu->bound_targets; map;)
+        {
+            i = wined3d_bit_scan(&map);
+            wgpu_bind_target(device_wgpu, context, i == 4 ? -1 : (int)i,
+                    i == 4 ? state->fb.depth_stencil : state->fb.render_targets[i]);
+        }
     }
 
     vs = wgpu_shader_id(device_wgpu, state->shader[WINED3D_SHADER_TYPE_VERTEX]);

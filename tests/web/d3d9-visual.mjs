@@ -11,7 +11,7 @@
 // from the Wine build in /opt/wine-build). Each batch of N (default 10) runs
 // in its own page; a batch that hangs or crashes is recorded with the
 // function it was in. Results, failures per function, go to
-// target/d3d9-visual/results.json; with --baseline the run fails when a
+// target/d3d9-visual/results.json (each batch's output in batch-A-B.txt); with --baseline the run fails when a
 // function has more failures than recorded (or now hangs or crashes).
 
 import { execFileSync, spawn } from 'node:child_process';
@@ -106,7 +106,10 @@ const launch = { args: ['--enable-unsafe-webgpu'], viewport: { width: 1000, heig
 const context = await chromium.launchPersistentContext(profile, launch);
 const results = {};
 try {
-  for (const [a, b] of ranges) {
+  // A function that ran in a batch that finished, but whose trace line the
+  // run record dropped (a long output keeps only its end), runs again alone.
+  for (let k = 0; k < ranges.length; k++) {
+    const [a, b] = ranges[k];
     const page = await context.newPage();
     const t0 = Date.now();
     await page.goto(`http://localhost:${port}/runtime/web/?wine=1&d3dpresent=gdi`);
@@ -119,10 +122,15 @@ try {
     const exited = await page.waitForFunction(() => window.lastExit !== undefined, null, { timeout }).then(() => true, () => false);
     const rec = await page.evaluate(() => window.webwindows?.lastRun());
     const text = rec?.out ?? '';
+    const log = await page.textContent('#log');
     await page.close();
+    writeFileSync(join(out, `batch-${a}-${b}.txt`), `${text}\n---- page log ----\n${log}`);
     // Failures per function, from the order of the trace and failure lines.
-    let current = null;
-    const seen = new Set();
+    // (A batch of one function is credited with its failures even when the
+    // run record dropped the start of a long output, trace line included.)
+    let current = b - a === 1 ? names[a] : null;
+    const seen = new Set(current ? [current] : []);
+    if (current) results[current] = { status: 'done', failures: 0 };
     for (const line of text.split('\n')) {
       const f = /wwt function (\d+) (\w+)/.exec(line);
       if (f) {
@@ -131,15 +139,15 @@ try {
         results[current] = { status: 'done', failures: 0 };
       } else if (current && /Test failed:/.test(line)) results[current].failures++;
     }
-    const summary = /visual: (\d+) tests executed .*?(\d+) failures/.exec(text);
-    if (!exited || !summary) {
-      // The function it was in hung or crashed; the rest of the batch did not run.
-      if (current) results[current].status = exited ? 'crash' : 'timeout';
-      for (let i = a; i < b; i++) if (!seen.has(names[i])) results[names[i]] = { status: 'not run' };
-    }
+    const summary = /visual: (\d+) tests executed .*?(\d+) failures?\b/.exec(text);
+    // The function it was in hung or crashed; the rest of the batch did not run.
+    if ((!exited || !summary) && current) results[current].status = exited ? 'crash' : 'timeout';
+    for (let i = a; i < b; i++) if (!seen.has(names[i])) results[names[i]] = { status: 'not run' };
     const fails = names.slice(a, b).reduce((n, k) => n + (results[k]?.failures ?? 0), 0);
     const bad = names.slice(a, b).filter((k) => ['crash', 'timeout'].includes(results[k]?.status));
-    console.log(`${String(a).padStart(3)}-${String(b).padEnd(3)} ${fails} failures${bad.length ? `, ${bad.map((k) => `${k} ${results[k].status}`).join(', ')}` : ''} (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
+    console.log(`${String(a).padStart(3)}-${String(b).padEnd(3)} ${fails} failures${bad.length ? `, ${bad.map((n) => `${n} ${results[n].status}`).join(', ')}` : ''} (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
+    if (exited && summary && b - a > 1)
+      for (let i = a; i < b; i++) if (results[names[i]].status === 'not run') ranges.push([i, i + 1]);
   }
 } finally {
   await context.close();

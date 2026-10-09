@@ -89,7 +89,7 @@
   },
   "test_generate_mipmap": {
     "status": "done",
-    "failures": 8
+    "failures": 0
   },
   "test_mipmap_autogen": {
     "status": "done",
@@ -377,7 +377,7 @@
   },
   "test_updatetexture": {
     "status": "done",
-    "failures": 3
+    "failures": 1
   },
   "test_depthbias": {
     "status": "done",
@@ -397,7 +397,7 @@
   },
   "test_depth_stencil_init": {
     "status": "done",
-    "failures": 1
+    "failures": 0
   },
   "test_texture_blending": {
     "status": "done",
@@ -510,6 +510,14 @@
   "test_ffp_w": {
     "status": "done",
     "failures": 0
+  },
+  "test_sample_mask": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_dynamic_map_synchronization": {
+    "status": "done",
+    "failures": 1
   },
   "test_fog": {
     "status": "done",
