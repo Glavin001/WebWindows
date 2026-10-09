@@ -19,6 +19,7 @@ import { StatusSampler } from '../wine/status.mjs';
 import { InputRing } from '../wine/input-ring.mjs';
 import { compileNativeHeap } from '../wine/heap.mjs';
 import { startD3D } from '../wine/d3d.mjs';
+import { WebGLBridge } from '../wine/webgl.mjs';
 import { ringWriter } from '../wine/audio-sink.mjs';
 import { compileNativeStrings } from '../wine/strings.mjs';
 
@@ -269,6 +270,8 @@ async function runOnWine({ exeName, exePath, exe, folder, times = {}, argv, ft, 
   const host = new WineHost(machine, {
     translate,
     d3d,
+    // OpenGL on a WebGL 2 context of the worker's own, made on first use.
+    webgl: typeof OffscreenCanvas === 'function' ? new WebGLBridge(log) : null,
     debug,
     files,
     caseNames,

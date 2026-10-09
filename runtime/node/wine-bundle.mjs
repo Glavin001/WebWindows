@@ -59,8 +59,8 @@ const GUI_DLLS = [
 // Sound, DirectDraw, Direct3D, DirectInput and Winsock (games): fetched
 // only for programs that use one of them (wined3d alone is megabytes), see
 // runtime/web/worker.mjs. wined3d draws Direct3D with its WebGPU backend
-// and needs no opengl32; opengl32 is native/opengl32 (OpenGL 1.1 over
-// Direct3D 9); d3dcompiler_47 compiles HLSL for programs that do it at run
+// and needs no opengl32; opengl32 is native/opengl32-webgl (OpenGL 2.1 on
+// WebGL 2, below); d3dcompiler_47 compiles HLSL for programs that do it at run
 // time. Winsock has no network behind it (single-player games
 // talk to their own server in memory).
 const MEDIA_DLLS = [
@@ -117,7 +117,11 @@ const withStrings = existsSync(stringsWasm);
 mkdirSync(out, { recursive: true });
 const manifest = { wine: '11.0', arch: x64 ? 'x64' : 'x86', mem64, dlls: {}, nls: [] };
 const fileName = (d) => (d.includes('.') ? d : `${d}.dll`);
-const dllPath = (d) => join(wineBuild, 'dlls', d, peDir, fileName(d));
+// opengl32 is the build's WebGL 2 one where there is one (gl4es,
+// native/opengl32-webgl): Node keeps the one over Direct3D 9.
+const webglOpengl = join(wineBuild, 'dlls', 'opengl32', peDir, 'opengl32-webgl.dll');
+const dllPath = (d) =>
+  d === 'opengl32' && existsSync(webglOpengl) ? webglOpengl : join(wineBuild, 'dlls', d, peDir, fileName(d));
 let nextBase = PRELINK_BASE;
 for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS, ...NET_DLLS, ...RICHEDIT_DLLS] : [])]) {
   const pe = dllPath(d);

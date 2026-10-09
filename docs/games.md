@@ -8,7 +8,7 @@ of their files are in the repository.
 | --- | --- | --- |
 | Cave Story (freeware) | DirectDraw | Playable with sound (Milestone 5) |
 | Quake II demo 3.14 | Software renderer (`ref_soft`, DirectDraw/GDI) | `demo1` renders and runs, in Node and in the browser |
-| Quake II demo 3.14 | OpenGL (`ref_gl`, through `native/opengl32` over Direct3D 9) | `demo1` renders (recorded in Node, replayed on the GPU); not yet tried in a browser |
+| Quake II demo 3.14 | OpenGL (`ref_gl`: in the browser on WebGL 2, in Node over Direct3D 9) | `demo1` renders (recorded in Node, replayed on the GPU); not yet tried in a browser |
 | Quake (shareware) on FTEQW | Direct3D 9 | Starts; exits before its window opens |
 | Far Cry demo (2004) | Direct3D 9 (shader model 2 + fixed function) | Playable in the browser: menu, new game, the Fort level rendered (sky, terrain, water, foliage, distance fog, HUD), driving the boat, shooting, mouse look |
 | Unreal Tournament 2004 demo | Direct3D 8/9 | In the browser: menus, Instant Action, a DeathMatch on DM-Rankin, walking and turning |
@@ -108,10 +108,11 @@ On the page: choose the `Install/Data` folder, pick `quake2.exe`, give the
 same arguments, tick "on Wine" and run.
 
 `ref_soft` draws with DirectDraw or a DIB section. `ref_gl` draws with
-OpenGL, which runs on `native/opengl32`: OpenGL 1.1 turned into Direct3D 9
-calls on Wine's d3d9, which draws with WebGPU (wined3d's WebGPU backend and
-the d3dgpu core). Run it with `+set vid_ref gl` instead of `soft`. In Node
-there is no GPU: `--d3d-record FILE` keeps the Direct3D command stream, and
+OpenGL. In the browser that is `native/opengl32-webgl` (gl4es on WebGL 2,
+see [opengl.md](opengl.md)); in Node it is `native/opengl32`: OpenGL 1.1
+turned into Direct3D 9 calls on Wine's d3d9, which draws with WebGPU
+(wined3d's WebGPU backend and the d3dgpu core). Run it with
+`+set vid_ref gl` instead of `soft`. In Node there is no GPU: `--d3d-record FILE` keeps the Direct3D command stream, and
 `cargo run --release -p d3dgpu-core --example replay -- FILE OUT_DIR` draws
 it on the native GPU (the frames come back in two readbacks each, 409 and
 71 rows at 640x480).

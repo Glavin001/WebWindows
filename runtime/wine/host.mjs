@@ -262,6 +262,8 @@ export class WineHost {
     this.unix?.attach(this);
     /** wined3d's WebGPU bridge (./d3d.mjs), or null: Direct3D without 3D */
     this.d3d = opts.d3d ?? null;
+    /** OpenGL on WebGL 2 (./webgl.mjs), where the host has it. */
+    this.webgl = opts.webgl ?? null;
     // Translated loops preempt against the ticker's tick count (set before
     // any module is instantiated: it is an import).
     machine.tickAddr = USER_SHARED_DATA;
@@ -1190,6 +1192,9 @@ export class WineHost {
       }
     } else if (handle === WS2_32_UNIXLIB) {
       status = this.winsockCall(code, args);
+    } else if (handle === GL_UNIXLIB && this.webgl && code >= 0x1000) {
+      // opengl32 on WebGL 2 (native/opengl32-webgl).
+      status = this.webgl.unixCall(m, code, args);
     } else if (handle === GL_UNIXLIB) {
       // opengl32 without OpenGL: it attaches (wined3d imports it), and
       // every GL call fails.

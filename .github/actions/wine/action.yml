@@ -54,7 +54,7 @@ runs:
         fi
         echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
         targets=$(printf %s "$WINE_TARGETS" | sha256sum | cut -c1-8)
-        echo "key=$prefix${{ hashFiles('tools/wine/**', 'native/audio/**', 'native/opengl32/**', 'native/wined3d-wgpu/**', 'crates/d3dgpu-proto/include/**') }}-$targets" >> "$GITHUB_OUTPUT"
+        echo "key=$prefix${{ hashFiles('tools/wine/**', 'native/audio/**', 'native/opengl32/**', 'native/opengl32-webgl/**', 'native/wined3d-wgpu/**', 'crates/d3dgpu-proto/include/**') }}-$targets" >> "$GITHUB_OUTPUT"
     # An older tree is fine: tools/wine/build.sh is incremental (it swaps a
     # changed wined3d patch and copies only changed sources). A download
     # that stalls (SEGMENT_DOWNLOAD_TIMEOUT_MINS, set by the workflow) leaves
