@@ -245,6 +245,7 @@ for (const type of ['keydown', 'keyup']) {
 // a buffer only window.d3dSnapshot() reads, for headless tests.
 let d3dCanvas = null;
 let d3dPort = null;
+const d3dDebugReplies = [];
 function newD3DCanvas() {
   d3dCanvas?.remove();
   d3dCanvas = null;
@@ -259,6 +260,7 @@ function newD3DCanvas() {
   const snapshots = [];
   d3dPort.onmessage = (e) => {
     if (e.data.type === 'perf') d3dPerf = { ...e.data, at: performance.now() };
+    else if (e.data.type === 'debug') d3dDebugReplies.shift()?.(e.data);
     else if (e.data.type === 'log') logEl.textContent += `d3d: ${e.data.text}\n`;
     else if (e.data.type === 'frame') snapshots.shift()?.(e.data);
   };
@@ -355,7 +357,98 @@ function onStatus(s) {
   console.debug('webwindows:status ' + JSON.stringify(s));
 }
 
+// ---- Debug report -----------------------------------------------------------
+//
+// One JSON file with what a bug report needs: the build, browser, screen and
+// GPU, the URL's options, the run record (output, logs, status samples, files
+// the program wrote), Direct3D's state and frame rate, the program folder's
+// listing and its small configuration files, the frame the screen shows and
+// a copy of the last Direct3D frame presented (read from the GPU; the canvas
+// is left alone), and the user's own description.
+const withTimeout = (promise, ms) => Promise.race([promise, new Promise((r) => setTimeout(() => r(null), ms))]);
+const pngOf = (width, height, pixels) => {
+  if (!width || !height || !pixels?.length) return null;
+  const c = document.createElement('canvas');
+  c.width = width;
+  c.height = height;
+  c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(pixels), width, height), 0, 0);
+  return c.toDataURL('image/png');
+};
+async function debugReport() {
+  const notes = prompt('What happened, and what did you expect? (optional)') ?? '';
+  saveRecord();
+  const r = { kind: 'webwindows debug report', created: new Date().toISOString(), notes };
+  r.build = await fetch(new URL('../../version.txt', location.href)).then((x) => (x.ok ? x.text() : null), () => null);
+  r.page = { url: location.href, options: Object.fromEntries(params), crossOriginIsolated, memory64 };
+  r.browser = {
+    userAgent: navigator.userAgent,
+    platform: navigator.userAgentData?.platform ?? navigator.platform,
+    brands: navigator.userAgentData?.brands,
+    language: navigator.language,
+    cores: navigator.hardwareConcurrency,
+    deviceMemoryGB: navigator.deviceMemory,
+    devicePixelRatio,
+    window: [innerWidth, innerHeight],
+    display: [window.screen.width, window.screen.height],
+  };
+  try {
+    const a = await navigator.gpu?.requestAdapter();
+    if (a) {
+      const i = a.info ?? {};
+      r.webgpu = {
+        vendor: i.vendor,
+        architecture: i.architecture,
+        device: i.device,
+        description: i.description,
+        features: [...a.features].sort(),
+        limits: Object.fromEntries(['maxTextureDimension2D', 'maxBufferSize', 'maxStorageBufferBindingSize', 'maxBindGroups', 'maxColorAttachments'].map((k) => [k, a.limits[k]])),
+      };
+    } else r.webgpu = navigator.gpu ? 'no adapter' : 'no WebGPU';
+  } catch (e) {
+    r.webgpu = String(e);
+  }
+  r.run = window.webwindows.lastRun();
+  r.previousRun = readRecord(PREVIOUS);
+  r.statusHistory = statusHistory.slice();
+  r.d3d = {
+    perf: d3dPerf,
+    window: window.d3dWindow ?? null,
+    canvas: d3dCanvas && { hidden: d3dCanvas.hidden, style: d3dCanvas.getAttribute('style'), box: d3dCanvas.getBoundingClientRect().toJSON() },
+    worker: d3dPort ? await withTimeout(new Promise((res) => (d3dDebugReplies.push(res), d3dPort.postMessage({ type: 'debug' }))), 8000) : null,
+  };
+  // The program folder: every file's name and size, and the small text
+  // files a program reads its settings from.
+  r.folder = [...folder].slice(0, 5000).map(([k, f]) => [k, f.size]);
+  r.folderConfig = {};
+  let budget = 1 << 20;
+  for (const [k, f] of folder) {
+    if (!/\.(ini|cfg|lua|conf|json|xml|txt|log)$/i.test(k) || f.size > 64 << 10 || k.split('/').length > 2 || f.size > budget) continue;
+    r.folderConfig[k] = await f.text();
+    budget -= f.size;
+  }
+  // What the screen shows, and the last Direct3D frame presented (read from
+  // the GPU, as the canvas shows it before scaling).
+  try {
+    r.screenPng = canvas.hidden ? null : canvas.toDataURL('image/png');
+  } catch {}
+  const frame = r.d3d.worker?.frame;
+  r.d3dFramePng = frame ? pngOf(frame.width, frame.height, frame.pixels) : null;
+  if (frame) r.d3d.worker.frame = { width: frame.width, height: frame.height };
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(r, null, 1)], { type: 'application/json' }));
+  a.download = `webwindows-debug-${(r.run?.exe ?? 'page').split(/[\\/]/).pop()}-${r.created.replace(/[:.]/g, '-')}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  return r;
+}
+$('debugreport').onclick = () => {
+  $('debugreport').disabled = true;
+  debugReport().finally(() => ($('debugreport').disabled = false));
+};
+
 window.webwindows = {
+  /** Saves the debug report (see debugReport) and returns it. */
+  debugReport: () => debugReport(),
   /** The latest status sample, and the last 60. */
   status: () => statusHistory.at(-1) ?? null,
   statusHistory: () => statusHistory.slice(),

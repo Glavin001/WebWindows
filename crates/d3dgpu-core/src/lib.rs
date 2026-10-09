@@ -257,6 +257,10 @@ pub struct Core {
     presenters: HashMap<u32, Box<dyn Presenter>>,
     presented: Vec<u32>,
     last_present: Option<u32>,
+    /// The texture the last Present showed, for [`Core::copy_last_present`].
+    last_presented: Option<Handle>,
+    /// Readbacks whose buffer failed to map.
+    failed_reads: u64,
     pending: VecDeque<Pending>,
     completed_fence: u64,
     next_id: u64,
@@ -308,6 +312,8 @@ impl Core {
             presenters: HashMap::new(),
             presented: Vec::new(),
             last_present: None,
+            last_presented: None,
+            failed_reads: 0,
             pending: VecDeque::new(),
             completed_fence: 0,
             next_id: 1,
@@ -1368,6 +1374,17 @@ impl Core {
             match (&p.kind, s) {
                 (PendingKind::Read { buffer, read }, 1) => self.finish_read(buffer, read, shared),
                 (PendingKind::Raw { buffer, read }, 1) => self.finish_raw(buffer, read, shared),
+                // The fence still completes, or the program would wait for
+                // ever; what it reads is whatever the region held before.
+                (_, 2) => {
+                    self.failed_reads += 1;
+                    if self.failed_reads.is_power_of_two() {
+                        self.warn(format!(
+                            "readback failed ({} so far): the program reads stale data",
+                            self.failed_reads
+                        ));
+                    }
+                }
                 _ => {}
             }
             self.completed_fence = self.completed_fence.max(p.fence);
@@ -1416,7 +1433,35 @@ impl Core {
         self.presenters.entry(window).or_insert_with(|| Box::new(HeadlessPresenter::new()));
     }
 
+    /// A copy of the last presented frame as RGBA8, made now (for a debug
+    /// report: what the program presented, before any scaling to a window),
+    /// or None when nothing was presented or its texture is gone.
+    pub fn copy_last_present(&mut self) -> Option<(wgpu::Texture, (u32, u32))> {
+        let texture = self.last_presented?;
+        let (src, size, alpha_is_one) = match self.objects.get_mut(&texture.0) {
+            Some(Object::Texture(t)) => (t.rt_view(0, 0), t.level_size(0), t.plan.alpha_is_one()),
+            _ => return None,
+        };
+        self.end_pass();
+        self.flush_clear();
+        let mut copy = HeadlessPresenter::new();
+        {
+            let enc = self.enc.get_or_insert_with(|| self.device.create_command_encoder(&Default::default()));
+            let mut ctx = PresentContext {
+                device: &self.device,
+                queue: &self.queue,
+                encoder: enc,
+                blitter: &mut self.blitter,
+                uniforms: &mut self.uniforms,
+            };
+            copy.present(&mut ctx, &src, size, alpha_is_one);
+        }
+        self.submit();
+        copy.front_buffer().map(|(t, s)| (t.clone(), s))
+    }
+
     fn present(&mut self, texture: Handle, window: u32) {
+        self.last_presented = Some(texture);
         self.end_pass();
         self.flush_clear();
         let (src, (w, h), alpha_is_one) = match self.objects.get_mut(&texture.0) {

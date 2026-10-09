@@ -2,7 +2,7 @@
 // test functions that draw and read pixels back) on translated Wine in
 // headless Chromium, whose WebGPU draws the frames.
 //
-//   node tests/web/d3d9-visual.mjs [--batch N] [--timeout S] [--only A-B]
+//   node tests/web/d3d9-visual.mjs [--batch N] [--timeout S] [--only A-B] [--present gdi|canvas]
 //        [--baseline FILE] [--write-baseline FILE]
 //
 // visual.c runs every function from one START_TEST, and some hang or crash
@@ -36,6 +36,9 @@ const opt = (name, def) => {
 const batch = Number(opt('batch', 10));
 const timeout = Number(opt('timeout', 300)) * 1000;
 const only = opt('only', '');
+// How frames are shown (?d3dpresent=): gdi reads them back into the window;
+// canvas presents them to a WebGPU canvas, as the page does by default.
+const present = opt('present', 'gdi');
 const baseline = opt('baseline', '');
 const writeBaseline = opt('write-baseline', '');
 const WINE_SRC = process.env.WINE_SRC ?? '/opt/wine-src/wine-11.0';
@@ -112,7 +115,7 @@ try {
     const [a, b] = ranges[k];
     const page = await context.newPage();
     const t0 = Date.now();
-    await page.goto(`http://localhost:${port}/runtime/web/?wine=1&d3dpresent=gdi`);
+    await page.goto(`http://localhost:${port}/runtime/web/?wine=1&d3dpresent=${present}`);
     await page.setInputFiles('#fallback', appDir);
     await page.waitForFunction(() => !document.getElementById('run').disabled);
     await page.selectOption('#exe', 'd3d9_test.exe');
