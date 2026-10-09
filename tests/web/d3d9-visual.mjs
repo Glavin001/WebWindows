@@ -4,6 +4,13 @@
 //
 //   node tests/web/d3d9-visual.mjs [--batch N] [--timeout S] [--only A-B,C,...] [--present gdi|canvas]
 //        [--native] [--baseline FILE] [--write-baseline FILE] [--build-only]
+//        [--module M --test T]
+//
+// --module and --test run another of Wine's tests the same way: T.c of
+// dlls/M/tests (e.g. d3d8 visual, ddraw ddraw7, d3d11 d3d11; built first
+// with tools/wine/build.sh M/tests), into target/wine-tests/M-T. Its
+// START_TEST's test calls are numbered, both direct ones and those it
+// queues (d3d11's queue_test: the queue is run after each one).
 //
 // visual.c runs every function from one START_TEST, and some hang or crash
 // on this backend, so the test is rebuilt with its calls numbered: argv
@@ -21,7 +28,7 @@
 // --build-only builds it (and d3d9_test.json, its functions' names) for the site.
 
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,25 +49,44 @@ const present = opt('present', 'gdi');
 const baseline = opt('baseline', '');
 const writeBaseline = opt('write-baseline', '');
 const native = argv.includes('--native');
+const module = opt('module', 'd3d9');
+const test = opt('test', 'visual');
+const isD3d9 = module === 'd3d9' && test === 'visual';
 const WINE_SRC = process.env.WINE_SRC ?? '/opt/wine-src/wine-11.0';
 const WINE_BUILD = process.env.WINE_BUILD ?? '/opt/wine-build';
-const out = join(root, native ? 'target/d3d9-visual-native' : 'target/d3d9-visual');
+const base = isD3d9 ? 'target/d3d9-visual' : `target/wine-tests/${module}-${test}`;
+const out = join(root, native ? `${base}-native` : base);
 // The program and its functions' names (the page's self-test reads both).
-const appDir = join(root, 'target/d3d9-visual/app');
+const appDir = join(root, base, 'app');
+const exeName = `${module}_test.exe`;
 mkdirSync(appDir, { recursive: true });
 mkdirSync(out, { recursive: true });
 
 // ---- The numbered test -----------------------------------------------------
 
-const src = readFileSync(join(WINE_SRC, 'dlls/d3d9/tests/visual.c'), 'utf8');
-const start = src.indexOf('START_TEST(visual)');
+const tdir = `dlls/${module}/tests`;
+const src = readFileSync(join(WINE_SRC, tdir, `${test}.c`), 'utf8');
+const start = src.indexOf(`START_TEST(${test})`);
 const body = src.slice(start);
-const afterRelease = body.indexOf('IDirect3D9_Release(d3d);');
 const names = [];
-const numbered = body.slice(0, afterRelease) + body.slice(afterRelease).replace(/^ {4}(\w+)\(\);$/gm, (_, name) => {
-  names.push(name);
-  return `    if (wwt_run(${names.length - 1}, "${name}")) ${name}();`;
-});
+let numbered, queued = false;
+if (isD3d9) {
+  const afterRelease = body.indexOf('IDirect3D9_Release(d3d);');
+  numbered = body.slice(0, afterRelease) + body.slice(afterRelease).replace(/^ {4}(\w+)\(\);$/gm, (_, name) => {
+    names.push(name);
+    return `    if (wwt_run(${names.length - 1}, "${name}")) ${name}();`;
+  });
+} else {
+  // Test calls: "    test_x(...);" / "    x_test(...);", or queued ones
+  // ("    queue_test(test_x);", possibly over several lines), run at once.
+  numbered = body.replace(/^ {4}(queue_\w+\([^;]*?\)|(?:test_\w+|\w+_test)\([^;\n]*\));$/gm, (call) => {
+    const q = call.trimStart().startsWith('queue_');
+    const name = q ? [...call.matchAll(/\b(test_\w+|\w+_test)\b/g)].pop()?.[1] ?? 'queued' : call.trim().split('(')[0];
+    queued ||= q;
+    names.push(name);
+    return `    if (wwt_run(${names.length - 1}, "${name}")) { ${call.trim()}; ${q ? 'wwt_flush(); ' : ''}}`;
+  });
+}
 const helper = `
 /* Runs functions A to B-1 of START_TEST when argv[2] is "A-B" (tests/web/d3d9-visual.mjs). */
 static BOOL wwt_run(int i, const char *name)
@@ -80,24 +106,43 @@ static BOOL wwt_run(int i, const char *name)
 }
 
 `;
-const patched = join(root, 'target/d3d9-visual/visual.c');
-writeFileSync(patched, src.slice(0, start) + helper + numbered);
-const exe = join(appDir, 'd3d9_test.exe');
-const tdir = 'dlls/d3d9/tests';
-const obj = join(root, 'target/d3d9-visual/visual.o');
+const flush = queued ? `
+/* Runs what a numbered call queued, now, so its output follows its trace line. */
+static void wwt_flush(void)
+{
+    run_queued_tests();
+    mt_test_count = 0;
+}
+
+` : '';
+const patched = join(root, base, `${test}.c`);
+writeFileSync(patched, src.slice(0, start) + helper + flush + numbered);
+const exe = join(appDir, exeName);
+const obj = join(root, base, `${test}.o`);
 execFileSync('i686-w64-mingw32-gcc', ['-c', '-o', obj, patched, `-I${WINE_BUILD}/${tdir}`, `-I${WINE_SRC}/${tdir}`,
   `-I${WINE_BUILD}/include`, `-I${WINE_SRC}/include`, `-I${WINE_SRC}/include/msvcrt`, '-D_MSVCR_VER=0',
   '-D__WINESRC__', '-D__WINE_PE_BUILD', '-fno-strict-aliasing', '-fno-omit-frame-pointer',
   '-mpreferred-stack-boundary=2', '-O2', '-w'], { stdio: 'inherit' });
-const o = (n) => `${tdir}/i386-windows/${n}.o`;
+// The module's other test objects, its resources and its Makefile's imports.
+const objDir = join(WINE_BUILD, tdir, 'i386-windows');
+const others = readdirSync(objDir).filter((f) => f.endsWith('.o') && f !== `${test}.o` && f !== 'testlist.o').map((f) => join(objDir, f));
+const resources = [join(WINE_BUILD, tdir), objDir].flatMap((d) => readdirSync(d).filter((f) => f.endsWith('.res')).map((f) => join(d, f)));
+const imports = (/^IMPORTS\s*=(.*)$/m.exec(readFileSync(join(WINE_SRC, tdir, 'Makefile.in'), 'utf8'))?.[1] ?? '').trim().split(/\s+/);
+const lib = (name) => {
+  const dirs = [name, `${name}_47`, ...readdirSync(join(WINE_BUILD, 'dlls')).filter((d) => d.startsWith(name))];
+  for (const d of dirs) {
+    const f = join(WINE_BUILD, 'dlls', d, 'i386-windows', `lib${name}.a`);
+    if (existsSync(f)) return f;
+  }
+  throw new Error(`no import library for ${name}`);
+};
 execFileSync('tools/winegcc/winegcc', ['-o', exe, '--wine-objdir', '.', '-b', 'i686-w64-mingw32',
-  o('d3d9ex'), o('device'), o('stateblock'), obj, o('testlist'), 'dlls/d3d9/i386-windows/libd3d9.a',
-  'dlls/user32/i386-windows/libuser32.a', 'dlls/gdi32/i386-windows/libgdi32.a',
+  ...others, obj, join(objDir, 'testlist.o'), ...resources, ...imports.map(lib),
   'dlls/winecrt0/i386-windows/libwinecrt0.a', 'dlls/msvcrt/i386-windows/libmsvcrt.a',
   'dlls/kernel32/i386-windows/libkernel32.a', 'dlls/ntdll/i386-windows/libntdll.a',
   '-Wl,--disable-stdcall-fixup'], { cwd: WINE_BUILD, stdio: 'inherit' });
-writeFileSync(join(appDir, 'd3d9_test.json'), JSON.stringify({ names }) + '\n');
-console.log(`${names.length} test functions in visual.c`);
+writeFileSync(join(appDir, `${module}_test.json`), JSON.stringify({ names }) + '\n');
+console.log(`${names.length} test functions in ${test}.c`);
 if (process.argv.includes('--build-only')) process.exit(0);
 
 // ---- Running ---------------------------------------------------------------
@@ -116,7 +161,7 @@ if (native) {
   const wine = process.env.WINE ?? '/opt/wine-native/build/wine';
   runBatch = (a, b) =>
     new Promise((res) => {
-      const p = spawn(wine, ['d3d9_test.exe', 'visual', `${a}-${b}`], {
+      const p = spawn(wine, [exeName, test, `${a}-${b}`], {
         cwd: appDir,
         env: { WINEDEBUG: '-all', WINEDLLOVERRIDES: 'mscoree,mshtml=', ...process.env },
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -147,8 +192,8 @@ if (native) {
     await page.goto(`http://localhost:${port}/runtime/web/?wine=1&d3dpresent=${present}`);
     await page.setInputFiles('#fallback', appDir);
     await page.waitForFunction(() => !document.getElementById('run').disabled);
-    await page.selectOption('#exe', 'd3d9_test.exe');
-    await page.fill('#args', `visual ${a}-${b}`);
+    await page.selectOption('#exe', exeName);
+    await page.fill('#args', `${test} ${a}-${b}`);
     await page.check('#wine');
     await page.click('#run');
     const exited = await page.waitForFunction(() => window.lastExit !== undefined, null, { timeout }).then(() => true, () => false);
@@ -180,7 +225,7 @@ try {
 
 writeFileSync(join(out, 'results.json'), JSON.stringify(results, null, 2) + '\n');
 const t = totals(results);
-console.log(`d3d9 visual${native ? ' (native Wine)' : ''}: ${t.functions} functions, ${t.failures} failures, ${t.broken} crashed, hung or not run`);
+console.log(`${module} ${test}${native ? ' (native Wine)' : ''}: ${t.functions} functions, ${t.failures} failures, ${t.broken} crashed, hung or not run`);
 // The baseline keeps the counts, not the failure lines.
 const counts = Object.fromEntries(Object.entries(results).map(([k, { failed, ...r }]) => [k, r]));
 if (writeBaseline) writeFileSync(writeBaseline, JSON.stringify(counts, null, 2) + '\n');

@@ -1,5 +1,6 @@
-// Reading the output of Wine's Direct3D 9 rendering tests (visual.c, built
-// with its test functions numbered by tests/web/d3d9-visual.mjs): failures
+// Reading the output of Wine's rendering tests (d3d9's visual.c and the
+// others tests/web/d3d9-visual.mjs builds with their test functions
+// numbered): failures
 // per function. Shared by that test (headless Chromium, native Wine) and the
 // page's GPU self-test, which runs the same program on the viewer's GPU.
 
@@ -32,7 +33,7 @@ export function parseVisual(text, a, b, names, exited) {
   // Every function ran when the summary is there (a run stopped for time
   // after it was only slow to exit); otherwise the one it was in hung or
   // crashed, and the rest of the run comes next.
-  const finished = /visual: (\d+) tests executed .*?(\d+) failures?\b/.test(text);
+  const finished = /\w+: (\d+) tests executed .*?(\d+) failures?\b/.test(text);
   const stuck = !finished && current ? names.indexOf(current) : -1;
   if (stuck >= 0) results[current].status = exited ? 'crash' : 'timeout';
   const next = [];

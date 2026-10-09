@@ -1,0 +1,454 @@
+{
+  "test_process_vertices": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_coop_level_create_device_window": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_clipper_blt": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_coop_level_d3d_state": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_surface_interface_mismatch": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_coop_level_threaded": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_texture_load_ckey": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_ck_default": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_ck_complex": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_surface_qi": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_device_qi": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_wndproc": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_window_style": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_redundant_mode_set": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_coop_level_mode_set": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_coop_level_mode_set_multi": {
+    "status": "done",
+    "failures": 31
+  },
+  "test_initialize": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_coop_level_surf_create": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_vb_discard": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_coop_level_multi_window": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_draw_strided": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_lighting": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_specular_lighting": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_clear_rect_count": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_coop_level_versions": {
+    "status": "done",
+    "failures": 11
+  },
+  "test_fog_special": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_lighting_interface_versions": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_coop_level_activateapp": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_texturemanage": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_block_formats_creation": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_unsupported_formats": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_primary_caps": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_surface_lock": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_surface_discard": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_flip": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_set_surface_desc": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_user_memory_getdc": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_sysmem_overlay": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_primary_palette": {
+    "status": "done",
+    "failures": 1
+  },
+  "test_surface_attachment": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_private_data": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_pixel_format": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_create_surface_pitch": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_mipmap": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_palette_complex": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_p8_blit": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_material": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_palette_gdi": {
+    "status": "done",
+    "failures": 1
+  },
+  "test_palette_alpha": {
+    "status": "done",
+    "failures": 1
+  },
+  "test_vb_writeonly": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_lost_device": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_resource_priority": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_surface_desc_lock": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_fog_interpolation": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_fog_process_vertices": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_negative_fixedfunction_fog": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_table_fog_zw": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_signed_formats": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_color_fill": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_texcoordindex": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_colorkey_precision": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_range_colorkey": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_shademode": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_lockrect_invalid": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_yv12_overlay": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_offscreen_overlay": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_overlay_rect": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_blt": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_blt_z_alpha": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_cross_device_blt": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_color_clamping": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_getdc": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_draw_primitive": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_edge_antialiasing_blending": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_display_mode_surface_pixel_format": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_surface_desc_size": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_get_surface_from_dc": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_ck_operation": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_vb_refcount": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_compute_sphere_visibility": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_clip_planes_limits": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_texture_stages_limits": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_set_render_state": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_map_synchronisation": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_depth_readback": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_clear": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_enum_surfaces": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_viewport": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_device_load": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_color_vertex": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_killfocus": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_sysmem_draw": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_gdi_surface": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_multiply_transform": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_alphatest": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_clipper_refcount": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_begin_end_state_block": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_caps": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_d32_support": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_surface_format_conversion_alpha": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_compressed_surface_stretch": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_cursor_clipping": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_window_position": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_get_display_mode": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_filling_convention": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_enum_devices": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_flip_3d": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_multiple_devices": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_vb_desc": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_d3d_state_reset": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_sysmem_x_channel": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_yuv_blit": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_blit_to_self": {
+    "status": "done",
+    "failures": 0
+  }
+}

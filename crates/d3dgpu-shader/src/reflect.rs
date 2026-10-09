@@ -209,6 +209,20 @@ impl Reflection {
             }
         }
 
+        // Direct3D 8 vertex shaders declare no inputs: their declaration
+        // binds stream elements to v# by number, each number standing for
+        // a fixed semantic (D3DVSDE_*, as Wine's d3d8 gives wined3d).
+        if !ps && v.major < 2 && r.vs_inputs.is_empty() {
+            let used: std::collections::BTreeSet<u32> = shader
+                .instructions
+                .iter()
+                .flat_map(|ins| ins.src.iter())
+                .filter(|s| s.reg.ty == RegType::Input)
+                .map(|s| s.reg.num)
+                .collect();
+            r.vs_inputs = used.into_iter().filter_map(|reg| d3d8_input_semantic(reg).map(|sem| (reg, sem))).collect();
+        }
+
         if ps {
             if v.major >= 3 {
                 ps3_inputs.sort_by_key(|(reg, _)| *reg);
@@ -240,6 +254,24 @@ impl Reflection {
         r.approximated.dedup();
         r
     }
+}
+
+/// The semantic of Direct3D 8's vertex shader input register `reg`
+/// (D3DVSDE_POSITION = 0 ... D3DVSDE_NORMAL2 = 16).
+fn d3d8_input_semantic(reg: u32) -> Option<Semantic> {
+    Some(match reg {
+        0 => Semantic::new(usage::POSITION, 0),
+        1 => Semantic::new(usage::BLENDWEIGHT, 0),
+        2 => Semantic::new(usage::BLENDINDICES, 0),
+        3 => Semantic::new(usage::NORMAL, 0),
+        4 => Semantic::new(usage::PSIZE, 0),
+        5 => Semantic::new(usage::COLOR, 0),
+        6 => Semantic::new(usage::COLOR, 1),
+        7..=14 => Semantic::new(usage::TEXCOORD, (reg - 7) as u8),
+        15 => Semantic::new(usage::POSITION, 1),
+        16 => Semantic::new(usage::NORMAL, 1),
+        _ => return None,
+    })
 }
 
 fn add_sampler(r: &mut Reflection, n: u32, t: TextureType) {

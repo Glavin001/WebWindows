@@ -424,7 +424,13 @@ game ─► d3d9.dll ─► wined3d.dll (adapter_wgpu) ─► d3dgpu batches in 
 * **Wine's Direct3D 9 rendering tests** (`node tests/web/d3d9-visual.mjs`,
   `dlls/d3d9/tests/visual.c`; `--native` for native Wine): the baseline is
   `tests/web/baseline/d3d9_visual.json`: all 133 functions pass, as on
-  native Wine. Two places emulate Direct3D 9 hardware where WebGPU
+  native Wine. `--module M --test T` runs another of Wine's tests the
+  same way: Direct3D 8's `visual.c` (`--module d3d8`) passes all 60
+  functions too. Native Wine's results on llvmpipe for these and for
+  `ddraw7.c` (45 failures there) and `d3d11.c` (none) are kept as
+  `*_native.json`; DirectDraw 7 and Direct3D 11 are not passing here yet
+  (the first hangs switching to fullscreen; the second needs
+  `d3d11`/`dxgi` in the bundle and shader model 4/5 in the backend). Two places emulate Direct3D 9 hardware where WebGPU
   differs: cube maps filter within one face (the direction is kept half
   a texel inside its major face; WebGPU filters across faces), and the
   projective divide rounds toward zero (a coordinate just under an

@@ -1,0 +1,242 @@
+{
+  "test_sanity": {
+    "status": "done",
+    "failures": 0
+  },
+  "depth_clamp_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "lighting_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_specular_lighting": {
+    "status": "done",
+    "failures": 0
+  },
+  "clear_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "fog_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "z_range_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "offscreen_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_blend": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_scalar_instructions": {
+    "status": "done",
+    "failures": 0
+  },
+  "fog_with_shader_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "cnd_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "p8_texture_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "texop_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "depth_buffer_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "depth_buffer2_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "intz_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "shadow_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "multisample_copy_rects_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "zenable_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "resz_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "fog_special_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "volume_dxtn_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "volume_v16u16_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "add_dirty_rect_test": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_buffer_no_dirty_update": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_3dc_formats": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_fog_interpolation": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_negative_fixedfunction_fog": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_table_fog_zw": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_signed_formats": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_updatetexture": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_pointsize": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_multisample_mismatch": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_texcoordindex": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_vshader_input": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_fixed_function_fvf": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_flip": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_uninitialized_varyings": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_shademode": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_multisample_init": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_texture_blending": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_color_clamping": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_edge_antialiasing_blending": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_max_index16": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_backbuffer_resize": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_drawindexedprimitiveup": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_map_synchronisation": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_viewport": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_color_vertex": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_sysmem_draw": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_alphatest": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_desktop_window": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_sample_mask": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_dynamic_map_synchronization": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_filling_convention": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_managed_reset": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_mipmap_upload": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_specular_shaders": {
+    "status": "done",
+    "failures": 0
+  },
+  "test_lighting_matrices": {
+    "status": "done",
+    "failures": 0
+  }
+}

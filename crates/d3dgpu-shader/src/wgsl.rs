@@ -523,20 +523,23 @@ impl<'a> Gen<'a> {
             Opcode::Sub => format!("({} - {})", s(self, 0)?, s(self, 1)?),
             Opcode::Mul => format!("({} * {})", s(self, 0)?, s(self, 1)?),
             Opcode::Mad => format!("({} * {} + {})", s(self, 0)?, s(self, 1)?, s(self, 2)?),
-            Opcode::Rcp => format!("vec4<f32>(d3d_rcp({}.x))", s(self, 0)?),
-            Opcode::Rsq => format!("vec4<f32>(d3d_rsq({}.x))", s(self, 0)?),
+            // Scalar instructions read the source's last component: the
+            // same as any with a replicate swizzle, and what a Direct3D 8
+            // shader without one gets (rcp oD0, c0 reads c0.w).
+            Opcode::Rcp => format!("vec4<f32>(d3d_rcp({}.w))", s(self, 0)?),
+            Opcode::Rsq => format!("vec4<f32>(d3d_rsq({}.w))", s(self, 0)?),
             Opcode::Dp3 => format!("vec4<f32>(dot({}.xyz, {}.xyz))", s(self, 0)?, s(self, 1)?),
             Opcode::Dp4 => format!("vec4<f32>(dot({}, {}))", s(self, 0)?, s(self, 1)?),
             Opcode::Min => format!("min({}, {})", s(self, 0)?, s(self, 1)?),
             Opcode::Max => format!("max({}, {})", s(self, 0)?, s(self, 1)?),
             Opcode::Slt => format!("select(vec4<f32>(0.0), vec4<f32>(1.0), {} < {})", s(self, 0)?, s(self, 1)?),
             Opcode::Sge => format!("select(vec4<f32>(0.0), vec4<f32>(1.0), {} >= {})", s(self, 0)?, s(self, 1)?),
-            Opcode::Exp => format!("vec4<f32>(exp2({}.x))", s(self, 0)?),
-            Opcode::ExpP if self.sh.version.major < 2 => format!("d3d_expp({}.x)", s(self, 0)?),
-            Opcode::ExpP => format!("vec4<f32>(exp2({}.x))", s(self, 0)?),
-            Opcode::Log => format!("vec4<f32>(d3d_log({}.x))", s(self, 0)?),
-            Opcode::LogP if self.sh.version.major < 2 => format!("d3d_logp({}.x)", s(self, 0)?),
-            Opcode::LogP => format!("vec4<f32>(d3d_log({}.x))", s(self, 0)?),
+            Opcode::Exp => format!("vec4<f32>(exp2({}.w))", s(self, 0)?),
+            Opcode::ExpP if self.sh.version.major < 2 => format!("d3d_expp({}.w)", s(self, 0)?),
+            Opcode::ExpP => format!("vec4<f32>(exp2({}.w))", s(self, 0)?),
+            Opcode::Log => format!("vec4<f32>(d3d_log({}.w))", s(self, 0)?),
+            Opcode::LogP if self.sh.version.major < 2 => format!("d3d_logp({}.w)", s(self, 0)?),
+            Opcode::LogP => format!("vec4<f32>(d3d_log({}.w))", s(self, 0)?),
             Opcode::Lit => format!("d3d_lit({})", s(self, 0)?),
             Opcode::Dst => {
                 let (a, b) = (s(self, 0)?, s(self, 1)?);

@@ -1443,6 +1443,9 @@ static const struct wined3d_fragment_pipe_ops wgpu_fragment_pipe =
 static uint32_t wgpu_shader_id(struct wined3d_device_wgpu *device, struct wined3d_shader *shader)
 {
     struct d3dgpu_cmd_create_shader *cmd;
+    void *extra = NULL;
+    const void *code;
+    size_t size;
     uint32_t id;
 
     if (!shader)
@@ -1454,25 +1457,53 @@ static uint32_t wgpu_shader_id(struct wined3d_device_wgpu *device, struct wined3
         FIXME("Shader model %u shaders are not supported yet.\n", shader->reg_maps.shader_version.major);
         return 0;
     }
-    if (!(cmd = wgpu_cmd_data(device, D3DGPU_OP_CREATE_SHADER, sizeof(*cmd),
-            shader->byte_code, shader->byte_code_size)))
+    code = shader->byte_code;
+    size = shader->byte_code_size;
+    /* Direct3D 8 vertex declarations set constants (D3DVSD_CONST) that
+     * wined3d keeps with the shader's def constants, outside its bytecode:
+     * they go in as def instructions after the version token. */
+    if (shader->reg_maps.shader_version.type == WINED3D_SHADER_TYPE_VERTEX
+            && shader->reg_maps.shader_version.major < 2 && !list_empty(&shader->constantsF)
+            && (extra = malloc(size + list_count(&shader->constantsF) * 6 * sizeof(DWORD))))
+    {
+        const struct wined3d_shader_lconst *lconst;
+        DWORD *t = extra;
+
+        *t++ = ((const DWORD *)code)[0];
+        LIST_FOR_EACH_ENTRY(lconst, &shader->constantsF, struct wined3d_shader_lconst, entry)
+        {
+            *t++ = 0x00000051; /* def */
+            *t++ = 0xa00f0000 | lconst->idx; /* c#, all components */
+            memcpy(t, lconst->value, sizeof(lconst->value));
+            t += 4;
+        }
+        memcpy(t, (const DWORD *)code + 1, size - sizeof(DWORD));
+        size += (t - (DWORD *)extra - 1) * sizeof(DWORD);
+        code = extra;
+    }
+    cmd = wgpu_cmd_data(device, D3DGPU_OP_CREATE_SHADER, sizeof(*cmd), code, size);
+    if (!cmd)
+    {
+        free(extra);
         return 0;
+    }
     id = wgpu_alloc_id();
     cmd->id = id;
     cmd->stage = shader->reg_maps.shader_version.type == WINED3D_SHADER_TYPE_PIXEL
             ? D3DGPU_STAGE_PIXEL : D3DGPU_STAGE_VERTEX;
     /* The core caches translations by this hash (FNV-1a over the bytecode). */
     {
-        const BYTE *b = shader->byte_code;
+        const BYTE *b = code;
         uint64_t h = 0xcbf29ce484222325ull;
         unsigned int i;
 
-        for (i = 0; i < shader->byte_code_size; ++i)
+        for (i = 0; i < size; ++i)
             h = (h ^ b[i]) * 0x100000001b3ull;
         h |= 1;
         cmd->hash_lo = h;
         cmd->hash_hi = h >> 32;
     }
+    free(extra);
     shader->backend_data = (void *)(ULONG_PTR)id;
     return id;
 }
@@ -3279,7 +3310,10 @@ static BOOL wgpu_init_format_info(struct wined3d_adapter *adapter)
         {WINED3DFMT_B10G10R10A2_UNORM, TEX},
         {WINED3DFMT_R16G16_UNORM, TEX},
         {WINED3DFMT_R16G16B16A16_UNORM, TEX},
-        {WINED3DFMT_P8_UINT, WINED3D_FORMAT_CAP_TEXTURE | WINED3D_FORMAT_CAP_BLIT},
+        /* Plain surfaces (DirectDraw's 8-bit ones); never a texture, as with
+         * wined3d's GL backend: Direct3D 8/9 texture palettes aren't
+         * implemented in Wine (p8_texture_test then skips). */
+        {WINED3DFMT_P8_UINT, WINED3D_FORMAT_CAP_BLIT},
         {WINED3DFMT_L8_UNORM, TEX},
         {WINED3DFMT_L8A8_UNORM, TEX},
         {WINED3DFMT_L4A4_UNORM, TEX},
