@@ -29,15 +29,15 @@
   },
   "test_clear_different_size_surfaces": {
     "status": "done",
-    "failures": 17
+    "failures": 0
   },
   "color_fill_test": {
     "status": "done",
-    "failures": 20
+    "failures": 16
   },
   "fog_test": {
     "status": "done",
-    "failures": 4
+    "failures": 0
   },
   "test_cube_wrap": {
     "status": "done",
@@ -61,7 +61,7 @@
   },
   "test_blend": {
     "status": "done",
-    "failures": 0
+    "failures": 2
   },
   "test_shademode": {
     "status": "done",
@@ -133,11 +133,11 @@
   },
   "alphatest_test": {
     "status": "done",
-    "failures": 24
+    "failures": 0
   },
   "test_viewport": {
     "status": "done",
-    "failures": 24
+    "failures": 0
   },
   "test_constant_clamp_vs": {
     "status": "done",
@@ -177,11 +177,11 @@
   },
   "stream_test": {
     "status": "done",
-    "failures": 37
+    "failures": 0
   },
   "fog_with_shader_test": {
     "status": "done",
-    "failures": 55
+    "failures": 0
   },
   "texbem_test": {
     "status": "done",
@@ -213,7 +213,7 @@
   },
   "unbound_sampler_test": {
     "status": "done",
-    "failures": 0
+    "failures": 3
   },
   "nested_loop_test": {
     "status": "done",
@@ -233,7 +233,7 @@
   },
   "multiple_rendertargets_test": {
     "status": "done",
-    "failures": 21
+    "failures": 2
   },
   "texop_test": {
     "status": "done",
@@ -253,7 +253,7 @@
   },
   "depth_buffer_test": {
     "status": "done",
-    "failures": 9
+    "failures": 5
   },
   "depth_buffer2_test": {
     "status": "done",
@@ -289,7 +289,7 @@
   },
   "update_surface_test": {
     "status": "done",
-    "failures": 7
+    "failures": 0
   },
   "multisample_get_rtdata_test": {
     "status": "done",
@@ -301,11 +301,11 @@
   },
   "zenable_test": {
     "status": "done",
-    "failures": 8
+    "failures": 0
   },
   "fog_special_test": {
     "status": "done",
-    "failures": 4
+    "failures": 0
   },
   "volume_srgb_test": {
     "status": "done",
@@ -349,7 +349,7 @@
   },
   "test_negative_fixedfunction_fog": {
     "status": "done",
-    "failures": 4
+    "failures": 0
   },
   "test_position_index": {
     "status": "done",
@@ -377,11 +377,11 @@
   },
   "test_updatetexture": {
     "status": "done",
-    "failures": 1
+    "failures": 0
   },
   "test_depthbias": {
     "status": "done",
-    "failures": 7
+    "failures": 0
   },
   "test_flip": {
     "status": "done",
@@ -389,7 +389,7 @@
   },
   "test_uninitialized_varyings": {
     "status": "done",
-    "failures": 6
+    "failures": 0
   },
   "test_multisample_init": {
     "status": "done",
@@ -405,7 +405,7 @@
   },
   "test_color_clamping": {
     "status": "done",
-    "failures": 2
+    "failures": 0
   },
   "test_line_antialiasing_blending": {
     "status": "done",
@@ -449,7 +449,7 @@
   },
   "test_color_vertex": {
     "status": "done",
-    "failures": 7
+    "failures": 0
   },
   "test_sysmem_draw": {
     "status": "done",
@@ -497,7 +497,7 @@
   },
   "test_default_diffuse": {
     "status": "done",
-    "failures": 15
+    "failures": 0
   },
   "test_default_attribute_components": {
     "status": "done",
@@ -521,7 +521,7 @@
   },
   "test_fog": {
     "status": "done",
-    "failures": 96
+    "failures": 0
   },
   "test_texture_transform_flags": {
     "status": "done",
@@ -529,6 +529,6 @@
   },
   "test_lighting_matrices": {
     "status": "done",
-    "failures": 2
+    "failures": 0
   }
 }

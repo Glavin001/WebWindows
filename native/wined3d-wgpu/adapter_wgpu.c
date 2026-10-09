@@ -2236,7 +2236,7 @@ static void wgpu_blitter_clear(struct wined3d_blitter *blitter, struct wined3d_d
     struct wined3d_rendertarget_view *view;
     struct wined3d_context *context;
     struct d3dgpu_cmd_clear *cmd;
-    unsigned int i, n = 0;
+    unsigned int i, pass, n = 0;
     RECT r;
 
     TRACE("blitter %p, device %p, rt_count %u, fb %p, rect_count %u, clear_rects %p, "
@@ -2246,16 +2246,40 @@ static void wgpu_blitter_clear(struct wined3d_blitter *blitter, struct wined3d_d
 
     wgpu_activate(device_wgpu);
     context = context_acquire(device, NULL, 0);
-    for (i = 0; i < 4; ++i)
-        wgpu_bind_target(device_wgpu, context, i,
-                (flags & WINED3DCLEAR_TARGET) && i < rt_count ? fb->render_targets[i] : NULL);
-    wgpu_bind_target(device_wgpu, context, -1,
-            (flags & (WINED3DCLEAR_ZBUFFER | WINED3DCLEAR_STENCIL)) ? fb->depth_stencil : NULL);
+    /* Loading a target can clear it through a binding of its own
+     * (wgpu_clear_sub_resource), undoing the ones made before it: bind
+     * them all again then (with every target loaded, nothing moves). */
+    for (pass = 0; pass < 2; ++pass)
     {
-        struct wined3d_rendertarget_view *v = rt_count && fb->render_targets[0] ? fb->render_targets[0] : fb->depth_stencil;
+        device_wgpu->targets_disturbed = false;
+        for (i = 0; i < 4; ++i)
+            wgpu_bind_target(device_wgpu, context, i,
+                    (flags & WINED3DCLEAR_TARGET) && i < rt_count ? fb->render_targets[i] : NULL);
+        wgpu_bind_target(device_wgpu, context, -1,
+                (flags & (WINED3DCLEAR_ZBUFFER | WINED3DCLEAR_STENCIL)) ? fb->depth_stencil : NULL);
+        if (!device_wgpu->targets_disturbed)
+            break;
+    }
+    {
+        /* The draw rectangle has Direct3D's viewport and scissor; the
+         * viewport covers every attachment (they can differ in size). */
+        unsigned int width = 0, height = 0;
 
-        if (v)
-            wgpu_full_viewport(device_wgpu, v->width, v->height);
+        for (i = 0; i < rt_count && i < 4; ++i)
+        {
+            if ((view = fb->render_targets[i]))
+            {
+                width = max(width, view->width);
+                height = max(height, view->height);
+            }
+        }
+        if ((view = fb->depth_stencil))
+        {
+            width = max(width, view->width);
+            height = max(height, view->height);
+        }
+        if (width && height)
+            wgpu_full_viewport(device_wgpu, width, height);
         wgpu_invalidate_targets(device_wgpu);
     }
 
@@ -2306,6 +2330,48 @@ static void wgpu_blitter_clear(struct wined3d_blitter *blitter, struct wined3d_d
     context_release(context);
 }
 
+/* Depth blits run on the GPU: the core copies whole depth surfaces of one
+ * size, the only depth blits Direct3D 9 allows (and the CPU blitter can't
+ * read depth back). */
+static bool wgpu_blit_depth(struct wined3d_context *context, enum wined3d_blit_op op,
+        struct wined3d_texture *src_texture, unsigned int src_sub_resource_idx, const RECT *src_rect,
+        struct wined3d_texture *dst_texture, unsigned int dst_sub_resource_idx, const RECT *dst_rect,
+        enum wined3d_texture_filter_type filter)
+{
+    const struct wined3d_format *src_format = src_texture->resource.format, *dst_format = dst_texture->resource.format;
+    struct wined3d_device_wgpu *device = wined3d_device_wgpu(context->device);
+    struct d3dgpu_cmd_stretch_rect *cmd;
+
+    if (!(src_format->depth_size || src_format->stencil_size) || !(dst_format->depth_size || dst_format->stencil_size)
+            || (op != WINED3D_BLIT_OP_RAW_BLIT && op != WINED3D_BLIT_OP_DEPTH_BLIT)
+            || !(src_texture->resource.access & WINED3D_RESOURCE_ACCESS_GPU)
+            || !(dst_texture->resource.access & WINED3D_RESOURCE_ACCESS_GPU))
+        return false;
+    if (!wined3d_texture_load_location(src_texture, src_sub_resource_idx, context, WINED3D_LOCATION_TEXTURE_RGB)
+            || !wined3d_texture_prepare_location(dst_texture, dst_sub_resource_idx, context, WINED3D_LOCATION_TEXTURE_RGB)
+            || !wined3d_texture_wgpu(src_texture)->id || !wined3d_texture_wgpu(dst_texture)->id)
+        return false;
+    wgpu_activate(device);
+    if (!(cmd = wgpu_cmd(device, D3DGPU_OP_STRETCH_RECT, sizeof(*cmd))))
+        return false;
+    cmd->src = wined3d_texture_wgpu(src_texture)->id;
+    cmd->src_face = src_sub_resource_idx / src_texture->level_count;
+    cmd->src_level = src_sub_resource_idx % src_texture->level_count;
+    cmd->src_rect.x1 = src_rect->left;
+    cmd->src_rect.y1 = src_rect->top;
+    cmd->src_rect.x2 = src_rect->right;
+    cmd->src_rect.y2 = src_rect->bottom;
+    cmd->dst = wined3d_texture_wgpu(dst_texture)->id;
+    cmd->dst_face = dst_sub_resource_idx / dst_texture->level_count;
+    cmd->dst_level = dst_sub_resource_idx % dst_texture->level_count;
+    cmd->dst_rect.x1 = dst_rect->left;
+    cmd->dst_rect.y1 = dst_rect->top;
+    cmd->dst_rect.x2 = dst_rect->right;
+    cmd->dst_rect.y2 = dst_rect->bottom;
+    cmd->filter = filter;
+    return true;
+}
+
 static DWORD wgpu_blitter_blit(struct wined3d_blitter *blitter, enum wined3d_blit_op op,
         struct wined3d_context *context, struct wined3d_texture *src_texture, unsigned int src_sub_resource_idx,
         DWORD src_location, const RECT *src_rect, struct wined3d_texture *dst_texture,
@@ -2315,7 +2381,10 @@ static DWORD wgpu_blitter_blit(struct wined3d_blitter *blitter, enum wined3d_bli
 {
     struct wined3d_blitter *next;
 
-    /* Blits run on the CPU for now: the next blitter reads both
+    if (wgpu_blit_depth(context, op, src_texture, src_sub_resource_idx, src_rect,
+            dst_texture, dst_sub_resource_idx, dst_rect, filter))
+        return WINED3D_LOCATION_TEXTURE_RGB;
+    /* Colour blits run on the CPU for now: the next blitter reads both
      * sub-resources back to system memory. */
     if (!(next = blitter->next))
     {
