@@ -1248,7 +1248,7 @@ impl Core {
             }
             let mask = if written.is_some() { rt.write_mask & 0xf } else { 0 };
             let a1 = format::alpha_is_one(v.desc.format);
-            let blend = (rt.enable && convert::is_blendable(f)).then(|| {
+            let blend = (rt.enable && convert::is_blendable(f, self.device.features())).then(|| {
                 let color = convert::blend_component(rt.src, rt.dst, rt.op, a1);
                 let alpha = convert::blend_component(rt.src_alpha, rt.dst_alpha, rt.op_alpha, a1);
                 (color, alpha)

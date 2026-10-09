@@ -92,7 +92,8 @@ impl Renderer {
             .map_err(|e| JsError::new(&format!("no WebGPU adapter: {e}")))?;
         let wanted = wgpu::Features::CLIP_DISTANCES
             | wgpu::Features::TEXTURE_COMPRESSION_BC
-            | wgpu::Features::FLOAT32_FILTERABLE;
+            | wgpu::Features::FLOAT32_FILTERABLE
+            | wgpu::Features::FLOAT32_BLENDABLE;
         let features = if optional { adapter.features() & wanted } else { wgpu::Features::empty() };
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {

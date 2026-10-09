@@ -726,7 +726,11 @@ impl Core {
     fn create_texture(&mut self, id: Handle, desc: TextureDesc) {
         // Block-compressed volumes need a feature WebGPU makes optional
         // (texture-compression-bc-sliced-3d): they are decoded instead.
-        let opts = FormatOptions { bc_supported: self.opts.bc && desc.kind != TextureKind::Volume };
+        let opts = FormatOptions {
+            bc_supported: self.opts.bc && desc.kind != TextureKind::Volume,
+            // As float32 when it filters and blends like the float16 it replaces.
+            float32: self.opts.float32_filterable && self.device.features().contains(wgpu::Features::FLOAT32_BLENDABLE),
+        };
         let Some(plan) = fmt::plan(desc.format, &opts) else {
             return self.warn(format!("CreateTexture {id:?}: unsupported format {:?}", desc.format));
         };

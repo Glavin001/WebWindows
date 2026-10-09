@@ -1,8 +1,8 @@
 use super::*;
 use crate::half::f16_to_f32;
 
-const BC: FormatOptions = FormatOptions { bc_supported: true };
-const NO_BC: FormatOptions = FormatOptions { bc_supported: false };
+const BC: FormatOptions = FormatOptions { bc_supported: true, float32: false };
+const NO_BC: FormatOptions = FormatOptions { bc_supported: false, float32: false };
 
 fn pl(f: Format) -> FormatPlan {
     plan(f, &BC).unwrap()

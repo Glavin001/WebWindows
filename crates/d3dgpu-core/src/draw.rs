@@ -381,9 +381,9 @@ impl Caches {
             .map(|c| {
                 c.map(|(format, write)| wgpu::ColorTargetState {
                     format,
-                    blend: convert::is_blendable(format)
+                    blend: convert::is_blendable(format, device.features())
                         .then_some(wgpu::BlendState { color: constant, alpha: constant }),
-                    write_mask: if write && convert::is_blendable(format) {
+                    write_mask: if write && convert::is_blendable(format, device.features()) {
                         wgpu::ColorWrites::ALL
                     } else {
                         wgpu::ColorWrites::empty()
@@ -1314,7 +1314,7 @@ impl Core {
                 let t = (*t)?;
                 let Some(Object::Texture(tex)) = self.objects.get(&t.texture.0) else { return None };
                 let a1 = tex.plan.alpha_is_one();
-                let blend = (blend_on && convert::is_blendable(tex.format)).then(|| {
+                let blend = (blend_on && convert::is_blendable(tex.format, self.device.features())).then(|| {
                     let color = convert::blend_component(
                         st.r(RenderState::SrcBlend),
                         st.r(RenderState::DestBlend),
