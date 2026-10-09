@@ -41,7 +41,7 @@
   },
   "test_cube_wrap": {
     "status": "done",
-    "failures": 5
+    "failures": 0
   },
   "z_range_test": {
     "status": "done",
@@ -525,7 +525,7 @@
   },
   "test_texture_transform_flags": {
     "status": "done",
-    "failures": 12
+    "failures": 0
   },
   "test_lighting_matrices": {
     "status": "done",

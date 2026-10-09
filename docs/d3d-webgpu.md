@@ -423,11 +423,12 @@ game ─► d3d9.dll ─► wined3d.dll (adapter_wgpu) ─► d3dgpu batches in 
   back buffers, UYVY surfaces (YUY2 plain surfaces blit to RGB).
 * **Wine's Direct3D 9 rendering tests** (`node tests/web/d3d9-visual.mjs`,
   `dlls/d3d9/tests/visual.c`; `--native` for native Wine): the baseline is
-  `tests/web/baseline/d3d9_visual.json`: 17 failures in 2 of 133
-  functions, both where WebGPU differs from Direct3D 9 hardware: cube
-  maps always filter across faces (`test_cube_wrap`), and a projected
-  texture coordinate that divides to just under an integer lands on it
-  (`test_texture_transform_flags`; WGSL division is accurate to 2.5 ULP).
+  `tests/web/baseline/d3d9_visual.json`: all 133 functions pass, as on
+  native Wine. Two places emulate Direct3D 9 hardware where WebGPU
+  differs: cube maps filter within one face (the direction is kept half
+  a texel inside its major face; WebGPU filters across faces), and the
+  projective divide rounds toward zero (a coordinate just under an
+  integer stays under it).
 
 ![d3d9tri on translated Wine in headless Chromium](d3d9tri-browser.png)
 

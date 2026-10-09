@@ -829,7 +829,7 @@ impl<'a> Gen<'a> {
                 // A projected stage divides the texture coordinate, not the
                 // displacement.
                 let proj = self.pkey.map(|k| k.samplers[n as usize].projected).unwrap_or(false);
-                let base = if proj { format!("({tc}.xy / {tc}.w)") } else { format!("{tc}.xy") };
+                let base = if proj { format!("d3d_proj({tc}).xy") } else { format!("{tc}.xy") };
                 let coord = format!(
                     "vec4<f32>({base}.x + {m}.x * {s}.x + {m}.z * {s}.y, {base}.y + {m}.y * {s}.x + {m}.w * {s}.y, 0.0, 1.0)"
                 );
@@ -951,15 +951,27 @@ impl<'a> Gen<'a> {
             SamplerDim::D2 => (2, "xy"),
             SamplerDim::Cube | SamplerDim::Volume => (3, "xyz"),
         };
-        let uv = if project { format!("({c}.{swz} / {c}.w)") } else { format!("{c}.{swz}") };
+        let mut uv = if project { format!("d3d_proj({c}).{swz}") } else { format!("{c}.{swz}") };
         let _ = ncomp;
         let (t, s) = (format!("tex{n}"), format!("smp{n}"));
+        // Direct3D 9 cube maps filter within one face (WebGPU's across
+        // faces); an implicit level keeps the unclamped direction's
+        // derivatives.
+        let mut cube_grad = None;
+        if dim == SamplerDim::Cube {
+            let d = self.fresh("dir_");
+            self.line(&format!("let {d} = {uv};"));
+            if matches!(lod, Lod::Implicit) && self.ps && !(key.depth && key.compare) {
+                cube_grad = Some(format!("dpdx({d}), dpdy({d})"));
+            }
+            uv = format!("d3d_cube_dir({d}, f32(textureDimensions({t}).x))");
+        }
         let r = self.fresh("smp_");
         let in_vs = !self.ps;
         let expr = if key.depth && key.compare {
             // WGSL has no textureSampleCompareGrad; level 0 also sidesteps
             // the uniformity rules.
-            let reference = if project { format!("({c}.z / {c}.w)") } else { format!("{c}.z") };
+            let reference = if project { format!("d3d_proj({c}).z") } else { format!("{c}.z") };
             if dim == SamplerDim::Volume {
                 return Err(Error::Unsupported("depth compare on a volume texture".into()));
             }
@@ -973,6 +985,9 @@ impl<'a> Gen<'a> {
             format!("vec4<f32>({call})")
         } else {
             match (&lod, in_vs) {
+                (Lod::Implicit, false) if cube_grad.is_some() => {
+                    format!("textureSampleGrad({t}, {s}, {uv}, {})", cube_grad.as_ref().unwrap())
+                }
                 (Lod::Implicit, false) => format!("textureSample({t}, {s}, {uv})"),
                 (Lod::Bias(b), false) => format!("textureSampleBias({t}, {s}, {uv}, {b})"),
                 (Lod::Level(l), _) => format!("textureSampleLevel({t}, {s}, {uv}, {l})"),
@@ -1466,6 +1481,43 @@ fn d3d_nrm(v: vec4<f32>) -> vec4<f32> {
 }
 fn d3d_div(v: vec4<f32>, d: f32) -> vec4<f32> {
     return select(v / d, v, d == 0.0);
+}
+fn d3d_split(x: f32) -> f32 {
+    let t = x * 4097.0;
+    return t - (t - x);
+}
+// a / b rounded toward zero: Direct3D 9 hardware's projective divide lands
+// below an integer the true quotient is just below (1 / 0.1 is not 10), so
+// that a wrapped coordinate stays at the end of the texture
+// (test_texture_transform_flags). The remainder is exact (Dekker).
+fn d3d_tdiv(a: f32, b: f32) -> f32 {
+    let q = a / b;
+    let p = q * b;
+    let qh = d3d_split(q);
+    let bh = d3d_split(b);
+    let ql = q - qh;
+    let bl = b - bh;
+    let r = (a - p) - (((qh * bh - p) + qh * bl + ql * bh) + ql * bl);
+    let over = q != 0.0 && abs(q) < 1.0e30 && r != 0.0 && (r < 0.0) != (a < 0.0);
+    return select(q, bitcast<f32>(bitcast<u32>(q) - 1u), over);
+}
+// The cube direction kept half a texel (of level 0) inside its major
+// face, so that filtering reads that face only, clamped at its edges, as
+// on Direct3D 9 (test_cube_wrap).
+fn d3d_cube_dir(d: vec3<f32>, size: f32) -> vec3<f32> {
+    let a = abs(d);
+    let k = 1.0 - 1.0 / max(size, 1.0);
+    if (a.x >= a.y && a.x >= a.z) {
+        return vec3<f32>(d.x, clamp(d.yz, vec2<f32>(-a.x * k), vec2<f32>(a.x * k)));
+    }
+    if (a.y >= a.z) {
+        let l = a.y * k;
+        return vec3<f32>(clamp(d.x, -l, l), d.y, clamp(d.z, -l, l));
+    }
+    return vec3<f32>(clamp(d.xy, vec2<f32>(-a.z * k), vec2<f32>(a.z * k)), d.z);
+}
+fn d3d_proj(c: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(d3d_tdiv(c.x, c.w), d3d_tdiv(c.y, c.w), d3d_tdiv(c.z, c.w), 1.0);
 }
 fn d3d_udec3(p: u32) -> vec4<f32> {
     return vec4<f32>(f32(p & 1023u), f32((p >> 10u) & 1023u), f32((p >> 20u) & 1023u), 1.0);
