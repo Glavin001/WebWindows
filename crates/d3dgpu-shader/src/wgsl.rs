@@ -22,10 +22,6 @@ use crate::key::*;
 use crate::reflect::{ps_linkage, Reflection};
 use crate::Error;
 
-/// D3D9 hardware returns ±FLT_MAX where IEEE gives infinity (`rcp(0)`,
-/// `rsq(0)`, `log(0)`); WGSL leaves infinities implementation-defined.
-const FLT_MAX: &str = "3.402823466e+38";
-
 /// A translated shader.
 #[derive(Clone, Debug)]
 pub struct Translation {
@@ -104,11 +100,10 @@ struct Gen<'a> {
 }
 
 fn fmt_f32(v: f32) -> String {
-    if v.is_nan() {
-        return "0.0".into();
-    }
-    if v.is_infinite() {
-        return if v > 0.0 { FLT_MAX.into() } else { format!("-{FLT_MAX}") };
+    // Infinities and NaNs (in `def` constants) are made at run time: WGSL
+    // rejects them in constant expressions, and Direct3D passes them on.
+    if !v.is_finite() {
+        return format!("bitcast<f32>({:#x}u | d3d_zero)", v.to_bits());
     }
     let s = format!("{v:?}");
     if s.contains('e') && !s.contains('.') {
@@ -1424,7 +1419,8 @@ enum Lod {
     Grad(String, String),
 }
 
-const HELPERS: &str = "fn d3d_rcp(x: f32) -> f32 {
+const HELPERS: &str = "var<private> d3d_zero: u32 = 0u;
+fn d3d_rcp(x: f32) -> f32 {
     return select(1.0 / x, 3.402823466e+38, x == 0.0);
 }
 fn d3d_rsq(x: f32) -> f32 {

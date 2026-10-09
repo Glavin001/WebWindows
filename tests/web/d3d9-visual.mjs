@@ -152,10 +152,12 @@ if (native) {
     await page.check('#wine');
     await page.click('#run');
     const exited = await page.waitForFunction(() => window.lastExit !== undefined, null, { timeout }).then(() => true, () => false);
-    const rec = await page.evaluate(() => window.webwindows?.lastRun());
-    const log = await page.textContent('#log');
-    await page.close();
-    return { text: rec?.out ?? '', exited, log };
+    // A page that crashed (out of memory, a GPU process failure) counts as a
+    // crash of the function it was in, as far as the output tells.
+    const rec = await page.evaluate(() => window.webwindows?.lastRun()).catch(() => null);
+    const log = await page.textContent('#log').catch(() => '(page crashed)');
+    await page.close().catch(() => {});
+    return { text: rec?.out ?? '', exited: exited && !!rec, log };
   };
 }
 try {

@@ -731,6 +731,10 @@ BOOL wined3d_buffer_wgpu_prepare_location(struct wined3d_buffer *buffer,
                 cmd->usage = usage;
             }
             buffer->buffer_object = &bo->b;
+            /* As the GL and Vulkan backends do: a new buffer object needs all
+             * of the buffer, such as after EvictManagedResources dropped the
+             * old one (wined3d cleared the dirty ranges with it). */
+            wined3d_buffer_invalidate_location(buffer, WINED3D_LOCATION_BUFFER);
             return TRUE;
 
         default:
@@ -3196,10 +3200,6 @@ static BOOL wgpu_init_format_info(struct wined3d_adapter *adapter)
         {WINED3DFMT_R16G16_UNORM, TEX},
         {WINED3DFMT_R16G16B16A16_UNORM, TEX},
         {WINED3DFMT_P8_UINT, WINED3D_FORMAT_CAP_TEXTURE | WINED3D_FORMAT_CAP_BLIT},
-        /* Video surfaces: plain surfaces that StretchRect converts to RGB
-         * (wined3d's CPU blitter converts YUY2 to X8R8G8B8 and R5G6B5). */
-        {WINED3DFMT_YUY2, WINED3D_FORMAT_CAP_BLIT},
-        {WINED3DFMT_UYVY, WINED3D_FORMAT_CAP_BLIT},
         {WINED3DFMT_L8_UNORM, TEX},
         {WINED3DFMT_L8A8_UNORM, TEX},
         {WINED3DFMT_L4A4_UNORM, TEX},
