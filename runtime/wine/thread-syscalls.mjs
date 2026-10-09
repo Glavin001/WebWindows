@@ -67,6 +67,8 @@ const WAIT_TIMEOUT = 0x102;
 const QS_KEY = 0x1, QS_MOUSE = 0x6, QS_POSTMESSAGE = 0x8, QS_TIMER = 0x10, QS_PAINT = 0x20, QS_SENDMESSAGE = 0x40;
 const QS_ALLINPUT = 0x4ff;
 const MWMO_INPUTAVAILABLE = 4;
+const PM_REMOVE = 1;
+const WM_QUIT = 0x12;
 
 /** Calls a win32u system call by name with arguments laid out in scratch guest memory. */
 function win32u(h, name, ...args) {
@@ -101,7 +103,17 @@ export const WIN32U_WAITS = {
     // messages and comes back to wait, rarely, inside the Unix side).
     const get = () => win32u(this, 'NtUserGetMessage', msg, hwnd, first, last);
     if (queueReady(this, mask) || !this.threads.canYield()) return get();
-    return this.threads.block('NtUserGetMessage', this.sys.ret, this.sys.esp, () => (queueReady(this, mask) ? get() : undefined), Infinity);
+    // The blocked thread's check must not wait: GetMessage would, inside
+    // the Unix side, when what made the queue ready was a sent message it
+    // handles or input its filter leaves, and a check cannot run the other
+    // threads (one waiting for this thread to start, say, never would). So
+    // it takes the message as GetMessage does before waiting: a PeekMessage
+    // that removes it, which handles sent messages and never waits.
+    const take = () => {
+      if (!win32u(this, 'NtUserPeekMessage', msg, hwnd, first, last, PM_REMOVE | (mask << 16))) return undefined;
+      return this.u32(msg + 4) === WM_QUIT ? 0 : 1;
+    };
+    return this.threads.block('NtUserGetMessage', this.sys.ret, this.sys.esp, () => (queueReady(this, mask) ? take() : undefined), Infinity);
   },
   NtUserMsgWaitForMultipleObjectsEx(a) {
     const [count, handles, timeout, mask, flags] = [a(0), a(1), a(2), a(3), a(4)];
