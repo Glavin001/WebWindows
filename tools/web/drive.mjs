@@ -21,6 +21,8 @@
 //                   --fresh uses a new one
 //   --port N        the local server's port (default 19601; the cache belongs
 //                   to the page's origin, so keep it fixed)
+//   --video DIR     records the page as a video (WebM) into DIR; commands
+//                   are printed with their time since the start, to cut by
 //
 // The page's status samples (runtime/wine/status.mjs, every 2 s: threads
 // and where they are, system calls, screen, input) are printed as lines.
@@ -70,6 +72,7 @@ const unixtrace = opt('unixtrace', '');
 const port = Number(opt('port', 19601));
 const fresh = flag('fresh');
 const profile = resolve(opt('profile', join(root, 'target/drive/profile')));
+const video = opt('video', '');
 const [dir, exe] = argv;
 if (!dir || !exe) {
   console.error('usage: drive.mjs DIR EXE [--args A] [--out PREFIX] [--present gdi|offscreen] [--debug CH] [--unixtrace CH] [--profile DIR | --fresh] [--port N]');
@@ -84,6 +87,7 @@ await new Promise((r) => setTimeout(r, 500));
 const t0 = Date.now();
 const secs = () => ((Date.now() - t0) / 1000).toFixed(0);
 const launch = { args: ['--enable-unsafe-webgpu'], viewport: { width: 1000, height: 1000 } };
+if (video) launch.recordVideo = { dir: resolve(video), size: launch.viewport };
 const context = fresh ? await (await chromium.launch(launch)).newContext(launch) : await chromium.launchPersistentContext(profile, launch);
 let status = null;
 try {
@@ -118,7 +122,7 @@ try {
     throw new Error('no screen');
   }
   const box = await page.locator('#screen').boundingBox();
-  console.log(`[${secs()} s] screen up`);
+  console.log(`[${secs()} s] screen up at ${Math.round(box.x)},${Math.round(box.y)} ${Math.round(box.width)}x${Math.round(box.height)}`);
 
   let shot = 0;
   let mx = box.x + box.width / 2;
@@ -133,7 +137,7 @@ try {
     }
     const line = lines[done++].trim();
     const [cmd, a, b, c] = line.split(/\s+/);
-    console.log(`> ${line}`);
+    console.log(`[${secs()} s] > ${line}`);
     if (cmd === 'quit') break;
     else if (cmd === 'wait') await page.waitForTimeout(Number(a));
     else if (cmd === 'waitfor') {
