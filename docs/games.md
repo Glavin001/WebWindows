@@ -10,7 +10,7 @@ of their files are in the repository.
 | Quake II demo 3.14 | Software renderer (`ref_soft`, DirectDraw/GDI) | `demo1` renders and runs, in Node and in the browser |
 | Quake II demo 3.14 | OpenGL (`ref_gl`, through `native/opengl32` over Direct3D 9) | `demo1` renders (recorded in Node, replayed on the GPU); not yet tried in a browser |
 | Quake (shareware) on FTEQW | Direct3D 9 | Starts; exits before its window opens |
-| Far Cry demo (2004) | Direct3D 9 (shader model 1 + fixed function) | In the browser: menu, new game, the Fort level rendered (sky, terrain, water, distance fog, HUD), walking and mouse look |
+| Far Cry demo (2004) | Direct3D 9 (shader model 2 + fixed function) | Playable in the browser: menu, new game, the Fort level rendered (sky, terrain, water, foliage, distance fog, HUD), driving the boat, shooting, mouse look |
 | Unreal Tournament 2004 demo | Direct3D 8/9 | In the browser: menus, Instant Action, a DeathMatch on DM-Rankin, walking and turning |
 
 ## Direct3D 9 against Wine's own tests
@@ -32,7 +32,7 @@ it found and measured these backend fixes, from 2105 failures to about 600:
 * pixel shaders 1.x never got `D3DTTFF_PROJECTED`;
 * texture coordinate generation other than pass-through failed to compile.
 
-Far Cry hits several of these (it runs on shader model 1 and fixed
+Far Cry hits several of these (it runs on shader model 2 and fixed
 function: lights, fog, projected lookups, texgen).
 
 ## Far Cry demo
