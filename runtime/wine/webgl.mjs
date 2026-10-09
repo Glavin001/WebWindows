@@ -109,9 +109,11 @@ export class WebGLBridge {
   /**
    * @param {(s: string) => void} log
    * @param {() => OffscreenCanvas} [makeCanvas]  where the context lives
+   * @param {boolean} [trace]  log every call, its result and any GL error
    */
-  constructor(log = () => {}, makeCanvas = () => new OffscreenCanvas(1, 1)) {
+  constructor(log = () => {}, makeCanvas = () => new OffscreenCanvas(1, 1), trace = false) {
     this.log = log;
+    this.trace = trace;
     this.makeCanvas = makeCanvas;
     this.gl = null;
     this.calls = 0;
@@ -129,7 +131,8 @@ export class WebGLBridge {
       return false;
     }
     const gl = canvas.getContext('webgl2', {
-      alpha: false, depth: true, stencil: true, antialias: false, premultipliedAlpha: false,
+      // Alpha as the pixel format has it (destination alpha, copies to RGBA textures).
+      alpha: true, depth: true, stencil: true, antialias: false, premultipliedAlpha: false,
       preserveDrawingBuffer: true, powerPreference: 'high-performance',
     });
     if (!gl) return false;
@@ -256,6 +259,12 @@ export class WebGLBridge {
       r = 0;
     }
     if (f.rkind !== 'v') dv.setUint32(args, typeof r === 'boolean' ? +r : r >>> 0, true);
+    if (this.trace && f.name !== 'glGetError') {
+      // Reading the error clears it: the program's next glGetError sees none.
+      const err = this.gl.getError();
+      this.log(`gl: ${f.name}(${a.map((x) => (Number.isInteger(x) && x > 0xffff ? `0x${x.toString(16)}` : x)).join(', ')})` +
+        `${f.rkind === 'v' ? '' : ` = ${r}`}${err ? ` error 0x${err.toString(16)}` : ''}`);
+    }
     return STATUS_SUCCESS;
   }
 
@@ -441,6 +450,7 @@ export class WebGLBridge {
       gl.bindBuffer(gl.ARRAY_BUFFER, buf);
       gl.bufferData(gl.ARRAY_BUFFER, Math.max(bytes, 4), gl.STREAM_DRAW);
       if (bytes) gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.u8, a.ptr, bytes);
+      if (this.trace) this.log(`gl:   attrib ${i} from 0x${a.ptr.toString(16)}: ${bytes} bytes [${Array.from(this.u8.subarray(a.ptr, a.ptr + Math.min(bytes, 32))).join(' ')}]`);
       if (a.integer) gl.vertexAttribIPointer(i, a.size, a.type, a.stride, 0);
       else gl.vertexAttribPointer(i, a.size, a.type, a.norm, a.stride, 0);
     });
@@ -481,6 +491,7 @@ export class WebGLBridge {
       return;
     }
     const bytes = count * (TYPE_BYTES[type] ?? 1);
+    if (this.trace) this.log(`gl:   indices ${vertices} [${Array.from(this.u8.subarray(ptr, ptr + bytes)).join(' ')}]`);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.scratchIndices);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, Math.max(bytes, 4), gl.STREAM_DRAW);
     if (bytes) gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, 0, this.u8, ptr, bytes);

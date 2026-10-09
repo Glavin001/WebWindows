@@ -225,6 +225,15 @@ try {
     const glSummary = (await out()).match(/summary: .*/)?.[0];
     check('glbench: ran and exited', !!glSummary && (await page.evaluate(() => window.lastExit?.code)) === 0, glSummary);
 
+    // gl2test: OpenGL 2.0 checked pixel by pixel (GLSL, buffers, client
+    // arrays, render to texture, fixed-function state); it exits with the
+    // number of checks that failed.
+    await open(page, 'gl2test.exe', '/tests/programs/gui/gl2test.exe', '&d3dpresent=gdi');
+    await until(() => page.evaluate(() => !!window.lastExit), 120000);
+    const gl2 = (await out()).match(/gl2test: .*/)?.[0];
+    check('gl2test: every check passed', (await page.evaluate(() => window.lastExit?.code)) === 0,
+      gl2 ?? (await out()).split('\n').filter((l) => /^not ok/.test(l)).join(' | '));
+
     // Presenting on the GPU (no readback), to an offscreen buffer the page
     // can read (headless Chromium cannot show the canvas it uses
     // otherwise); and the window moves when its caption is dragged, though

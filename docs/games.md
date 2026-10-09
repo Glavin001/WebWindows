@@ -8,7 +8,7 @@ of their files are in the repository.
 | --- | --- | --- |
 | Cave Story (freeware) | DirectDraw | Playable with sound (Milestone 5) |
 | Quake II demo 3.14 | Software renderer (`ref_soft`, DirectDraw/GDI) | `demo1` renders and runs, in Node and in the browser |
-| Quake II demo 3.14 | OpenGL (`ref_gl`: in the browser on WebGL 2, in Node over Direct3D 9) | `demo1` renders (recorded in Node, replayed on the GPU); not yet tried in a browser |
+| Quake II demo 3.14 | OpenGL (`ref_gl`: in the browser on WebGL 2, in Node over Direct3D 9) | `demo1` renders: in the browser with `ref_gl` on WebGL 2 (about 50 fps on SwiftShader, no GPU); in Node recorded and replayed on the GPU |
 | Quake (shareware) on FTEQW | Direct3D 9 | Starts; exits before its window opens |
 | Far Cry demo (2004) | Direct3D 9 (shader model 2 + fixed function) | Playable in the browser: menu, new game, the Fort level rendered (sky, terrain, water, foliage, distance fog, HUD), driving the boat, shooting, mouse look |
 | Unreal Tournament 2004 demo | Direct3D 8/9 | In the browser: menus, Instant Action, a DeathMatch on DM-Rankin, walking and turning |

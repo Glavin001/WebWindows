@@ -271,7 +271,10 @@ async function runOnWine({ exeName, exePath, exe, folder, times = {}, argv, ft, 
     translate,
     d3d,
     // OpenGL on a WebGL 2 context of the worker's own, made on first use.
-    webgl: typeof OffscreenCanvas === 'function' ? new WebGLBridge(log) : null,
+    // ?unixtrace=gl logs every call.
+    webgl: typeof OffscreenCanvas === 'function'
+      ? new WebGLBridge(log, undefined, String(unixTrace ?? '').split(',').includes('gl'))
+      : null,
     debug,
     files,
     caseNames,

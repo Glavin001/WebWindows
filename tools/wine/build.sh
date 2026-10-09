@@ -95,7 +95,8 @@ for d in $DLLS; do
     # OpenGL into OpenGL ES, whose calls the host runs on WebGL 2.
     gl4es=$WINE_BUILD/gl4es
     gl4es_commit=ec16bedd8819c475326f4f1a3063772c6d986e06
-    if [ "$(cat "$gl4es/.built" 2>/dev/null)" != $gl4es_commit ]; then
+    gl4es_stamp="$gl4es_commit patches 2"
+    if [ "$(cat "$gl4es/.built" 2>/dev/null)" != "$gl4es_stamp" ]; then
       rm -rf "$gl4es"
       mkdir -p "$gl4es"
       git -C "$gl4es" init -q
@@ -105,11 +106,19 @@ for d in $DLLS; do
       # exported aliases, which i686 needs to link.
       sed -i 's/^void gl4es_glGetMinmaxParameter\([if]\)v(/void APIENTRY_GL4ES gl4es_glGetMinmaxParameter\1v(/' \
         "$gl4es/src/gl/getter.c"
+      # glVertexPointer and the other fixed-function arrays share their
+      # state with generic attributes (gl_Vertex is attribute 0) but fold the
+      # bound buffer into the pointer, leaving the buffer (and the integer
+      # flag) a glVertexAttribPointer set: the draw then adds that buffer's
+      # data to the client pointer again.
+      sed -i 's/t\.normalized=n; t\.divisor=0$/t.normalized=n; t.divisor=0; t.buffer=NULL; t.integer=0/' \
+        "$gl4es/src/gl/gl4es.c"
+      grep -q 't.buffer=NULL; t.integer=0' "$gl4es/src/gl/gl4es.c"
       cmake -S "$gl4es" -B "$gl4es/build" -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_C_COMPILER=i686-w64-mingw32-gcc \
         -DCMAKE_RC_COMPILER=i686-w64-mingw32-windres -DCMAKE_BUILD_TYPE=Release -DNOX11=ON -DNOEGL=ON \
         -DSTATICLIB=ON -DNO_LOADER=ON -DNO_INIT_CONSTRUCTOR=ON -DDEFAULT_ES=2 > "$gl4es/cmake.log"
       make -C "$gl4es/build" -j"$(nproc)" > "$gl4es/make.log"
-      echo $gl4es_commit > "$gl4es/.built"
+      echo "$gl4es_stamp" > "$gl4es/.built"
     fi
     w=$repo/native/opengl32-webgl
     mkdir -p dlls/opengl32/webgl/GLES3

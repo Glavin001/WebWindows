@@ -20,7 +20,12 @@ program ──OpenGL 1.x–2.1──▶ opengl32.dll (guest, x86 translated to w
 `tools/wine/build.sh`) does the hard part: the whole of desktop OpenGL 2.1 and
 the extensions games of its era use, fixed function included, in terms of
 OpenGL ES 2. It is built as a static library for i686 MinGW and linked into
-the DLL with `wgl.c`.
+the DLL with `wgl.c`, with two fixes applied by the build: two getters that
+lack their exported aliases' calling convention (an i686 link error), and
+the fixed-function arrays (`glVertexPointer` and the rest), which share
+their state with generic attributes (`gl_Vertex` is attribute 0) but left
+the buffer a `glVertexAttribPointer` had set, so a program mixing shaders
+and fixed function drew from the wrong memory.
 
 ## The ES calls
 
@@ -68,5 +73,15 @@ Direct3D 9 (and so over wined3d's WebGPU backend, recordable with
 
 ## Testing
 
-`tests/web/gui.mjs` runs `gltri` (depth test, texturing, blending, a 2D
-overlay; pixel checks) and `glbench` in headless Chromium.
+`tests/web/gui.mjs` runs, in headless Chromium:
+
+- `gltri`: depth test, texturing, blending, a 2D overlay (pixel checks);
+- `glbench`: textured cubes and particles for 3 seconds;
+- `gl2test`: 17 checks, each a draw read back with `glReadPixels`: GLSL
+  programs with uniform arrays (by name and by consecutive locations),
+  vertex and index buffers, client-side arrays and indices, render to
+  texture, BGRA uploads, display lists, alpha test, linear fog, stencil,
+  multitexturing, `glCopyTexSubImage2D` and generated mipmaps.
+
+`?unixtrace=gl` on the page logs every ES call with its arguments, result
+and GL error, and the client-side data each draw copies.

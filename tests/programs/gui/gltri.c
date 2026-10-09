@@ -1,4 +1,4 @@
-/* OpenGL 1.1 on translated Wine (native/opengl32, over Direct3D 9): a
+/* OpenGL 1.1 on translated Wine (opengl32: WebGL 2 or Direct3D 9): a
  * window, a pixel format, a context, then one frame of what Quake II's
  * renderer does: a clear, a perspective triangle with per-vertex colours,
  * depth-tested quads, a texture with nearest filtering in GL_REPLACE mode,
