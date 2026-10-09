@@ -118,6 +118,32 @@ export const WIN32U_WAITS = {
   },
 };
 
+/** NtNotifyChangeKey and NtNotifyChangeMultipleKeys: `count` arguments,
+ * the event at `eventArg`, Asynchronous last. */
+function notifyChange(h, name, a, count, eventArg) {
+  const args = Array.from({ length: count }, (_, i) => a(i));
+  if (args[count - 1] & 0xff) return unixCall(h, name, ...args);
+  const s = scratch(h) + 16;
+  // A SynchronizationEvent, as Wine's own synchronous path makes.
+  let status = unixCall(h, 'NtCreateEvent', s, 0x1f0003, 0, 1, 0);
+  if (status) return status;
+  const event = h.u32(s);
+  args[eventArg] = event;
+  args[count - 1] = 1;
+  status = unixCall(h, name, ...args);
+  if (status !== STATUS_PENDING) {
+    unixCall(h, 'NtClose', event);
+    return status;
+  }
+  const wait = poll(h, 'NtWaitForSingleObject', [event, 0, zeroTimeout(h)]);
+  const check = () => {
+    const r = wait();
+    if (r !== undefined) unixCall(h, 'NtClose', event);
+    return r;
+  };
+  return h.threads.block(name, h.sys.ret, h.sys.esp, check, Infinity);
+}
+
 export const THREAD_SYSCALLS = {
   // -- waits --------------------------------------------------------------------
   NtWaitForSingleObject(a) {
@@ -138,6 +164,18 @@ export const THREAD_SYSCALLS = {
     if (first !== STATUS_TIMEOUT) return first;
     const check = poll(this, 'NtWaitForSingleObject', [wait, alertable, zeroTimeout(this)]);
     return this.threads.block('NtSignalAndWaitForSingleObject', this.sys.ret, this.sys.esp, check, timeoutDeadline(this, timeout));
+  },
+  // Registry notifications: a synchronous one, Wine's Unix side waits for
+  // inside the module, where the thread cannot switch out, so a thread
+  // waiting for a change (mmdevapi's device watcher, which waits for good)
+  // could wait on top of a thread that has to finish first, such as one
+  // waiting for a reply to a sent message. Here it is registered with an
+  // event and waited for in the scheduler.
+  NtNotifyChangeKey(a) {
+    return notifyChange(this, 'NtNotifyChangeKey', a, 10, 1);
+  },
+  NtNotifyChangeMultipleKeys(a) {
+    return notifyChange(this, 'NtNotifyChangeMultipleKeys', a, 12, 3);
   },
   NtDelayExecution(a) {
     return this.threads.delay('NtDelayExecution', this.sys.ret, this.sys.esp, a(1));
