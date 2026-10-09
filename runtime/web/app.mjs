@@ -779,6 +779,12 @@ $('runsample').onclick = async () => {
     files[name] = await (await fetch(new URL(`../../${path}`, import.meta.url))).arrayBuffer();
   }
   const name = url.split('/').pop();
+  // The address runs it again (?exe=), for a sample without files.
+  if (!sampleFiles.has(url)) {
+    const q = new URLSearchParams(location.search);
+    q.set('exe', new URL(url).pathname);
+    history.replaceState(null, '', `?${q}`);
+  }
   run(name, bytes, files, sampleFiles.has(url) ? name : undefined);
 };
 

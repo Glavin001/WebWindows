@@ -390,6 +390,10 @@ jobs:
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # The pull request's comment of links to the preview (below).
+    permissions:
+      contents: read
+      pull-requests: write
     environment:
       name: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && 'Production' || 'Preview' }}
       url: ${{ steps.vercel.outputs.url }}
@@ -438,6 +442,28 @@ jobs:
           url=$(tail -n 1 vercel.log)/runtime/web/
           echo "url=$url" >> "$GITHUB_OUTPUT"
           echo "Site ($TARGET) of ${GITHUB_SHA::7}: $url" >> "$GITHUB_STEP_SUMMARY"
+          node tools/site/links.mjs "$url" >> "$GITHUB_STEP_SUMMARY"
+      # One comment on the pull request, updated by each deployment: the
+      # preview's link and one-click links to the test programs
+      # (tools/site/links.mjs).
+      - name: Links to the preview on the pull request
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          URL: ${{ steps.vercel.outputs.url }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          marker='<!-- webwindows-preview -->'
+          { echo "$marker"; echo "### Preview of ${HEAD_SHA::7}"; echo; node tools/site/links.mjs "$URL"; } > comment.md
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+            --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n 1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@comment.md > /dev/null
+          else
+            gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@comment.md > /dev/null
+          fi
 
   # The Wine tests, in parallel shards on the build above.
   wine:
