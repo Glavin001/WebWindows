@@ -7,6 +7,7 @@ import { InputRing } from '../wine/input-ring.mjs';
 import { createAudioRing, playAudioRing } from '../wine/audio-sink.mjs';
 import { windowsKey, KEYEVENTF_KEYUP } from './keys.mjs';
 import { hasMemory64 } from '../runtime.mjs';
+import { parseVisual, totals } from './d3d9-visual.mjs';
 
 const $ = (id) => document.getElementById(id);
 const out = $('out');
@@ -463,6 +464,7 @@ async function debugReport() {
     r.webgpu = String(e);
   }
   r.run = window.webwindows.lastRun();
+  if (selfTest) r.gpuSelfTest = { ...selfTest, headless: undefined, native: undefined };
   r.previousRun = readRecord(PREVIOUS);
   r.statusHistory = statusHistory.slice();
   r.d3d = {
@@ -504,6 +506,8 @@ $('debugreport').onclick = () => {
 window.webwindows = {
   /** Saves the debug report (see debugReport) and returns it. */
   debugReport: () => debugReport(),
+  /** Runs the GPU self-test (see gpuSelfTest); the results, also kept for the debug report. */
+  gpuSelfTest: () => gpuSelfTest(),
   /** The latest status sample, and the last 60. */
   status: () => statusHistory.at(-1) ?? null,
   statusHistory: () => statusHistory.slice(),
@@ -520,9 +524,94 @@ window.webwindows = {
   },
 };
 
+// ---- GPU self-test ----------------------------------------------------------
+//
+// Wine's own Direct3D 9 rendering tests (dlls/d3d9/tests/visual.c: about 130
+// functions that draw and read the pixels back) on this browser's GPU, built
+// and run as tests/web/d3d9-visual.mjs does: ten functions per run, a run
+// that takes too long stopped. The failures per function are compared with
+// the same tests in headless Chromium on the build machine
+// (tests/web/baseline/d3d9_visual.json) and on native Wine's OpenGL backend
+// (d3d9_visual_native.json), and kept for the debug report, with the first
+// failure lines of each function (they name the colors expected and read).
+// ?selftest=1 starts it when the page loads.
+const SELFTEST_LIMIT_MS = 300000;
+let selfTest = null;
+const fetchJson = (path) => fetch(new URL(path, import.meta.url)).then((r) => (r.ok ? r.json() : null), () => null);
+function showSelfTest(t, done) {
+  const sum = totals(t.results);
+  const ref = (base) => (base ? totals(Object.fromEntries(Object.keys(t.results).map((k) => [k, base[k] ?? {}]))).failures : '?');
+  $('selftestbox').hidden = false;
+  $('selftestsum').textContent =
+    `${done ? 'Done' : 'Running'}: ${sum.functions} of ${t.names.length} functions, ${sum.failures} failures, ${sum.broken} crashed or hung` +
+    ` (the same functions: ${ref(t.headless)} in headless Chromium, ${ref(t.native)} on native Wine) · ${(t.ms / 1000).toFixed(0)} s` +
+    (done ? '. "Debug report" saves them.' : '');
+  // The functions that did worse than headless Chromium did.
+  const rows = Object.entries(t.results).filter(([k, r]) => r.status !== 'done' || r.failures > (t.headless?.[k]?.failures ?? 0));
+  const tbl = $('selftesttable');
+  tbl.replaceChildren();
+  const tr = (cells, tag = 'td') => {
+    const row = document.createElement('tr');
+    for (const c of cells) row.append(Object.assign(document.createElement(tag), { textContent: c }));
+    tbl.append(row);
+    return row;
+  };
+  if (rows.length) tr(['function (worse than headless Chromium)', 'here', 'headless', 'native', 'first failure'], 'th');
+  const cell = (r) => (!r ? '?' : r.status === 'done' ? String(r.failures) : r.status);
+  for (const [k, r] of rows) tr([k, cell(r), cell(t.headless?.[k]), cell(t.native?.[k]), r.failed?.[0] ?? '']);
+}
+async function gpuSelfTest() {
+  const dir = '../../target/d3d9-visual/app/';
+  const [exe, meta, headless, native] = await Promise.all([
+    fetch(new URL(dir + 'd3d9_test.exe', import.meta.url)).then((r) => (r.ok ? r.arrayBuffer() : null), () => null),
+    fetchJson(dir + 'd3d9_test.json'),
+    fetchJson('../../tests/web/baseline/d3d9_visual.json'),
+    fetchJson('../../tests/web/baseline/d3d9_visual_native.json'),
+  ]);
+  if (!exe || !meta) {
+    $('status').textContent = 'The GPU self-test is not on this site (target/d3d9-visual/app: node tests/web/d3d9-visual.mjs --build-only)';
+    return;
+  }
+  $('wine').checked = true;
+  writeUrl();
+  const names = meta.names;
+  const t0 = performance.now();
+  selfTest = { created: new Date().toISOString(), settings: settings(), names, headless, native, results: {}, runs: [], ms: 0 };
+  const ranges = [];
+  for (let a = 0; a < names.length; a += 10) ranges.push([a, Math.min(a + 10, names.length)]);
+  for (let k = 0; k < ranges.length; k++) {
+    const [a, b] = ranges[k];
+    const started = performance.now();
+    const timer = setTimeout(stopRun, SELFTEST_LIMIT_MS);
+    const m = await run('d3d9_test.exe', exe.slice(0), {}, undefined, {}, ['visual', `${a}-${b}`]);
+    clearTimeout(timer);
+    const r = parseVisual(out.textContent, a, b, names, !m.stopped);
+    Object.assign(selfTest.results, r.results);
+    ranges.push(...r.next);
+    selfTest.runs.push({ range: [a, b], code: m.code, stopped: !!m.stopped, ms: Math.round(performance.now() - started), log: logEl.textContent.slice(-4000) });
+    selfTest.ms = performance.now() - t0;
+    showSelfTest(selfTest, false);
+    $('status').textContent = `GPU self-test: ${Object.keys(selfTest.results).length} of ${names.length} functions`;
+  }
+  showSelfTest(selfTest, true);
+  $('status').textContent = `GPU self-test done: ${totals(selfTest.results).failures} failures`;
+  return selfTest;
+}
+$('selftest').onclick = () => {
+  $('selftest').disabled = true;
+  gpuSelfTest().finally(() => ($('selftest').disabled = false));
+};
+
 // ---- Running ---------------------------------------------------------------
 
-async function run(exeName, exeBytes, files, exePath, times = {}) {
+// The run in progress: stopRun() ends it (the GPU self-test stops a test
+// that takes too long).
+let stopCurrent = null;
+function stopRun() {
+  stopCurrent?.();
+}
+
+async function run(exeName, exeBytes, files, exePath, times = {}, argv = null) {
   saveRecord();
   startRecord(exePath ?? exeName);
   out.textContent = '';
@@ -568,6 +657,7 @@ async function run(exeName, exeBytes, files, exePath, times = {}) {
         updateMouseHint();
         window.screenShown = true;
       } else if (m.type === 'exit') {
+        stopCurrent = null;
         setClip(null);
         $('status').textContent = m.code === null ? `${exeName} stopped with an error` : `${exeName} exited with code ${m.code} (${m.runMs?.toFixed(0)} ms)`;
         $('run').disabled = false;
@@ -578,6 +668,7 @@ async function run(exeName, exeBytes, files, exePath, times = {}) {
         resolve(m);
       }
     };
+    stopCurrent = () => worker.onmessage({ data: { type: 'exit', code: null, stopped: true } });
     // The worker itself failed (an error out of the runtime, or out of memory).
     worker.onerror = (e) => {
       out.textContent += `\n*** worker error: ${e.message ?? e}\n`;
@@ -591,7 +682,7 @@ async function run(exeName, exeBytes, files, exePath, times = {}) {
         exeBytes,
         files,
         times,
-        argv: args ? args.split(/\s+/) : [],
+        argv: argv ?? (args ? args.split(/\s+/) : []),
         translatorUrl,
         noCache: setting('nocache'),
         // The program is translated with bounds traps instead of memory
@@ -690,6 +781,8 @@ $('runsample').onclick = async () => {
   const name = url.split('/').pop();
   run(name, bytes, files, sampleFiles.has(url) ? name : undefined);
 };
+
+if (params.get('selftest') === '1') $('selftest').click();
 
 // ?exe=<url> runs a program directly (used by tests and demos).
 if (params.get('exe')) {

@@ -31,6 +31,12 @@
   #perf[hidden] { display: none; }
   details.status { margin: 0 0 12px; }
   details.status summary { cursor: pointer; margin-bottom: 8px; }
+  #selftestbox { margin: 0 0 12px; font-size: 13px; }
+  #selftestbox summary { cursor: pointer; }
+  #selftestbox .tablewrap { overflow-x: auto; }
+  #selftesttable { border-collapse: collapse; font: 12px/1.4 ui-monospace, monospace; }
+  #selftesttable th, #selftesttable td { text-align: left; padding: 2px 8px 2px 0; vertical-align: top; }
+  #selftesttable td:last-child { white-space: nowrap; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -47,6 +53,7 @@
     <label class="status"><input id="wine" type="checkbox"> on Wine</label>
     <label class="status" title="?nocache=1: translate again instead of using the cached translation"><input id="nocache" type="checkbox"> no cache</label>
     <label class="status" title="?stats=0 hides it: frame rate and load above the screen"><input id="showperf" type="checkbox" checked> stats</label>
+    <button id="selftest" title="?selftest=1: run Wine's Direct3D 9 rendering tests on this GPU (a few minutes) and compare; Debug report then includes the results">GPU self-test</button>
     <button id="debugreport" title="Save a file with the logs, settings, GPU details and screenshots for a bug report">Debug report</button>
   </div>
   <div class="row">
@@ -86,6 +93,10 @@
     <button id="runsample">Run</button>
   </div>
   <div id="status" class="status"></div>
+  <details id="selftestbox" open hidden><summary>GPU self-test</summary>
+    <div id="selftestsum" class="status"></div>
+    <div class="tablewrap"><table id="selftesttable"></table></div>
+  </details>
   <div id="perf" hidden aria-live="off"></div>
   <div id="screenbox"><canvas id="screen" width="800" height="600" tabindex="0" hidden aria-label="Windows screen"></canvas></div>
   <pre id="out"></pre>

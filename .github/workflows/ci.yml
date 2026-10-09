@@ -261,6 +261,10 @@ jobs:
           exit "$(cat "$RUNNER_TEMP/rust.status")"
       - name: The Wine bundle
         run: node runtime/node/wine-bundle.mjs
+      # Wine's Direct3D 9 rendering tests, numbered (tests/web/d3d9-visual.mjs),
+      # for the page's GPU self-test.
+      - name: The GPU self-test program
+        run: node tests/web/d3d9-visual.mjs --build-only
       # One archive: it keeps the translator executable, and it is quicker
       # to move than the bundle's files one by one.
       - name: Pack the build
@@ -268,7 +272,7 @@ jobs:
           tar -cf - target/release/wwt target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm \
             target/wasm32-unknown-unknown/release-wasm/wwt_heap.wasm target/wasm32-unknown-unknown/release-wasm/wwt_strings.wasm \
             target/wine-unix/wine_unix.mjs target/wine-unix/wine_unix.wasm target/wine-unix/wine_unix.json \
-            target/wine-unix/win32u_syscalls.json target/wine-unix/nt_calls.json target/wine-bundle runtime/d3dgpu/pkg \
+            target/wine-unix/win32u_syscalls.json target/wine-unix/nt_calls.json target/wine-bundle runtime/d3dgpu/pkg target/d3d9-visual/app \
             | zstd -T0 -3 -o wine-build.tar.zst
           ls -la wine-build.tar.zst
       - uses: actions/upload-artifact@v4
