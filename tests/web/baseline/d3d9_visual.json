@@ -33,7 +33,7 @@
   },
   "color_fill_test": {
     "status": "done",
-    "failures": 16
+    "failures": 0
   },
   "fog_test": {
     "status": "done",
@@ -85,7 +85,7 @@
   },
   "pixelshader_blending_test": {
     "status": "done",
-    "failures": 3
+    "failures": 0
   },
   "test_generate_mipmap": {
     "status": "done",
@@ -185,7 +185,7 @@
   },
   "texbem_test": {
     "status": "done",
-    "failures": 9
+    "failures": 0
   },
   "texdepth_test": {
     "status": "done",
@@ -221,7 +221,7 @@
   },
   "pretransformed_varying_test": {
     "status": "done",
-    "failures": 1
+    "failures": 0
   },
   "vface_register_test": {
     "status": "done",
@@ -277,7 +277,7 @@
   },
   "fp_special_test": {
     "status": "done",
-    "failures": 3
+    "failures": 0
   },
   "depth_bounds_test": {
     "status": "done",
@@ -285,7 +285,7 @@
   },
   "srgbwrite_format_test": {
     "status": "done",
-    "failures": 2
+    "failures": 0
   },
   "update_surface_test": {
     "status": "done",
@@ -417,11 +417,11 @@
   },
   "test_evict_bound_resources": {
     "status": "done",
-    "failures": 1
+    "failures": 0
   },
   "test_max_index16": {
     "status": "done",
-    "failures": 2
+    "failures": 0
   },
   "test_backbuffer_resize": {
     "status": "done",

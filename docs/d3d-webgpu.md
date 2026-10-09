@@ -417,9 +417,17 @@ game ─► d3d9.dll ─► wined3d.dll (adapter_wgpu) ─► d3dgpu batches in 
   the constant buffers the byte ranges written since they were last sent.
   Constant buffers stay CPU-side.
 * **Not yet:** Direct3D 10/11 through wined3d (shader model 4/5, views,
-  UAVs, compute, queries), GPU blits (`StretchRect` runs on the CPU
-  blitter), fog, point sprites, MSAA, mipmap generation, presenting other
-  than 32-bit back buffers.
+  UAVs, compute, queries), GPU colour blits (`StretchRect` between colour
+  surfaces runs on the CPU blitter; depth surfaces are copied on the GPU),
+  point sprites, MSAA, mipmap generation, presenting other than 32-bit
+  back buffers, YUV surfaces.
+* **Wine's Direct3D 9 rendering tests** (`node tests/web/d3d9-visual.mjs`,
+  `dlls/d3d9/tests/visual.c`; `--native` for native Wine): the baseline is
+  `tests/web/baseline/d3d9_visual.json`. What remains is mostly where
+  WebGPU differs from Direct3D 9 hardware: cube maps always filter across
+  faces (`test_cube_wrap`), division rounding at exact integers
+  (`test_texture_transform_flags`), the 5-bit `L6V5U5` format's
+  precision, and writes outside a locked buffer range.
 
 ![d3d9tri on translated Wine in headless Chromium](d3d9tri-browser.png)
 
@@ -509,9 +517,9 @@ profile with Wine's function names.
 * **Point size and sprites** (points are 1 px), more than 8 vertex streams
   and unaligned vertex layouts (skipped and logged; `d3dgpu-emu` has the
   repacking), border colour and mirror-once (clamped), `MIPMAPLODBIAS`,
-  sRGB writes, MSAA, occlusion queries, auto-generated mipmaps.
-* **Depth:** readback of D24/D32 formats, `StretchRect` between depth
-  surfaces, lockable depth.
+  MSAA, occlusion queries, auto-generated mipmaps.
+* **Depth:** readback of D24/D32 formats, lockable depth, stencil in
+  depth `StretchRect` (WebGPU shaders can't write stencil).
 * **Derivative hoisting** (see Shaders), pixel shader 1.x register range.
 * **Threads:** the batch slot is single-buffered and copied out of shared
   memory; reading batches directly from shared wasm memory needs the
