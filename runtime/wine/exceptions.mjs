@@ -301,12 +301,22 @@ export function installExceptions(h, ntdllExport) {
     }
     return out.join(' ');
   };
+  // Guest bytes from `addr`, as hex, where committed: code a program
+  // decrypted or wrote at run time is only in memory, not in its file.
+  const bytesAt = (addr, n) => {
+    let s = '';
+    for (let a = addr >>> 0; a < (addr >>> 0) + n; a++) s += a >= 0x10000 && h.vm.prot[h.vm.pageOf(a)] ? h.m.u8[a].toString(16).padStart(2, '0') : '??';
+    return s;
+  };
   h.m.onFault = (cpu, code, eip, info, trap) => {
     if (traced < (h.traceFaults ?? envFaults) && ++traced) {
       const t = h.threads.current;
+      const regs = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi'].map((n, i) => `${n}=${hex(h.m.reg(cpu, i) >>> 0)}`).join(' ');
       h.stderr(
         new TextEncoder().encode(
-          `[fault] ${hex(code >>> 0)} at ${h.describeAddress(eip >>> 0)} info ${hex(info >>> 0)} thread ${hex(t?.tid ?? 0)}; frames ${t ? h.backtrace(t, 12).join(' < ') : '-'}; seh ${sehChain(cpu)} esp ${hex(h.m.reg(cpu, 4))}\n`,
+          `[fault] ${hex(code >>> 0)} at ${h.describeAddress(eip >>> 0)} info ${hex(info >>> 0)} thread ${hex(t?.tid ?? 0)}; frames ${t ? h.backtrace(t, 12).join(' < ') : '-'}; seh ${sehChain(cpu)} esp ${hex(h.m.reg(cpu, 4))}\n` +
+            `[fault]   ${regs}\n` +
+            `[fault]   code ${hex((eip - 32) >>> 0)}: ${bytesAt(eip - 32, 32)} | ${bytesAt(eip, 16)}\n`,
         ),
       );
     }
