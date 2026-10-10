@@ -277,6 +277,21 @@ export class WineHost {
     this.aliasThunks = opts.aliasThunks ?? true;
     this.modulesByPath = new Map();
     this.unimplemented = new Map();
+    /**
+     * Paths the program asked for that do not exist (opens and attribute
+     * queries), with how often: in status samples and the page's debug
+     * report, so a file the program needs but did not get shows by name.
+     * Most entries are ordinary probes (a DLL search path, an optional
+     * config file); a game's own data among them is the finding.
+     */
+    this.missingFiles = new Map();
+    /**
+     * Directory listings the program took ("dir\mask" -> entries found,
+     * the first time): programs that find their data by listing (Far Cry's
+     * shaders) get fewer entries instead of a missing file when the folder
+     * is incomplete.
+     */
+    this.dirListings = new Map();
     /** A ./status.mjs StatusSampler a host can attach; ticked from system calls and preemption. */
     this.status = null;
     this.statusCalls = 0;
@@ -342,6 +357,18 @@ export class WineHost {
    */
   rememberCase(path) {
     recordCase(this.caseNames, path);
+  }
+
+  /** Notes a directory listing and how many entries it found (see dirListings). */
+  noteListing(key, entries) {
+    if (!this.dirListings.has(key) && this.dirListings.size < 5000) this.dirListings.set(key, entries);
+  }
+
+  /** Notes a path the program looked for and did not find (see missingFiles). */
+  noteMissing(path) {
+    const n = this.missingFiles.get(path);
+    if (n !== undefined) this.missingFiles.set(path, n + 1);
+    else if (this.missingFiles.size < 5000) this.missingFiles.set(path, 1);
   }
 
   /** Whether a program's pointer to `size` bytes is committed memory above the null page. */

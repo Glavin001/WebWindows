@@ -652,7 +652,10 @@ export const SYSCALLS = {
     const path = oaPath(this, a(0));
     const fi = path && fileInfo(this, path);
     this.log(`NtQueryAttributesFile ${path} -> ${fi ? (fi.dir ? 'dir' : fi.size) : 'missing'}`);
-    if (!fi) return STATUS.OBJECT_NAME_NOT_FOUND;
+    if (!fi) {
+      if (path) this.noteMissing(path);
+      return STATUS.OBJECT_NAME_NOT_FOUND;
+    }
     const buf = a(1);
     writeTimes(this, buf, path);
     this.w32(buf + 32, fi.dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
@@ -661,7 +664,10 @@ export const SYSCALLS = {
   NtQueryFullAttributesFile(a) {
     const path = oaPath(this, a(0));
     const fi = path && fileInfo(this, path);
-    if (!fi) return STATUS.OBJECT_NAME_NOT_FOUND;
+    if (!fi) {
+      if (path) this.noteMissing(path);
+      return STATUS.OBJECT_NAME_NOT_FOUND;
+    }
     const buf = a(1);
     writeTimes(this, buf, path);
     this.w64(buf + 32, fi.size);
@@ -869,6 +875,9 @@ export const SYSCALLS = {
         .filter(([n]) => re.test(n))
         .map(([name, isDir]) => ({ name: this.caseNames.get(prefix + name) ?? name, isDir }));
       dir.listPos = 0;
+      // The mask as the program wrote it (kernelbase's DOS wildcards back to * ? .).
+      const dosMask = mask.toLowerCase().replace(/</g, '*').replace(/>/g, '?').replace(/"/g, '.');
+      this.noteListing(`${dir.path}\\${dosMask}`, dir.listing.filter(({ name }) => name !== '.' && name !== '..').length);
       if (!dir.listing.length) {
         iosb(this, piosb, STATUS.NO_SUCH_FILE, 0);
         return STATUS.NO_SUCH_FILE;
@@ -1050,6 +1059,7 @@ function openFile(h, ph, oa, piosb, disposition, options = 0) {
   // FILE_SUPERSEDE 0, OPEN 1, CREATE 2, OPEN_IF 3, OVERWRITE 4, OVERWRITE_IF 5
   if (!fi) {
     if (disposition === 1 || disposition === 4) {
+      h.noteMissing(path);
       const parent = path.replace(/\\[^\\]*$/, '');
       return h.isDir(parent) ? STATUS.OBJECT_NAME_NOT_FOUND : STATUS.OBJECT_PATH_NOT_FOUND;
     }
