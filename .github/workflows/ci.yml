@@ -80,7 +80,9 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install toolchains
-        run: tools/ci/apt-install.sh gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 gcc-mingw-w64-x86-64 csmith binaryen mesa-vulkan-drivers
+        uses: ./.github/actions/apt
+        with:
+          packages: gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 gcc-mingw-w64-x86-64 csmith binaryen mesa-vulkan-drivers
       - name: Format
         run: cargo fmt --all --check
       - name: Build
@@ -174,7 +176,9 @@ jobs:
           shared-key: linux
           save-if: false
       - name: Install toolchains
-        run: tools/ci/apt-install.sh gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 gcc-mingw-w64-x86-64
+        uses: ./.github/actions/apt
+        with:
+          packages: gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 gcc-mingw-w64-x86-64
       # The translator, and the one compiled to WebAssembly that translates
       # what was not translated ahead of time (run.mjs).
       - name: Build
@@ -426,10 +430,11 @@ jobs:
             target/bench-src
             target/coremark-src
           key: bench-src-${{ hashFiles('tools/bench/sources.mjs') }}
+      - uses: ./.github/actions/apt
+        with:
+          packages: gcc-mingw-w64-i686 binutils-mingw-w64-i686
       - name: Benchmark programs from source (tools/site/apps.mjs)
-        run: |
-          tools/ci/apt-install.sh gcc-mingw-w64-i686 binutils-mingw-w64-i686
-          node tools/site/apps.mjs
+        run: node tools/site/apps.mjs
       - name: Deploy the site to Vercel
         id: vercel
         env:
