@@ -31,6 +31,16 @@ use crate::reducible;
 /// at.
 const MAX_FACTS: usize = 64;
 
+/// Whether an operation writes guest memory that may hold code, so its
+/// translation checks the store map for it (`FnGen::check_code_write`).
+fn may_write_code(op: &Op) -> bool {
+    match op {
+        Op::Store { mem, .. } | Op::AtomicRmw { mem, .. } | Op::AtomicCmpxchg { mem, .. } => mem.space == Space::Guest,
+        Op::MemCopy { .. } | Op::MemFill { .. } => true,
+        _ => false,
+    }
+}
+
 /// Values by vreg in the order they were added, which can be undone back to
 /// an earlier length: facts and aliases scoped to the dominator subtree
 /// being emitted (`FnGen::do_tree`).
@@ -744,6 +754,19 @@ struct FnGen<'g, 'a> {
     pending: Vec<(V, Inst, StateMask)>,
     /// Scratch for the store-map byte in code-write checks.
     tmp_map: u32,
+    /// Set (to 1) by a store that hit a page with translated code
+    /// (`check_code_write`): the rest of this function was translated from
+    /// the bytes before that store, so it returns to the dispatcher at the
+    /// next instruction boundary, which then translates the bytes as they
+    /// are now (`smc_exit`). x86 runs the instructions it just wrote, also
+    /// the next ones in line; protectors and packers decrypt code that way.
+    /// UNASSIGNED in functions without stores that check for code writes.
+    smc_local: u32,
+    /// Whether the instruction being emitted checked a store for code writes.
+    smc_checked: bool,
+    /// Blocks entered from a block whose last instruction may write code:
+    /// they check `smc_local` on entry.
+    smc_entry: Vec<bool>,
     tmp_i32b: u32,
     tmp_i64: u32,
     tmp_i64b: u32,
@@ -819,6 +842,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
             use_count: vec![],
             pending: vec![],
             tmp_map: 0,
+            smc_local: UNASSIGNED,
+            smc_checked: false,
+            smc_entry: vec![],
             tmp_i32b: 0,
             tmp_i64: 0,
             tmp_i64b: 0,
@@ -847,6 +873,19 @@ impl<'g, 'a> FnGen<'g, 'a> {
         }
         g.fault_eip = g.new_local(m.code_type());
         g.tmp_map = g.new_local(ValType::I32);
+        if m.cfg.smc_checks && f.blocks.iter().any(|b| b.insts.iter().any(|i| may_write_code(&i.op))) {
+            g.smc_local = g.new_local(ValType::I32);
+            g.smc_entry = vec![false; f.blocks.len()];
+            for b in &f.blocks {
+                // The last instruction's IR: those with the last eip.
+                let last = b.insts.last().map(|i| i.eip);
+                if b.insts.iter().rev().take_while(|i| Some(i.eip) == last).any(|i| may_write_code(&i.op)) {
+                    for s in b.term.successors() {
+                        g.smc_entry[s as usize] = true;
+                    }
+                }
+            }
+        }
         g.tmp_i32b = g.new_local(ValType::I32);
         g.tmp_i64 = g.new_local(ValType::I64);
         // Scratch for 64-bit addresses, only in code that has them (keeps
@@ -1851,13 +1890,29 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.alias_by_root.clear();
         self.cur_block = b;
         let deferred = self.stackify(blk);
+        // Entered after a block whose last instruction may have written code
+        // (a lifted block has the address it starts at).
+        if self.smc_entry.get(b as usize).copied().unwrap_or(false) && (b as usize) < self.lifted {
+            self.smc_exit(self.a.dirty_in[b as usize], blk.addr);
+        }
+        let mut smc_pending = false;
+        let mut prev_eip = None;
         for (k, inst) in blk.insts.iter().enumerate() {
+            // The first instruction boundary after one that may have
+            // written code.
+            if smc_pending && prev_eip != Some(inst.eip) {
+                self.smc_exit(trace[k], inst.eip);
+                smc_pending = false;
+            }
+            prev_eip = Some(inst.eip);
+            self.smc_checked = false;
             if deferred[k] {
                 self.pending
                     .push((inst.dst.unwrap(), inst.clone(), trace[k]));
             } else {
                 self.inst(inst, trace[k]);
             }
+            smc_pending |= self.smc_checked;
             if let Some(d) = inst.dst {
                 // Facts and aliases about the old value of `d` are void.
                 self.facts_local.remove(&d);
@@ -2148,6 +2203,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
     /// with 64-bit memory it must have passed the address check (the store
     /// map covers the guest region).
     fn check_code_write(&mut self, ma: u32, off: u32) {
+        self.smc_checked = true;
         if self.mem64() {
             // page = (ma + off) >> 12; L1 entries are 8 bytes. A page with
             // code is below the guest limit, so within the lookup (64-bit
@@ -2184,6 +2240,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             self.emit(W::I32Const(!(store_map::CODE as i32)));
             self.emit(W::I32And);
             self.emit(W::I32Store8(memarg(0, 0)));
+            self.smc_mark();
             self.emit(W::End);
             return;
         }
@@ -2219,6 +2276,32 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(W::I32Const(!(store_map::CODE as i32)));
         self.emit(W::I32And);
         self.emit(W::I32Store8(memarg(o, 0)));
+        self.smc_mark();
+        self.emit(W::End);
+    }
+
+    /// In a store's code-write branch: the function must stop after this
+    /// instruction (see `smc_local`).
+    fn smc_mark(&mut self) {
+        if self.smc_local != UNASSIGNED {
+            self.emit(W::I32Const(1));
+            self.emit(W::LocalSet(self.smc_local));
+        }
+    }
+
+    /// Returns to the dispatcher at `addr`, with the state in `dirty`
+    /// written back, if a store since the last check hit translated code.
+    fn smc_exit(&mut self, dirty: StateMask, addr: u64) {
+        if self.smc_local == UNASSIGNED {
+            return;
+        }
+        self.emit(W::LocalGet(self.smc_local));
+        self.emit(W::If(BlockType::Empty));
+        self.ctx.push(Ctx::If);
+        self.sync(dirty);
+        self.code_const(addr);
+        self.emit(W::Return);
+        self.ctx.pop();
         self.emit(W::End);
     }
 
