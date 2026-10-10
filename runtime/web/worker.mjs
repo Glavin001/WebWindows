@@ -186,8 +186,10 @@ async function runOnWine({ exeName, exePath, exe, folder, times = {}, argv, ft, 
   files.set(exeDos, exe);
   const translateTimed = (path, bytes) => {
     const t = performance.now();
-    // The program alone with bounds traps (Wine's DLLs come translated in the bundle).
-    const w = ft.translatePe(bytes, { mem64, guestLimit: WINE_GUEST_LIMIT, memTraps: memTraps && path === exeDos });
+    // With bounds traps where the engine maps them: the program and its own
+    // DLLs (a game's engine), and Wine's DLLs moved from their base. The
+    // bundle's are translated ahead of time, faithfully, for every browser.
+    const w = ft.translatePe(bytes, { mem64, guestLimit: WINE_GUEST_LIMIT, memTraps });
     log(`translated ${path} in ${(performance.now() - t).toFixed(0)} ms`);
     return w;
   };
