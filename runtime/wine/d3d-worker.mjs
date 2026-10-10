@@ -27,7 +27,63 @@ let capture = 'idle'; // 'requested', 'reading'
 const log = (text) => (port ?? self).postMessage({ type: 'log', text });
 // {type: 'stats'} from the page: once a second, how busy this worker was.
 let stats = null;
+// Frame timing for the page's overlay, {type: 'perf'} twice a second:
+// presented frames per second, average and worst time between them, the
+// share of the time spent executing batches, and draws per frame.
+let perf = { since: performance.now(), frames: 0, last: 0, worst: 0, execute: 0, draws: 0 };
+function reportPerf(now) {
+  const dt = now - perf.since;
+  if (dt < 500) return;
+  let draws = perf.draws;
+  try {
+    draws = JSON.parse(renderer.stats_json()).draws ?? 0;
+  } catch {}
+  const f = perf.frames;
+  port.postMessage({
+    type: 'perf',
+    fps: (f * 1000) / dt,
+    frameMs: f ? dt / f : 0,
+    worstMs: perf.worst,
+    busy: perf.execute / dt,
+    drawsPerFrame: f ? (draws - perf.draws) / f : 0,
+  });
+  perf = { since: now, frames: 0, last: perf.last, worst: 0, execute: 0, draws };
+}
+// {type: 'debug'}: the GPU adapter, the core's counters, the presentation's
+// size, and a copy of the last presented frame (the canvas is left alone).
+async function debugReply() {
+  const json = (f) => {
+    try {
+      return JSON.parse(f());
+    } catch (err) {
+      return String(err);
+    }
+  };
+  let frame = null;
+  if (renderer && capture === 'idle' && renderer.start_present_read()) {
+    const width = renderer.present_read_width();
+    let pixels;
+    for (let i = 0; i < 1000 && !(pixels = renderer.frame_ready()); i++) await new Promise((r) => setTimeout(r, 5));
+    if (pixels?.length) frame = { width, height: pixels.length / 4 / width, pixels };
+  }
+  port.postMessage({
+    type: 'debug',
+    adapter: renderer ? json(() => renderer.adapter_info_json()) : null,
+    stats: renderer ? json(() => renderer.stats_json()) : null,
+    gpuInFlight: renderer?.gpu_in_flight() ?? null,
+    surfaceSize,
+    frame,
+  });
+}
+// The back buffer size the page last gave, for {type: 'debug'}.
+let surfaceSize = null;
 function onPortMessage(e) {
+  // {type: 'debug'} from the page's debug report: the GPU adapter, the
+  // core's counters and the presentation's size.
+  if (e.data?.type === 'debug') {
+    debugReply();
+    return;
+  }
   if (e.data?.type === 'stats') stats = { since: performance.now(), execute: 0, gpuWait: 0, frames: 0, batches: 0 };
   if (e.data?.type !== 'snapshot' || !renderer || capture !== 'idle') return;
   capture = 'requested';
@@ -96,6 +152,16 @@ async function loop() {
       await (present & PRESENT_VSYNC ? nextFrame() : nextTask());
       while (renderer.gpu_in_flight() >= MAX_FRAME_LATENCY) await new Promise((r) => setTimeout(r, 1));
     }
+    if (port) {
+      const now = performance.now();
+      perf.execute += t1 - t0;
+      if (present >= 0) {
+        if (perf.last) perf.worst = Math.max(perf.worst, now - perf.last);
+        perf.last = now;
+        perf.frames++;
+      }
+      reportPerf(now);
+    }
     if (stats) {
       const now = performance.now();
       stats.execute += t1 - t0;
@@ -123,6 +189,7 @@ addEventListener('unhandledrejection', (e) => fatal(`unhandled rejection: ${e.re
 
 onmessage = async (e) => {
   if (e.data.type === 'resize') {
+    surfaceSize = [e.data.width, e.data.height];
     renderer?.resize(e.data.width, e.data.height);
     return;
   }

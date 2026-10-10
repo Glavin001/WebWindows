@@ -92,7 +92,8 @@ impl Renderer {
             .map_err(|e| JsError::new(&format!("no WebGPU adapter: {e}")))?;
         let wanted = wgpu::Features::CLIP_DISTANCES
             | wgpu::Features::TEXTURE_COMPRESSION_BC
-            | wgpu::Features::FLOAT32_FILTERABLE;
+            | wgpu::Features::FLOAT32_FILTERABLE
+            | wgpu::Features::FLOAT32_BLENDABLE;
         let features = if optional { adapter.features() & wanted } else { wgpu::Features::empty() };
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -292,11 +293,28 @@ impl Renderer {
     /// Starts reading the headless front buffer of window 1. Returns false
     /// when nothing was presented headlessly.
     pub fn start_frame_read(&mut self) -> bool {
-        let device = self.core.device().clone();
-        let queue = self.core.queue().clone();
         let Some(p) = self.core.presenter(WINDOW) else { return false };
         let Some(h) = p.as_any().downcast_mut::<HeadlessPresenter>() else { return false };
-        let Some((tex, (w, h))) = h.front_buffer() else { return false };
+        let Some((tex, (w, h))) = h.front_buffer().map(|(t, s)| (t.clone(), s)) else { return false };
+        self.start_read(&tex, w, h)
+    }
+
+    /// Starts reading a copy of the last presented frame, wherever it was
+    /// presented (the canvas included, which stays as it is); read it with
+    /// [`Renderer::frame_ready`]. Returns false when nothing was presented.
+    pub fn start_present_read(&mut self) -> bool {
+        let Some((tex, (w, h))) = self.core.copy_last_present() else { return false };
+        self.start_read(&tex, w, h)
+    }
+
+    /// The width of the frame [`Renderer::start_present_read`] reads.
+    pub fn present_read_width(&self) -> u32 {
+        self.read.as_ref().map_or(0, |r| r.2)
+    }
+
+    fn start_read(&mut self, tex: &wgpu::Texture, w: u32, h: u32) -> bool {
+        let device = self.core.device().clone();
+        let queue = self.core.queue().clone();
         let row = (w * 4).next_multiple_of(256);
         let buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("d3dgpu frame read"),

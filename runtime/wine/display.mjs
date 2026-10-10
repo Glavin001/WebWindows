@@ -149,6 +149,7 @@ export class Display {
         this.screen.set(w.pixels.subarray(src, src + (sr - sl) * 4), (y * W + sl) * 4);
       }
     }
+    this.flushes = (this.flushes ?? 0) + 1;
     this.onChange({ left: l, top: t, right: r, bottom: b });
   }
 
@@ -190,6 +191,12 @@ export class Display {
   }
 
   pushInput(ev) {
+    // For status samples (./status.mjs): what arrived, and the last keys.
+    this.inputQueued = (this.inputQueued ?? 0) + 1;
+    if (ev.type === INPUT_KEYBOARD) {
+      (this.recentKeys ??= []).push(`${ev.flags & 2 ? '-' : '+'}${ev.vk.toString(16)}`);
+      if (this.recentKeys.length > 12) this.recentKeys.shift();
+    }
     this.input.push(ev);
     this.inputWaiter?.();
   }
@@ -199,6 +206,7 @@ export class Display {
     if (!this.input.length) this.inputSource?.(this);
     const ev = this.input.shift();
     if (!ev) return 0;
+    this.inputTaken = (this.inputTaken ?? 0) + 1;
     const dv = this.m.dv;
     // INPUT: the type, then the union, 8-byte aligned on x86-64 (its
     // dwExtraInfo is pointer-sized).

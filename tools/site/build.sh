@@ -41,6 +41,13 @@ if [ -f "$root/target/site-apps/apps.json" ]; then
   cp -r "$root/target/site-apps/apps" "$out/apps"
   cp "$root/target/site-apps/apps.json" "$out/runtime/web/apps.json"
 fi
+# The GPU self-test (Wine's Direct3D 9 rendering tests: tests/web/d3d9-visual.mjs
+# --build-only) and the results it is compared with, when built.
+if [ -f "$root/target/d3d9-visual/app/d3d9_test.json" ]; then
+  mkdir -p "$out/target/d3d9-visual/app" "$out/tests/web/baseline"
+  cp "$root/target/d3d9-visual/app/d3d9_test.exe" "$root/target/d3d9-visual/app/d3d9_test.json" "$out/target/d3d9-visual/app/"
+  cp "$root"/tests/web/baseline/d3d9_visual*.json "$out/tests/web/baseline/"
+fi
 # The d3dgpu demo and test page (runtime/d3dgpu/build.sh), when built;
 # otherwise its message protocol, which Wine's Direct3D bridge imports.
 if [ -f "$root/runtime/d3dgpu/pkg/d3dgpu_web_bg.wasm" ]; then

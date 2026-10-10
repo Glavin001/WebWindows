@@ -1,0 +1,6 @@
+GetFileTime: 1
+written within a minute of now: 1
+listed: 1
+listing has the same write time: 1
+listing has the size: 12
+a later write does not go back in time: 1

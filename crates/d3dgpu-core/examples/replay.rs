@@ -2,12 +2,19 @@
 //! stream read back from textures (the frames wined3d presents) as PNGs.
 //!
 //! Recordings come from `node runtime/node/wine.mjs --d3d-record FILE ...`:
-//! "D3GR", then each batch as a little-endian u32 length and its bytes.
+//! "D3GR", then each batch as a little-endian u32 length and its bytes,
+//! gzip-compressed when the file name ends in .gz.
 //!
 //! cargo run --release -p d3dgpu-core --example replay -- FILE [OUT_DIR]
-//! (DUMP=1 also prints the commands)
+//! (DUMP=1 also prints the commands, from batch FROM, cut to 300 characters
+//! unless DUMP=full; PRESENTS=N also saves every Nth
+//! presented frame as present-NNNNN.png, as Node has no canvas to show them,
+//! and then saves the recorded readbacks only with READS=1; READ_EVERY=N
+//! saves every Nth readback, BATCHES=N stops after N batches, FROM=N draws
+//! nothing before batch N, to get to a late frame quickly; RS=STATE:VALUE,...
+//! overrides render states, SHADERS=DIR saves shader bytecode)
 
-use std::io::Write;
+use std::io::{BufRead, Read, Write};
 
 use d3dgpu_core::{Core, Options};
 use d3dgpu_proto::{Command, Reader};
@@ -20,8 +27,15 @@ fn main() {
     let path = args.get(1).expect("usage: replay FILE [OUT_DIR]");
     let out = std::path::PathBuf::from(args.get(2).map(String::as_str).unwrap_or("target/replay"));
     std::fs::create_dir_all(&out).unwrap();
-    let data = std::fs::read(path).unwrap();
-    assert_eq!(&data[..4], b"D3GR", "not a d3dgpu recording");
+    // Streamed a batch at a time: recordings of long runs are gigabytes
+    // (gzip-compressed when the recorder's file name ended in .gz).
+    let mut raw = std::io::BufReader::new(std::fs::File::open(path).unwrap());
+    let gzip = raw.fill_buf().unwrap().starts_with(&[0x1f, 0x8b]);
+    let mut file: Box<dyn Read> =
+        if gzip { Box::new(std::io::BufReader::new(flate2::bufread::MultiGzDecoder::new(raw))) } else { Box::new(raw) };
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic).unwrap();
+    assert_eq!(&magic, b"D3GR", "not a d3dgpu recording");
 
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::PRIMARY,
@@ -43,20 +57,65 @@ fn main() {
     device.on_uncaptured_error(std::sync::Arc::new(move |e: wgpu::Error| e2.lock().unwrap().push(e.to_string())));
 
     let mut core = Core::with_options(device.clone(), queue.clone(), Options::for_device(&device));
-    let mut shared = vec![0u8; SHARED_BYTES];
-    let (mut p, mut batches, mut frames) = (4, 0, 0);
-    while p + 4 <= data.len() {
-        let len = u32::from_le_bytes(data[p..p + 4].try_into().unwrap()) as usize;
-        let original = &data[p + 4..p + 4 + len];
-        p += 4 + len;
-        let filtered = skip_commands(original);
+    // Room for presented frames too (the recorded readbacks stay in the first SHARED_BYTES).
+    let mut shared = vec![0u8; SHARED_BYTES.max(32 << 20)];
+    let save_reads = std::env::var("PRESENTS").is_err() || std::env::var_os("READS").is_some();
+    // READ_EVERY=N saves only every Nth readback; BATCHES=N stops after N batches.
+    let read_every: usize = std::env::var("READ_EVERY").ok().and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
+    // RS=STATE:VALUE,... sets those render states to VALUE whenever the
+    // stream sets them (e.g. RS=28:0 turns fog off), to test a guess.
+    let overrides: Vec<(u32, u32)> = std::env::var("RS")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|p| {
+            let (a, b) = p.split_once(':')?;
+            Some((a.parse().ok()?, b.parse().ok()?))
+        })
+        .collect();
+    let shaders = std::env::var_os("SHADERS").map(std::path::PathBuf::from);
+    let full_dump = std::env::var("DUMP").is_ok_and(|v| v == "full");
+    let from: usize = std::env::var("FROM").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let max_batches: usize = std::env::var("BATCHES").ok().and_then(|v| v.parse().ok()).unwrap_or(usize::MAX);
+    let mut reads_seen = 0usize;
+    let (mut batches, mut frames) = (0, 0);
+    let mut original = Vec::new();
+    let every_present: usize = std::env::var("PRESENTS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let (mut sizes, mut presents) = (std::collections::HashMap::new(), 0usize);
+    let mut len = [0u8; 4];
+    // A recording cut off mid-batch (the program was stopped) ends at the last whole one.
+    while batches < max_batches && file.read_exact(&mut len).is_ok() {
+        original.resize(u32::from_le_bytes(len) as usize, 0);
+        if file.read_exact(&mut original).is_err() {
+            break;
+        }
+        let mut filtered = skip_commands(&original);
+        // Readbacks that will not be saved are dropped: each one would wait
+        // for the GPU, which is most of the time of a long replay.
+        if !save_reads || read_every > 1 {
+            filtered = drop_reads(&filtered, |_| {
+                if !save_reads {
+                    return false;
+                }
+                reads_seen += 1;
+                (reads_seen - 1) % read_every == 0
+            });
+        }
+        // FROM=N skips drawing before batch N (state and uploads still run),
+        // to get to a late frame quickly.
+        if batches < from {
+            filtered = drop_ops(&filtered, |op| (0x30..=0x35).contains(&op) || op == 0x40 || op == 0x50);
+        }
+        if !overrides.is_empty() {
+            override_render_states(&mut filtered, &overrides);
+        }
         let batch = &filtered[..];
         batches += 1;
         // DUMP=1 prints every command.
-        if std::env::var_os("DUMP").is_some() {
+        if batches >= from && std::env::var_os("DUMP").is_some() {
             for c in Reader::new(batch).expect("batch header") {
                 let text = format!("{c:?}");
-                println!("  {}", &text[..text.len().min(300)]);
+                let cut = if full_dump { text.len() } else { text.len().min(300) };
+                println!("  {}", &text[..cut]);
             }
         }
         // Readbacks in this batch, saved once it has run.
@@ -72,8 +131,66 @@ fn main() {
         if let Err(e) = core.execute(batch, &shared) {
             eprintln!("batch {batches}: {e:?}");
         }
+        // Finished submissions free their staging memory only when polled
+        // (a browser polls by itself).
+        let _ = device.poll(wgpu::PollType::Poll);
+        // Presented textures, read back into the shared region after the batch.
+        let mut shown = Vec::new();
+        for c in Reader::new(batch).expect("batch header").flatten() {
+            match c {
+                // SHADERS=DIR saves each shader's bytecode as DIR/ID.bin
+                // (for the d3dgpu-shader translate example).
+                Command::CreateShader { id, bytecode: d3dgpu_proto::Data::Inline(code), .. } if shaders.is_some() => {
+                    let dir = shaders.as_ref().unwrap();
+                    std::fs::create_dir_all(dir).unwrap();
+                    std::fs::write(dir.join(format!("{}.bin", id.0)), code).unwrap();
+                }
+                Command::CreateTexture { id, desc } => {
+                    sizes.insert(id.0, (desc.width, desc.height));
+                }
+                Command::Present { texture, .. } => {
+                    presents += 1;
+                    if every_present > 0 && presents % every_present == 0 {
+                        if let Some(&(w, h)) = sizes.get(&texture.0) {
+                            shown.push((texture, w, h, presents));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (texture, w, h, n) in shown {
+            let pitch = w * 4;
+            if (pitch * h) as usize > shared.len() {
+                continue;
+            }
+            let mut wr = d3dgpu_proto::Writer::new();
+            let region = d3dgpu_proto::TextureRegion {
+                texture,
+                face: 0,
+                level: 0,
+                x: 0,
+                y: 0,
+                z: 0,
+                width: w,
+                height: h,
+                depth: 1,
+            };
+            wr.read_texture(&region, 0, pitch, pitch * h, 0);
+            if let Err(e) = core.execute(&wr.finish(), &shared) {
+                eprintln!("present {n}: {e:?}");
+                continue;
+            }
+            core.wait(&mut shared);
+            let file = out.join(format!("present-{n:05}.png"));
+            write_png(&file, w, h, &shared, pitch as usize);
+            println!("batch {batches}: present {n} {w}x{h} -> {}", file.display());
+        }
+        // Reads complete (and free their staging buffers) whether or not they are saved.
         if !reads.is_empty() {
             core.wait(&mut shared);
+        }
+        if save_reads && !reads.is_empty() {
             for (w, h, offset, pitch) in reads {
                 frames += 1;
                 let file = out.join(format!("read-{frames:04}.png"));
@@ -89,7 +206,57 @@ fn main() {
     for e in errors.lock().unwrap().iter() {
         println!("webgpu: {e}");
     }
-    println!("{batches} batches, {frames} readbacks; {:?}", core.stats());
+    println!("{batches} batches, {frames} readbacks, {presents} presents; {:?}", core.stats());
+}
+
+/// The batch without the ReadTexture commands `keep` turns down.
+fn drop_reads(batch: &[u8], mut keep: impl FnMut(&[u8]) -> bool) -> Vec<u8> {
+    let mut out = batch[..12].to_vec();
+    let mut q = 12;
+    while q + 8 <= batch.len() {
+        let op = u32::from_le_bytes(batch[q..q + 4].try_into().unwrap()) & 0xffff;
+        let size = u32::from_le_bytes(batch[q + 4..q + 8].try_into().unwrap()) as usize;
+        if op != d3dgpu_proto::Op::ReadTexture as u32 || keep(&batch[q..q + size]) {
+            out.extend_from_slice(&batch[q..q + size]);
+        }
+        q += size;
+    }
+    let len = out.len() as u32;
+    out[8..12].copy_from_slice(&len.to_le_bytes());
+    out
+}
+
+/// Rewrites the SetRenderState commands for the states in `overrides`.
+fn override_render_states(batch: &mut [u8], overrides: &[(u32, u32)]) {
+    let mut q = 12;
+    while q + 8 <= batch.len() {
+        let op = u32::from_le_bytes(batch[q..q + 4].try_into().unwrap()) & 0xffff;
+        let size = u32::from_le_bytes(batch[q + 4..q + 8].try_into().unwrap()) as usize;
+        if op == d3dgpu_proto::Op::SetRenderState as u32 && size >= 16 {
+            let state = u32::from_le_bytes(batch[q + 8..q + 12].try_into().unwrap());
+            if let Some(&(_, v)) = overrides.iter().find(|&&(s, _)| s == state) {
+                batch[q + 12..q + 16].copy_from_slice(&v.to_le_bytes());
+            }
+        }
+        q += size;
+    }
+}
+
+/// The batch without the commands whose opcode `drop` picks.
+fn drop_ops(batch: &[u8], drop: impl Fn(u32) -> bool) -> Vec<u8> {
+    let mut out = batch[..12].to_vec();
+    let mut q = 12;
+    while q + 8 <= batch.len() {
+        let op = u32::from_le_bytes(batch[q..q + 4].try_into().unwrap()) & 0xffff;
+        let size = u32::from_le_bytes(batch[q + 4..q + 8].try_into().unwrap()) as usize;
+        if !drop(op) {
+            out.extend_from_slice(&batch[q..q + size]);
+        }
+        q += size;
+    }
+    let len = out.len() as u32;
+    out[8..12].copy_from_slice(&len.to_le_bytes());
+    out
 }
 
 /// SKIP=a-b,c drops those commands (0-based, in the whole recording) to

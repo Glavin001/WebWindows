@@ -1,0 +1,21 @@
+LISTBOX: 1
+STATIC: 1
+EDIT: 1
+BUTTON: 1
+COMBOBOX: 1
+SCROLLBAR: 1
+MDICLIENT: 1
+msctls_trackbar32: 1
+msctls_progress32: 1
+SysListView32: 1
+SysTreeView32: 1
+SysTabControl32: 1
+msctls_updown32: 1
+ToolbarWindow32: 1
+tooltips_class32: 1
+riched32.dll: 1
+RICHEDIT: 1
+RegisterClassExW: 1
+GetClassInfoExW(module): 1
+proc matches: 1
+UnregisterClassW: 1

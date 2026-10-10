@@ -160,6 +160,13 @@ export function parseScript(text, replace) {
 }
 
 /** Writes the registrations of every system DLL that has some; returns how many keys. */
+const HARDWARE = `HKLM { NoRemove HARDWARE { NoRemove DESCRIPTION { NoRemove System { NoRemove CentralProcessor { '0' {
+  val '~MHz' = d 3000
+  val Identifier = s 'x86 Family 6 Model 15 Stepping 11'
+  val ProcessorNameString = s 'WebAssembly x86 processor'
+  val VendorIdentifier = s 'GenuineIntel'
+} } } } } }`;
+
 export function installRegistrations(h, files) {
   const call = (name, ...args) => h.unix.syscalls.get(name)(args) >>> 0;
   const mem = h.unix.malloc(0x10000);
@@ -205,6 +212,21 @@ export function installRegistrations(h, files) {
     return handle;
   };
   let count = 0;
+  const install = (text, replace) => {
+    for (const { path: key, values } of parseScript(text, replace)) {
+      const handle = createKey(key);
+      if (!handle) continue;
+      for (const v of values) {
+        const name = ustr(v.name, mem + 128);
+        let size;
+        if (v.type === 1) size = enc(mem + 0x8000, v.data) + 2;
+        else (h.w32(mem + 0x8000, v.data), (size = 4));
+        call('NtSetValueKey', handle, name, 0, v.type, mem + 0x8000, size);
+      }
+      call('NtClose', handle);
+      count++;
+    }
+  };
   for (const [path, bytes] of files) {
     if (!/^c:\\windows\\system32\\[^\\]+\.(dll|drv|ocx|exe)$/i.test(path)) continue;
     let scripts;
@@ -213,24 +235,13 @@ export function installRegistrations(h, files) {
     } catch {
       continue;
     }
-    if (!scripts.length) continue;
     const module = path.replace(/^c:/i, 'C:').replace(/\\windows\\system32\\/i, '\\windows\\system32\\');
-    for (const text of scripts) {
-      for (const { path: key, values } of parseScript(text, { MODULE: module, SystemRoot: 'C:\\windows' })) {
-        const handle = createKey(key);
-        if (!handle) continue;
-        for (const v of values) {
-          const name = ustr(v.name, mem + 128);
-          let size;
-          if (v.type === 1) size = enc(mem + 0x8000, v.data) + 2;
-          else (h.w32(mem + 0x8000, v.data), (size = 4));
-          call('NtSetValueKey', handle, name, 0, v.type, mem + 0x8000, size);
-        }
-        call('NtClose', handle);
-        count++;
-      }
-    }
+    for (const text of scripts) install(text, { MODULE: module, SystemRoot: 'C:\\windows' });
   }
+  // The processor's description, which wineboot writes from what the
+  // system reports: games read the speed here (Far Cry picks its detail
+  // level from ~MHz, and the lowest for a processor it reads as 0 MHz).
+  install(HARDWARE, {});
   h.unix.free(mem);
   return count;
 }

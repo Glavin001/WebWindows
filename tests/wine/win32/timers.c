@@ -50,12 +50,15 @@ int main(void)
            in_range((LONG)((b.QuadPart - a.QuadPart) * 1000 / f.QuadPart), 95, 400));
     printf("GetTickCount moves: %d\n", (t0 = GetTickCount(), Sleep(50), GetTickCount() - t0 >= 30));
 
-    /* A periodic multimedia timer, 10 ms, for about 300 ms. */
+    /* A periodic multimedia timer, 10 ms, for about 300 ms: ticks for the
+     * time that passed (a loaded machine oversleeps), 15 to 35 in 300 ms. */
+    t0 = timeGetTime();
     id = timeSetEvent(10, 1, tick, 0, TIME_PERIODIC | TIME_CALLBACK_FUNCTION);
     printf("timeSetEvent: %d\n", id != 0);
     Sleep(300);
     timeKillEvent(id);
-    printf("periodic ticks in 300 ms: %d\n", in_range(ticks, 15, 35));
+    t1 = timeGetTime() - t0;
+    printf("periodic ticks in 300 ms: %d\n", in_range(ticks, t1 / 20, t1 / 10 + 5));
     printf("on another thread: %d\n", callback_thread && callback_thread != GetCurrentThreadId());
     ticks = 0;
     Sleep(50);

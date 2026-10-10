@@ -90,6 +90,50 @@ for d in $DLLS; do
       -I"$repo/native/opengl32" -o dlls/opengl32/i386-windows/opengl32.dll \
       "$repo/native/opengl32/opengl32.c" dlls/opengl32/stubs.c -ld3d9 -luser32 -lgdi32 -lkernel32 -lmsvcrt
     ls -la dlls/opengl32/i386-windows/opengl32.dll
+    # And OpenGL 2.1 on the browser's WebGL 2 (native/opengl32-webgl), which
+    # the browser bundle ships as opengl32.dll: gl4es (pinned, MIT) turns
+    # OpenGL into OpenGL ES, whose calls the host runs on WebGL 2.
+    gl4es=$WINE_BUILD/gl4es
+    gl4es_commit=ec16bedd8819c475326f4f1a3063772c6d986e06
+    gl4es_stamp="$gl4es_commit patches 2"
+    if [ "$(cat "$gl4es/.built" 2>/dev/null)" != "$gl4es_stamp" ]; then
+      rm -rf "$gl4es"
+      mkdir -p "$gl4es"
+      git -C "$gl4es" init -q
+      git -C "$gl4es" fetch -q --depth 1 https://github.com/ptitSeb/gl4es $gl4es_commit
+      git -C "$gl4es" checkout -q FETCH_HEAD
+      # Two ARB_imaging getters lack the calling convention of their
+      # exported aliases, which i686 needs to link.
+      sed -i 's/^void gl4es_glGetMinmaxParameter\([if]\)v(/void APIENTRY_GL4ES gl4es_glGetMinmaxParameter\1v(/' \
+        "$gl4es/src/gl/getter.c"
+      # glVertexPointer and the other fixed-function arrays share their
+      # state with generic attributes (gl_Vertex is attribute 0) but fold the
+      # bound buffer into the pointer, leaving the buffer (and the integer
+      # flag) a glVertexAttribPointer set: the draw then adds that buffer's
+      # data to the client pointer again.
+      sed -i 's/t\.normalized=n; t\.divisor=0$/t.normalized=n; t.divisor=0; t.buffer=NULL; t.integer=0/' \
+        "$gl4es/src/gl/gl4es.c"
+      grep -q 't.buffer=NULL; t.integer=0' "$gl4es/src/gl/gl4es.c"
+      cmake -S "$gl4es" -B "$gl4es/build" -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_C_COMPILER=i686-w64-mingw32-gcc \
+        -DCMAKE_RC_COMPILER=i686-w64-mingw32-windres -DCMAKE_BUILD_TYPE=Release -DNOX11=ON -DNOEGL=ON \
+        -DSTATICLIB=ON -DNO_LOADER=ON -DNO_INIT_CONSTRUCTOR=ON -DDEFAULT_ES=2 > "$gl4es/cmake.log"
+      make -C "$gl4es/build" -j"$(nproc)" > "$gl4es/make.log"
+      echo "$gl4es_stamp" > "$gl4es/.built"
+    fi
+    w=$repo/native/opengl32-webgl
+    mkdir -p dlls/opengl32/webgl/GLES3
+    cp "$gl4es"/include/GLES/*.h dlls/opengl32/webgl/GLES3/
+    node "$w/gen-gles.mjs" "$gl4es/include/GLES/gl3.h" guest > dlls/opengl32/webgl/gles_thunks.c
+    node "$w/gen-gles.mjs" "$gl4es/include/GLES/gl3.h" host | cmp -s - "$repo/runtime/wine/gles-table.mjs" ||
+      echo "warning: runtime/wine/gles-table.mjs differs from gen-gles.mjs's output" >&2
+    i686-w64-mingw32-nm "$gl4es/lib/libOPENGL32.a" > dlls/opengl32/webgl/gl4es.sym
+    node "$w/gen-def.mjs" "$WINE_SRC/dlls/opengl32/opengl32.spec" "$w/wgl.c" dlls/opengl32/webgl/gl4es.sym \
+      > dlls/opengl32/webgl/opengl32.def
+    i686-w64-mingw32-gcc -O2 -Wall -Wno-unused-function -Wno-attributes -shared -static-libgcc \
+      -Wl,--enable-stdcall-fixup -Wl,--kill-at -I"$w" -Idlls/opengl32/webgl -I"$gl4es/include" \
+      -o dlls/opengl32/i386-windows/opengl32-webgl.dll "$w/wgl.c" "$w/gles.c" dlls/opengl32/webgl/gles_thunks.c \
+      dlls/opengl32/webgl/opengl32.def "$gl4es/lib/libOPENGL32.a" -lgdi32 -luser32 -lkernel32
+    ls -la dlls/opengl32/i386-windows/opengl32-webgl.dll
     continue
   fi
   if [ "$d" = fonts ]; then

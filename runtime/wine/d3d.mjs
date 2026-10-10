@@ -26,20 +26,30 @@ const STATUS_TIMEOUT = 0x102;
 /** wgpu_open_params.flags: the host shows presented frames over the window. */
 const WGPU_HOST_PRESENT = 0x1;
 
+/** PCI vendor ids for the vendor names WebGPU gives (GPUAdapterInfo.vendor);
+ * wined3d reports a card of that vendor (NVIDIA's for one not listed). */
+const PCI_VENDORS = { nvidia: 0x10de, amd: 0x1002, ati: 0x1002, intel: 0x8086 };
+export const pciVendor = (name) => PCI_VENDORS[String(name ?? '').toLowerCase()] ?? 0;
+
 export class D3DBridge {
   /**
    * @param {SharedArrayBuffer} sab  P.SAB_BYTES, shared with the render worker
    * @param {string} adapter  the WebGPU adapter's name
    * @param {{worker?: Worker, onWindow?: (w: object) => void}} [present]
    *   with a render worker presenting to a canvas: where window changes go
+   * @param {(w: object) => void} [onWindow]  told where the window is in
+   *   either case (a page locks the pointer for a fullscreen game)
    */
-  constructor(sab, adapter = 'WebGPU', present = null) {
+  constructor(sab, adapter = 'WebGPU', present = null, onWindow = present?.onWindow) {
+    this.onWindow = onWindow;
     this.ctrl = new Int32Array(sab, 0, P.CTRL_BYTES / 4);
     this.bytes = new Uint8Array(sab);
     this.adapter = adapter;
     this.present = present;
     this.produced = Atomics.load(this.ctrl, P.PRODUCED);
     this.batches = 0;
+    /** The GPU's PCI vendor (pciVendor), 0 when not known. */
+    this.vendorId = 0;
   }
 
   /** A unix call from wined3d.dll (enum wgpu_unix_call). */
@@ -49,7 +59,8 @@ export class D3DBridge {
     const u32 = (p) => dv.getUint32(p, true);
     switch (code) {
       case 0: {
-        // open: struct wgpu_open_params {version, max_batch, shared_size, name[64], flags}
+        // open: struct wgpu_open_params {version, max_batch, shared_size,
+        // name[64], flags, vendor_id, device_id}
         if (u32(args) !== 1) return STATUS_NOT_SUPPORTED;
         dv.setUint32(args + 4, P.SLOT_BYTES, true);
         dv.setUint32(args + 8, P.SHARED_BYTES, true);
@@ -57,6 +68,8 @@ export class D3DBridge {
         u8.fill(0, args + 12, args + 76);
         u8.set(name, args + 12);
         dv.setUint32(args + 76, this.present ? WGPU_HOST_PRESENT : 0, true);
+        dv.setUint32(args + 80, this.vendorId, true);
+        dv.setUint32(args + 84, 0, true);
         return STATUS_SUCCESS;
       }
       case 1: {
@@ -95,7 +108,6 @@ export class D3DBridge {
       }
       case 3: {
         // window: struct wgpu_window_params {x, y, width, height, buffer_width, buffer_height, visible}
-        if (!this.present) return STATUS_NOT_SUPPORTED;
         const w = {
           x: dv.getInt32(args, true),
           y: dv.getInt32(args + 4, true),
@@ -105,10 +117,12 @@ export class D3DBridge {
           bufferHeight: u32(args + 20),
           visible: !!u32(args + 24),
         };
+        this.onWindow?.(w);
+        // Without a canvas, frames are read back and drawn into the window.
+        if (!this.present) return STATUS_NOT_SUPPORTED;
         // The canvas's drawing buffer is the back buffer's size; the page
         // scales it to the window.
         this.present.worker?.postMessage({ type: 'resize', width: w.bufferWidth, height: w.bufferHeight });
-        this.present.onWindow?.(w);
         return STATUS_SUCCESS;
       }
       default:
@@ -123,8 +137,12 @@ export class D3DBridge {
  * and readbacks return zeros.
  */
 export class D3DRecorder {
-  constructor() {
+  /** @param {(batch: Uint8Array) => void} [sink]  takes each batch as it comes (a
+   *   long recording streamed to a file); without one they are kept for bytes() */
+  constructor(sink = null) {
     this.batches = [];
+    this.sink = sink;
+    this.count = 0;
   }
 
   unixCall(machine, code, args) {
@@ -140,7 +158,9 @@ export class D3DRecorder {
         u8.set(new TextEncoder().encode('d3dgpu recorder'), args + 12);
         return STATUS_SUCCESS;
       case 1:
-        this.batches.push(u8.slice(u32(args), u32(args) + u32(args + 4)));
+        this.count++;
+        if (this.sink) this.sink(u8.subarray(u32(args), u32(args) + u32(args + 4)));
+        else this.batches.push(u8.slice(u32(args), u32(args) + u32(args + 4)));
         return STATUS_SUCCESS;
       case 2:
         u8.fill(0, u32(args + 16), u32(args + 16) + u32(args + 12));
@@ -226,7 +246,8 @@ export async function startD3D(workerUrl, log = () => {}, present = {}) {
     return null;
   }
   log(`d3d: render worker on ${ready.adapter}`);
-  const bridge = new D3DBridge(sab, ready.adapter, ready.present ? { worker, onWindow: present.onWindow } : null);
+  const bridge = new D3DBridge(sab, ready.adapter, ready.present ? { worker, onWindow: present.onWindow } : null, present.onWindow);
   bridge.worker = worker;
+  bridge.vendorId = pciVendor(ready.vendor);
   return bridge;
 }

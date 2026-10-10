@@ -67,6 +67,8 @@ const WAIT_TIMEOUT = 0x102;
 const QS_KEY = 0x1, QS_MOUSE = 0x6, QS_POSTMESSAGE = 0x8, QS_TIMER = 0x10, QS_PAINT = 0x20, QS_SENDMESSAGE = 0x40;
 const QS_ALLINPUT = 0x4ff;
 const MWMO_INPUTAVAILABLE = 4;
+const PM_REMOVE = 1;
+const WM_QUIT = 0x12;
 
 /** Calls a win32u system call by name with arguments laid out in scratch guest memory. */
 function win32u(h, name, ...args) {
@@ -101,7 +103,17 @@ export const WIN32U_WAITS = {
     // messages and comes back to wait, rarely, inside the Unix side).
     const get = () => win32u(this, 'NtUserGetMessage', msg, hwnd, first, last);
     if (queueReady(this, mask) || !this.threads.canYield()) return get();
-    return this.threads.block('NtUserGetMessage', this.sys.ret, this.sys.esp, () => (queueReady(this, mask) ? get() : undefined), Infinity);
+    // The blocked thread's check must not wait: GetMessage would, inside
+    // the Unix side, when what made the queue ready was a sent message it
+    // handles or input its filter leaves, and a check cannot run the other
+    // threads (one waiting for this thread to start, say, never would). So
+    // it takes the message as GetMessage does before waiting: a PeekMessage
+    // that removes it, which handles sent messages and never waits.
+    const take = () => {
+      if (!win32u(this, 'NtUserPeekMessage', msg, hwnd, first, last, PM_REMOVE | (mask << 16))) return undefined;
+      return this.u32(msg + 4) === WM_QUIT ? 0 : 1;
+    };
+    return this.threads.block('NtUserGetMessage', this.sys.ret, this.sys.esp, () => (queueReady(this, mask) ? take() : undefined), Infinity);
   },
   NtUserMsgWaitForMultipleObjectsEx(a) {
     const [count, handles, timeout, mask, flags] = [a(0), a(1), a(2), a(3), a(4)];
@@ -117,6 +129,32 @@ export const WIN32U_WAITS = {
     return this.threads.block('NtUserWaitMessage', this.sys.ret, this.sys.esp, check, Infinity);
   },
 };
+
+/** NtNotifyChangeKey and NtNotifyChangeMultipleKeys: `count` arguments,
+ * the event at `eventArg`, Asynchronous last. */
+function notifyChange(h, name, a, count, eventArg) {
+  const args = Array.from({ length: count }, (_, i) => a(i));
+  if (args[count - 1] & 0xff) return unixCall(h, name, ...args);
+  const s = scratch(h) + 16;
+  // A SynchronizationEvent, as Wine's own synchronous path makes.
+  let status = unixCall(h, 'NtCreateEvent', s, 0x1f0003, 0, 1, 0);
+  if (status) return status;
+  const event = h.u32(s);
+  args[eventArg] = event;
+  args[count - 1] = 1;
+  status = unixCall(h, name, ...args);
+  if (status !== STATUS_PENDING) {
+    unixCall(h, 'NtClose', event);
+    return status;
+  }
+  const wait = poll(h, 'NtWaitForSingleObject', [event, 0, zeroTimeout(h)]);
+  const check = () => {
+    const r = wait();
+    if (r !== undefined) unixCall(h, 'NtClose', event);
+    return r;
+  };
+  return h.threads.block(name, h.sys.ret, h.sys.esp, check, Infinity);
+}
 
 export const THREAD_SYSCALLS = {
   // -- waits --------------------------------------------------------------------
@@ -138,6 +176,18 @@ export const THREAD_SYSCALLS = {
     if (first !== STATUS_TIMEOUT) return first;
     const check = poll(this, 'NtWaitForSingleObject', [wait, alertable, zeroTimeout(this)]);
     return this.threads.block('NtSignalAndWaitForSingleObject', this.sys.ret, this.sys.esp, check, timeoutDeadline(this, timeout));
+  },
+  // Registry notifications: a synchronous one, Wine's Unix side waits for
+  // inside the module, where the thread cannot switch out, so a thread
+  // waiting for a change (mmdevapi's device watcher, which waits for good)
+  // could wait on top of a thread that has to finish first, such as one
+  // waiting for a reply to a sent message. Here it is registered with an
+  // event and waited for in the scheduler.
+  NtNotifyChangeKey(a) {
+    return notifyChange(this, 'NtNotifyChangeKey', a, 10, 1);
+  },
+  NtNotifyChangeMultipleKeys(a) {
+    return notifyChange(this, 'NtNotifyChangeMultipleKeys', a, 12, 3);
   },
   NtDelayExecution(a) {
     return this.threads.delay('NtDelayExecution', this.sys.ret, this.sys.esp, a(1));
@@ -270,7 +320,7 @@ export const THREAD_SYSCALLS = {
         this.w32(buf, 0);
         return ret(cls === 18 ? 1 : 4);
       default:
-        this.log(`NtQueryInformationThread class ${cls} not implemented`);
+        this.fixme(`NtQueryInformationThread class ${cls} not implemented`);
         return STATUS_INVALID_INFO_CLASS;
     }
   },

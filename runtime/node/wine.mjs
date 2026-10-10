@@ -47,20 +47,33 @@
 //   WWT_TRACE_CALLS=A,B    the first calls of these system calls, with
 //                          arguments and status (WWT_TRACE_LIMIT, default 40)
 //   WWT_FAST_LOG=1         fast mode's run-time translations
+//   WWT_TRACE_FAULTS=N     the first N faults (default 10 when set) with
+//                          where they happened and the frames above
 //   WWT_THREAD_DUMP=MS     the scheduler's thread states after MS, and when
 //                          nothing can run
+//   WWT_PROFILES=1         keep each image's run-time profile (the code fast
+//                          mode translated) and translate it ahead of time on
+//                          later runs (target/wine-cache/profiles); being tested
+//   WWT_TAIL=FILE          new lines the program writes to FILE in its folder,
+//                          timed from start (a game's log.txt)
+//   WWT_STATUS=1           a status line every 2 s (runtime/wine/status.mjs:
+//                          busiest thread and where, system calls, screen,
+//                          input); WWT_STATUS=json prints the whole sample
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Machine, GuestFault, hex, hasMemory64, trapsMappable } from '../runtime.mjs';
 import { peArch } from '../pe.mjs';
-import { WineHost } from '../wine/host.mjs';
+import { WineHost, recordCase } from '../wine/host.mjs';
+import { filetimeFromMs } from '../wine/syscalls.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
+import { StatusSampler, formatStatus } from '../wine/status.mjs';
 import { D3DRecorder } from '../wine/d3d.mjs';
 import { windowsKey, KEYEVENTF_KEYUP } from '../web/keys.mjs';
 
@@ -109,8 +122,31 @@ let translateMs = 0;
 /** The translator compiled to WebAssembly (fast mode), once loaded. */
 let fastTranslator = null;
 
+// Run-time profiles: the code fast mode had to translate in each image, by
+// the image's content and base (target/wine-cache/profiles), so the next
+// launch translates it ahead of time with the rest (`wwt translate
+// --profile`) instead of one function at a time again. Far Cry finds about
+// 100,000 functions that way on every launch without them.
+const profileDir = () => join(cacheDir, 'profiles');
+/** base -> profile file of each image translated this run */
+const imageProfiles = new Map();
+const readProfile = (file) => (existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean) : []);
+/** Adds this run's fast-mode addresses to each image's profile. */
+function saveProfiles() {
+  if (process.env.WWT_PROFILES !== '1' || !host || !machine?.profile?.size) return;
+  mkdirSync(profileDir(), { recursive: true });
+  for (const [base, { size }] of host.images) {
+    const file = imageProfiles.get(base);
+    if (!file) continue;
+    const found = [...machine.profile].filter((a) => a >= base && a < base + size).map((a) => a.toString(16));
+    if (!found.length) continue;
+    const all = new Set([...readProfile(file), ...found]);
+    writeFileSync(file, [...all].join('\n') + '\n');
+  }
+}
+
 /** Translates an image with the CLI, caching by content hash. */
-function translate(path, bytes) {
+function translate(path, bytes, { base } = {}) {
   // WWT_TRANSLATOR=wasm: the program translated in place by the WebAssembly
   // build, as the page does without an ahead-of-time translation (Wine's
   // DLLs stay ahead of time, as the bundle ships them).
@@ -128,7 +164,7 @@ function translate(path, bytes) {
   // WWT_TRANSLATE_FLAGS: extra `wwt translate` options, for A/B tests
   // (tools/bench/ab.mjs --wine). All are part of the cache key. With a
   // 32-bit memory the guest limit is a constant in the memory checks.
-  const flags = { 'wined3d.dll': ['--no-smc-checks'], 'd3d9.dll': ['--no-smc-checks'] }[path.split('\\').pop().toLowerCase()] ?? [];
+  const flags = { 'wined3d.dll': ['--no-smc-checks'], 'd3d8.dll': ['--no-smc-checks'], 'd3d9.dll': ['--no-smc-checks'] }[path.split('\\').pop().toLowerCase()] ?? [];
   const extra = [
     ...flags,
     ...(mem64 ? ['--mem64'] : ['--guest-limit-mb', String(GUEST_LIMIT >>> 20)]),
@@ -137,7 +173,18 @@ function translate(path, bytes) {
   ];
   if (nativeHeap && !x64 && path.toLowerCase().endsWith('\\ntdll.dll')) extra.push(NATIVE_HEAP_FLAG);
   if (nativeStrings && !x64 && NATIVE_STRINGS_DLLS.includes(path.split('\\').pop().toLowerCase())) extra.push(NATIVE_STRINGS_FLAG);
-  const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}:${extra.join(' ')}`).digest('hex').slice(0, 16);
+  // The image's run-time profile, at this base.
+  let profileHash = '';
+  if (base !== undefined && process.env.WWT_PROFILES === '1') {
+    const file = join(profileDir(), `${createHash('sha256').update(bytes).digest('hex').slice(0, 16)}-${base.toString(16)}.txt`);
+    imageProfiles.set(base, file);
+    const entries = readProfile(file);
+    if (entries.length) {
+      extra.push('--profile', file);
+      profileHash = createHash('sha256').update(entries.join(',')).digest('hex').slice(0, 8);
+    }
+  }
+  const hash = createHash('sha256').update(bytes).update(`${t.size}:${t.mtimeMs}:${extra.filter((x) => !x.includes('/profiles/')).join(' ')}${profileHash ? `:${profileHash}` : ''}`).digest('hex').slice(0, 16);
   const out = join(cacheDir, `${path.split('\\').pop()}-${hash}.wasm`);
   if (!existsSync(out)) {
     // Several runners share the cache: write under a per-process name and
@@ -280,6 +327,8 @@ files.set('c:\\windows\\globalization\\sorting\\sortdefault.nls', files.get(`${s
 // The program: at C:\, or with --dir in C:\app, next to the folder's files
 // (--folder: the program's own directory, left as it is).
 const appFiles = new Map(); // DOS path -> [host path, original bytes]
+const caseNames = new Map(); // lower-case DOS path -> name as on disk
+const fileTimes = new Map(); // lower-case DOS path -> FILETIME of the file on disk
 let exeWin = `C:\\${basename(exe)}`;
 const syncDir = appDir;
 if (folder && !appDir) appDir = dirname(resolve(exe));
@@ -290,9 +339,11 @@ if (appDir) {
       if (e.isDirectory()) walk(join(dir, e.name), r);
       else if (e.isFile()) {
         const bytes = readFileSync(join(dir, e.name));
+        fileTimes.set(`c:\\app\\${r.toLowerCase()}`, filetimeFromMs(statSync(join(dir, e.name)).mtimeMs));
         // A copy: the program's writes change the file's bytes in place.
         appFiles.set(`c:\\app\\${r.toLowerCase()}`, [join(dir, e.name), Buffer.from(bytes)]);
         files.set(`c:\\app\\${r.toLowerCase()}`, bytes);
+        recordCase(caseNames, `c:\\app\\${r}`);
       }
     }
   };
@@ -400,11 +451,47 @@ if (existsSync(tw)) {
     memTraps: trapsFor(exeWin),
   });
 }
-const d3d = d3dRecord ? new D3DRecorder() : null;
+// The recording streams to the file ("D3GR", then each batch as a u32
+// length and its bytes), so a long game session does not fill memory. A
+// FILE ending in .gz is written as gzip members of about 8 MB each (long
+// runs record gigabytes, most of it vertex data and constants that compress
+// tenfold); the replayer reads either.
+let recordFd = null;
+const recordGzip = d3dRecord?.endsWith('.gz');
+let recordPending = [];
+let recordPendingBytes = 0;
+const flushRecording = () => {
+  if (!recordPendingBytes) return;
+  const chunk = Buffer.concat(recordPending, recordPendingBytes);
+  writeSync(recordFd, recordGzip ? gzipSync(chunk, { level: 1 }) : chunk);
+  recordPending = [];
+  recordPendingBytes = 0;
+};
+const recordBytes = (bytes) => {
+  recordPending.push(Buffer.from(bytes));
+  recordPendingBytes += bytes.length;
+  if (recordPendingBytes >= 8 << 20) flushRecording();
+};
+const d3d = d3dRecord
+  ? new D3DRecorder((batch) => {
+      if (recordFd === null) {
+        recordFd = openSync(d3dRecord, 'w');
+        recordBytes(Uint8Array.of(0x44, 0x33, 0x47, 0x52));
+      }
+      const len = new Uint8Array(4);
+      new DataView(len.buffer).setUint32(0, batch.length, true);
+      recordBytes(len);
+      recordBytes(batch);
+    })
+  : null;
 const saveRecording = () => {
   if (!d3d) return;
-  writeFileSync(d3dRecord, d3d.bytes());
-  stderr(`recorded ${d3d.batches.length} Direct3D batches in ${d3dRecord}\n`);
+  if (recordFd === null) {
+    recordFd = openSync(d3dRecord, 'w');
+    recordBytes(Uint8Array.of(0x44, 0x33, 0x47, 0x52));
+  }
+  flushRecording();
+  stderr(`recorded ${d3d.count} Direct3D batches in ${d3dRecord}\n`);
 };
 /** What the program plays, kept for --audio-out (float stereo at 48 kHz). */
 const audioCapture = {
@@ -437,6 +524,8 @@ const host = new WineHost(machine, {
   translate,
   d3d,
   files,
+  caseNames,
+  fileTimes,
   argv: [exeWin, ...args],
   exePath: exeWin,
   stdout: (b) => stdout(b),
@@ -455,6 +544,30 @@ const host = new WineHost(machine, {
   audioSink: audioOut ? audioCapture : null,
   nativeStrings: x64 ? null : nativeStrings,
 });
+if (process.env.WWT_STATUS) {
+  host.status = new StatusSampler(host, {
+    display,
+    emit: (st) => stderr(process.env.WWT_STATUS === 'json' ? `webwindows:status ${JSON.stringify(st)}\n` : formatStatus(st) + '\n'),
+  });
+}
+// WWT_TAIL=log.txt: new lines the program writes to that file in its
+// folder, with the time since start (to time a game's own milestones).
+if (process.env.WWT_TAIL) {
+  const want = `c:\\app\\${process.env.WWT_TAIL.toLowerCase().replaceAll('/', '\\')}`;
+  const t0 = performance.now();
+  let printed = 0;
+  host.onFileWrite = (path) => {
+    if (path?.toLowerCase() !== want) return;
+    const bytes = host.files.get(path);
+    if (!bytes || bytes.length <= printed) return;
+    const text = new TextDecoder('latin1').decode(bytes.subarray(printed));
+    const end = text.lastIndexOf('\n');
+    if (end < 0) return;
+    printed += end + 1;
+    const t = ((performance.now() - t0) / 1000).toFixed(1);
+    for (const line of text.slice(0, end).split('\n')) if (line.trim()) stderr(`[tail ${t} s] ${line.replace(/\r$/, '')}\n`);
+  };
+}
 host.boot(`${sys32}\\ntdll.dll`, exeDos);
 // A program that never waits (a game's busy frame loop) still stops on time.
 if (screenshot) host.threads.onSlice = () => {
@@ -468,6 +581,7 @@ if (host.unimplemented.size) {
   stderr(`unimplemented syscalls: ${[...host.unimplemented.keys()].join(', ')}\n`);
 }
 saveRecording();
+saveProfiles();
 if (r.error instanceof ProgramIdle || r.error?.cause instanceof ProgramIdle) {
   writeFileSync(screenshot, await display.png());
   stderr(`idle; screenshot in ${screenshot}\n`);

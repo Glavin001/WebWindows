@@ -1,0 +1,37 @@
+name: Ubuntu packages
+description: >-
+  Installs Ubuntu packages (tools/ci/apt-install.sh) with their .deb files
+  cached between runs, per runner image and package list: a warm cache
+  installs without the archive mirrors, whose downloads stall at times.
+inputs:
+  packages:
+    description: The packages, separated by spaces.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Cache key
+      id: key
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        sum=$(printf '%s\n' $PACKAGES | sort | sha256sum | cut -c1-16)
+        echo "key=apt-${ImageOS:-ubuntu}-${ImageVersion:-0}-$sum" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache/restore@v4
+      id: restore
+      with:
+        path: ~/.cache/apt-archives
+        key: ${{ steps.key.outputs.key }}
+    - name: Install ${{ inputs.packages }}
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: APT_ARCHIVES="$HOME/.cache/apt-archives" tools/ci/apt-install.sh $PACKAGES
+    # Saved as soon as the packages are in, whatever the job does next.
+    - uses: actions/cache/save@v4
+      if: steps.restore.outputs.cache-hit != 'true'
+      continue-on-error: true
+      with:
+        path: ~/.cache/apt-archives
+        key: ${{ steps.key.outputs.key }}

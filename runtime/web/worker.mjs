@@ -11,12 +11,15 @@ import { Machine, ProcessExit, GuestFault, hasMemory64, trapsMappable } from '..
 import { Process } from '../win32.mjs';
 import { peArch } from '../pe.mjs';
 import { FastTranslator, enableFastMode } from '../fastmode.mjs';
-import { WineHost, parsePe, peImports, rebaseImage } from '../wine/host.mjs';
+import { filetimeFromMs } from '../wine/syscalls.mjs';
+import { WineHost, parsePe, peImports, rebaseImage, recordCase } from '../wine/host.mjs';
 import { loadWineUnix } from '../wine/unix.mjs';
 import { Display } from '../wine/display.mjs';
+import { StatusSampler } from '../wine/status.mjs';
 import { InputRing } from '../wine/input-ring.mjs';
 import { compileNativeHeap } from '../wine/heap.mjs';
 import { startD3D } from '../wine/d3d.mjs';
+import { WebGLBridge } from '../wine/webgl.mjs';
 import { ringWriter } from '../wine/audio-sink.mjs';
 import { compileNativeStrings } from '../wine/strings.mjs';
 
@@ -69,7 +72,7 @@ async function cacheWrite(dir, name, bytes) {
  * its 32-bit-memory variant: the same DLLs below 2 GB, translated for a
  * 32-bit memory, and the Unix side lowered to one.
  */
-async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, key, memTraps, bundleUrl, bundle64Url, bundle64m32Url, memory64, display: shared, debug, d3dCanvas, d3dOffscreen, d3dPort }) {
+async function runOnWine({ exeName, exePath, exe, folder, times = {}, argv, ft, abi, dir, key, memTraps, bundleUrl, bundle64Url, bundle64m32Url, memory64, display: shared, debug, unixTrace, d3dCanvas, d3dOffscreen, d3dPort }) {
   const x64 = peArch(exe) === 'x64';
   const mem64 = x64 && memory64;
   const base = new URL(mem64 ? bundle64Url : x64 ? bundle64m32Url : bundleUrl, self.location.href);
@@ -122,8 +125,8 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
         })
       : null;
   // The optional groups (sound, DirectDraw and Direct3D; networking) only
-  // for a program that imports one of their DLLs, itself or through a DLL
-  // of its folder (Direct3D also when it names one).
+  // for a program that imports one of their DLLs, itself or in a DLL of its
+  // folder (Direct3D also when it names one).
   const groupOf = new Map(Object.entries(manifest.dlls).filter(([, f]) => f.group).map(([n, f]) => [n.toLowerCase(), f.group]));
   const wanted = new Set();
   {
@@ -145,7 +148,14 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
       }
     };
     visit(exe);
+    // And the folder's other DLLs: games load theirs with LoadLibrary
+    // (Far Cry's CrySystem.dll imports WININET).
+    for (const [name, bytes] of local) if (name.endsWith('.dll') && !seen.has(name)) visit(bytes);
     if (wantsD3D) wanted.add('media');
+    // Rich edit is loaded by name (LoadLibrary("RICHED32.DLL")): wanted
+    // when the program or a DLL of its folder names it, in ANSI or UTF-16.
+    const names = (b) => /riched/i.test(new TextDecoder('latin1').decode(b instanceof Uint8Array ? b : new Uint8Array(b)).replace(/\0/g, ''));
+    if (names(exe) || [...local].some(([n, b]) => (n.endsWith('.dll') || n.endsWith('.exe')) && names(b))) wanted.add('richedit');
   }
   await Promise.all([
     ...Object.entries(manifest.dlls).filter(([, f]) => !f.group || wanted.has(f.group)).map(async ([name, f]) => {
@@ -164,8 +174,12 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
   files.set('c:\\windows\\globalization\\sorting\\sortdefault.nls', files.get(`${sys32}\\sortdefault.nls`));
   log(`loaded Wine ${manifest.wine} (${compiled.size} DLLs) in ${(performance.now() - t0).toFixed(0)} ms`);
   // The chosen folder is C:\app; a program given by URL runs from C:\.
+  const caseNames = new Map();
+  const fileTimes = new Map();
   for (const [rel, bytes] of Object.entries(folder)) {
     files.set(`c:\\app\\${rel.replaceAll('/', '\\').toLowerCase()}`, new Uint8Array(bytes));
+    recordCase(caseNames, `c:\\app\\${rel.replaceAll('/', '\\')}`);
+    if (times[rel]) fileTimes.set(`c:\\app\\${rel.replaceAll('/', '\\').toLowerCase()}`, filetimeFromMs(times[rel]));
   }
   const exeWin = exePath ? `C:\\app\\${exePath.replaceAll('/', '\\')}` : `C:\\${exeName}`;
   const exeDos = exeWin.toLowerCase();
@@ -209,10 +223,20 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
   await machine.init();
   enableFastMode(machine, ft, { log, memTraps });
   let unix = null;
+  let display = null;
+  // The last lines the program printed, for status samples.
+  const tail = [];
+  const keepTail = (bytes) => {
+    for (const line of new TextDecoder('latin1').decode(bytes).split('\n')) {
+      if (line.trim()) tail.push(line.slice(0, 200));
+    }
+    if (tail.length > 16) tail.splice(0, tail.length - 16);
+  };
+  let statusSampler = null;
   if (layout) {
     const ring = new InputRing(shared.input);
     const frame = new Int32Array(shared.frame);
-    const display = new Display({
+    display = new Display({
       width: shared.width,
       height: shared.height,
       buffer: shared.screen,
@@ -230,6 +254,7 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
       display,
       // The program waits: sleep until its timeout or the page's next event.
       wait: (ms) => {
+        statusSampler?.tick();
         if (display.hasInput()) return 1;
         ring.wait(ms);
         return display.hasInput() ? 1 : 0;
@@ -238,18 +263,26 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
       win32uNames,
       ntCalls,
     });
+    if (unixTrace) unix.setTrace(unixTrace);
     log(`loaded Wine's Unix side (wineserver, win32u) in ${(performance.now() - t0).toFixed(0)} ms`);
   }
   const d3d = layout && d3dStarting ? await d3dStarting : null;
   const host = new WineHost(machine, {
     translate,
     d3d,
+    // OpenGL on a WebGL 2 context of the worker's own, made on first use.
+    // ?unixtrace=gl logs every call.
+    webgl: typeof OffscreenCanvas === 'function'
+      ? new WebGLBridge(log, undefined, String(unixTrace ?? '').split(',').includes('gl'))
+      : null,
     debug,
     files,
+    caseNames,
+    fileTimes,
     argv: [exeWin, ...argv],
     exePath: exeWin,
-    stdout: (b) => postMessage({ type: 'stdout', bytes: b }),
-    stderr: (b) => postMessage({ type: 'stderr', bytes: b }),
+    stdout: (b) => (keepTail(b), postMessage({ type: 'stdout', bytes: b })),
+    stderr: (b) => (keepTail(b), postMessage({ type: 'stderr', bytes: b })),
     unix,
     // The bundle's ntdll uses the native heap when the bundle has it.
     nativeHeap: manifest.heap ? compileNativeHeap(await bytesOf(manifest.heap)) : undefined,
@@ -257,16 +290,49 @@ async function runOnWine({ exeName, exePath, exe, folder, argv, ft, abi, dir, ke
     // Likewise the native string functions.
     nativeStrings: manifest.strings ? compileNativeStrings(await bytesOf(manifest.strings)) : undefined,
   });
+  // The first faults go to stderr with where they happened, so the page's
+  // record of the run shows a crash.
+  host.traceFaults = 20;
+  // Status samples every 2 s (../wine/status.mjs), to the page, which keeps
+  // them (window.webwindows.status()) and logs them on the console.
+  host.status = statusSampler = new StatusSampler(host, {
+    display,
+    emit: (status) => postMessage({ type: 'status', status }),
+    extra: () => ({ output: tail.slice(-4) }),
+  });
+  // The program's own files that it writes in C:\app (a game's log.txt), to
+  // the page as they change (at most every 2 s, and at the end): the page
+  // keeps them with its record of the run, which outlives a hang or crash.
+  // The worker runs the program without returning to its event loop, so
+  // the writes themselves send them.
+  const changed = new Set();
+  let sentAt = 0;
+  const sendFiles = () => {
+    const out = {};
+    for (const path of changed) {
+      const bytes = files.get(path);
+      if (bytes && bytes.length <= 1 << 20) out[path] = new TextDecoder('latin1').decode(bytes.subarray(Math.max(0, bytes.length - (256 << 10))));
+    }
+    changed.clear();
+    sentAt = performance.now();
+    if (Object.keys(out).length) postMessage({ type: 'files', files: out });
+  };
+  host.onFileWrite = (path) => {
+    if (!path?.startsWith('c:\\app\\')) return;
+    changed.add(path);
+    if (performance.now() - sentAt > 2000) sendFiles();
+  };
   host.boot(`${sys32}\\ntdll.dll`, exeDos);
   await host.startClock();
   log(`Wine process ready in ${(performance.now() - t0).toFixed(0)} ms; running`);
   const tr = performance.now();
   const r = host.run();
+  sendFiles();
   return { ...r, runMs: performance.now() - tr };
 }
 
 onmessage = async (e) => {
-  const { exeName, exePath, exeBytes, files = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, bundle64Url, bundle64m32Url, display, audio, debug, d3dCanvas, d3dOffscreen, d3dPort } = e.data;
+  const { exeName, exePath, exeBytes, files = {}, times = {}, argv = [], translatorUrl, guestLimitMB = 512, noCache, wine, bundleUrl, bundle64Url, bundle64m32Url, display, audio, debug, unixTrace, d3dCanvas, d3dOffscreen, d3dPort } = e.data;
   // The page tests for 64-bit WebAssembly memory once (hasMemory64).
   const memory64 = e.data.memory64 ?? hasMemory64();
   // Bounds traps instead of memory checks where this engine's stack traces
@@ -282,7 +348,7 @@ onmessage = async (e) => {
     const key = `${await sha256(exe)}-abi${abi.version}-g${guestLimitMB}${memTraps ? '-traps' : ''}`;
     const dir = noCache ? null : await cacheDir();
     if (wine) {
-      const r = await runOnWine({ exeName, exePath, exe, folder: files, argv, ft, abi, dir, key, memTraps, bundleUrl, bundle64Url, bundle64m32Url, memory64, display: display && { ...display, audio }, debug, d3dCanvas, d3dOffscreen, d3dPort });
+      const r = await runOnWine({ exeName, exePath, exe, folder: files, times, argv, ft, abi, dir, key, memTraps, bundleUrl, bundle64Url, bundle64m32Url, memory64, display: display && { ...display, audio }, debug, unixTrace, d3dCanvas, d3dOffscreen, d3dPort });
       if (r.error) postMessage({ type: 'stderr', bytes: enc.encode(`\n*** ${r.error.message}\n`) });
       postMessage({ type: 'exit', code: r.error ? null : r.exitCode, translated: false, runMs: r.runMs, wine: true });
       return;

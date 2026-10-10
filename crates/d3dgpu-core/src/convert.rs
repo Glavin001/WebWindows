@@ -184,16 +184,12 @@ pub fn color(c: u32) -> wgpu::Color {
     wgpu::Color { r: ch(16), g: ch(8), b: ch(0), a: ch(24) }
 }
 
-/// Bits of depth precision used to scale `D3DRS_DEPTHBIAS` into WebGPU's
-/// integer units.
-pub fn depth_bias_scale(f: wgpu::TextureFormat) -> f32 {
-    match f {
-        wgpu::TextureFormat::Depth16Unorm => 65535.0,
-        wgpu::TextureFormat::Depth32Float | wgpu::TextureFormat::Depth32FloatStencil8 => 8_388_608.0,
-        _ => 16_777_215.0,
-    }
-}
-
-pub fn is_blendable(f: wgpu::TextureFormat) -> bool {
-    !matches!(f, wgpu::TextureFormat::R32Float | wgpu::TextureFormat::Rg32Float | wgpu::TextureFormat::Rgba32Float)
+/// Whether render targets of format `f` blend (32-bit float ones need the
+/// `float32-blendable` feature).
+pub fn is_blendable(f: wgpu::TextureFormat, features: wgpu::Features) -> bool {
+    features.contains(wgpu::Features::FLOAT32_BLENDABLE)
+        || !matches!(
+            f,
+            wgpu::TextureFormat::R32Float | wgpu::TextureFormat::Rg32Float | wgpu::TextureFormat::Rgba32Float
+        )
 }

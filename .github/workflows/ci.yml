@@ -80,7 +80,9 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install toolchains
-        run: tools/ci/apt-install.sh gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 gcc-mingw-w64-x86-64 csmith binaryen mesa-vulkan-drivers
+        uses: ./.github/actions/apt
+        with:
+          packages: gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 gcc-mingw-w64-x86-64 csmith binaryen mesa-vulkan-drivers
       - name: Format
         run: cargo fmt --all --check
       - name: Build
@@ -174,7 +176,9 @@ jobs:
           shared-key: linux
           save-if: false
       - name: Install toolchains
-        run: tools/ci/apt-install.sh gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 gcc-mingw-w64-x86-64
+        uses: ./.github/actions/apt
+        with:
+          packages: gcc-multilib gcc-mingw-w64-i686 binutils-mingw-w64-i686 gcc-mingw-w64-x86-64
       # The translator, and the one compiled to WebAssembly that translates
       # what was not translated ahead of time (run.mjs).
       - name: Build
@@ -261,6 +265,10 @@ jobs:
           exit "$(cat "$RUNNER_TEMP/rust.status")"
       - name: The Wine bundle
         run: node runtime/node/wine-bundle.mjs
+      # Wine's Direct3D 9 rendering tests, numbered (tests/web/d3d9-visual.mjs),
+      # for the page's GPU self-test.
+      - name: The GPU self-test program
+        run: node tests/web/d3d9-visual.mjs --build-only
       # One archive: it keeps the translator executable, and it is quicker
       # to move than the bundle's files one by one.
       - name: Pack the build
@@ -268,7 +276,7 @@ jobs:
           tar -cf - target/release/wwt target/wasm32-unknown-unknown/release-wasm/wwt_wasm.wasm \
             target/wasm32-unknown-unknown/release-wasm/wwt_heap.wasm target/wasm32-unknown-unknown/release-wasm/wwt_strings.wasm \
             target/wine-unix/wine_unix.mjs target/wine-unix/wine_unix.wasm target/wine-unix/wine_unix.json \
-            target/wine-unix/win32u_syscalls.json target/wine-unix/nt_calls.json target/wine-bundle runtime/d3dgpu/pkg \
+            target/wine-unix/win32u_syscalls.json target/wine-unix/nt_calls.json target/wine-bundle runtime/d3dgpu/pkg target/d3d9-visual/app \
             | zstd -T0 -3 -o wine-build.tar.zst
           ls -la wine-build.tar.zst
       - uses: actions/upload-artifact@v4
@@ -386,6 +394,10 @@ jobs:
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # The pull request's comment of links to the preview (below).
+    permissions:
+      contents: read
+      pull-requests: write
     environment:
       name: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && 'Production' || 'Preview' }}
       url: ${{ steps.vercel.outputs.url }}
@@ -418,10 +430,11 @@ jobs:
             target/bench-src
             target/coremark-src
           key: bench-src-${{ hashFiles('tools/bench/sources.mjs') }}
+      - uses: ./.github/actions/apt
+        with:
+          packages: gcc-mingw-w64-i686 binutils-mingw-w64-i686
       - name: Benchmark programs from source (tools/site/apps.mjs)
-        run: |
-          tools/ci/apt-install.sh gcc-mingw-w64-i686 binutils-mingw-w64-i686
-          node tools/site/apps.mjs
+        run: node tools/site/apps.mjs
       - name: Deploy the site to Vercel
         id: vercel
         env:
@@ -434,6 +447,28 @@ jobs:
           url=$(tail -n 1 vercel.log)/runtime/web/
           echo "url=$url" >> "$GITHUB_OUTPUT"
           echo "Site ($TARGET) of ${GITHUB_SHA::7}: $url" >> "$GITHUB_STEP_SUMMARY"
+          node tools/site/links.mjs "$url" >> "$GITHUB_STEP_SUMMARY"
+      # One comment on the pull request, updated by each deployment: the
+      # preview's link and one-click links to the test programs
+      # (tools/site/links.mjs).
+      - name: Links to the preview on the pull request
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          URL: ${{ steps.vercel.outputs.url }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          marker='<!-- webwindows-preview -->'
+          { echo "$marker"; echo "### Preview of ${HEAD_SHA::7}"; echo; node tools/site/links.mjs "$URL"; } > comment.md
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+            --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n 1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@comment.md > /dev/null
+          else
+            gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@comment.md > /dev/null
+          fi
 
   # The Wine tests, in parallel shards on the build above.
   wine:

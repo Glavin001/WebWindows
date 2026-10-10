@@ -255,6 +255,8 @@ export class Machine {
     this.table.set(0, this.kernel.miss_entry);
     this.table.grow(1);
     this.table.set(1, this.kernel.resume);
+    /** Table slots in use; the table itself grows ahead of it (see instantiateModule). */
+    this.tableUsed = 2;
   }
 
   /**
@@ -447,8 +449,15 @@ export class Machine {
           `${this.guestLimit >>> 20} MB (translate with --guest-limit-mb ${this.guestLimit >>> 20})`,
       );
     }
-    const base = this.table.length;
-    this.table.grow(addrs.length);
+    // The table grows by at least its own size. Growing it updates every
+    // instance that imports it, and fast mode makes one per function (Far
+    // Cry: about 100,000), so growing by each module's size made a game's
+    // startup quadratic; doubling keeps the number of grows small. (Making
+    // it big up front instead makes each instance slower to create: V8's
+    // cost follows the size of the table imported.)
+    const base = this.tableUsed;
+    this.tableUsed += addrs.length;
+    if (this.tableUsed > this.table.length) this.table.grow(Math.max(this.tableUsed - this.table.length, this.table.length));
     const env = {
       ...this.natives,
       memory: this.memory,
@@ -663,17 +672,27 @@ export class Machine {
    * accessed is not known (reported as 0).
    */
   run(cpu, eip) {
-    for (;;) {
-      try {
-        return this.addr(this.kernel.run(this.wide(cpu), this.code(eip)));
-      } catch (e) {
-        const t = this.trapSite(e);
-        if (!t) throw e;
-        const F = this.abi.fault;
-        this.resumeAt(cpu, t.eip);
-        const write = t.flags & this.abi.trap.WRITE;
-        eip = this.fault(cpu, write ? F.ACCESS_VIOLATION_WRITE : F.ACCESS_VIOLATION, t.eip, this.trapAddress(cpu, t), true);
+    // Translated calls count their nesting in the CPU state and restore it
+    // as they return; an exception through them (a trap, thread exit) does
+    // not.
+    const depth = cpu + this.abi.cpu.CALL_DEPTH;
+    const saved = this.r32(depth);
+    try {
+      for (;;) {
+        try {
+          return this.addr(this.kernel.run(this.wide(cpu), this.code(eip)));
+        } catch (e) {
+          const t = this.trapSite(e);
+          if (!t) throw e;
+          this.w32(depth, saved);
+          const F = this.abi.fault;
+          this.resumeAt(cpu, t.eip);
+          const write = t.flags & this.abi.trap.WRITE;
+          eip = this.fault(cpu, write ? F.ACCESS_VIOLATION_WRITE : F.ACCESS_VIOLATION, t.eip, this.trapAddress(cpu, t), true);
+        }
       }
+    } finally {
+      this.w32(depth, saved);
     }
   }
 

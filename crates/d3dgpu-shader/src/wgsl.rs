@@ -22,10 +22,6 @@ use crate::key::*;
 use crate::reflect::{ps_linkage, Reflection};
 use crate::Error;
 
-/// D3D9 hardware returns ±FLT_MAX where IEEE gives infinity (`rcp(0)`,
-/// `rsq(0)`, `log(0)`); WGSL leaves infinities implementation-defined.
-const FLT_MAX: &str = "3.402823466e+38";
-
 /// A translated shader.
 #[derive(Clone, Debug)]
 pub struct Translation {
@@ -104,11 +100,10 @@ struct Gen<'a> {
 }
 
 fn fmt_f32(v: f32) -> String {
-    if v.is_nan() {
-        return "0.0".into();
-    }
-    if v.is_infinite() {
-        return if v > 0.0 { FLT_MAX.into() } else { format!("-{FLT_MAX}") };
+    // Infinities and NaNs (in `def` constants) are made at run time: WGSL
+    // rejects them in constant expressions, and Direct3D passes them on.
+    if !v.is_finite() {
+        return format!("bitcast<f32>({:#x}u | d3d_zero)", v.to_bits());
     }
     let s = format!("{v:?}");
     if s.contains('e') && !s.contains('.') {
@@ -528,20 +523,23 @@ impl<'a> Gen<'a> {
             Opcode::Sub => format!("({} - {})", s(self, 0)?, s(self, 1)?),
             Opcode::Mul => format!("({} * {})", s(self, 0)?, s(self, 1)?),
             Opcode::Mad => format!("({} * {} + {})", s(self, 0)?, s(self, 1)?, s(self, 2)?),
-            Opcode::Rcp => format!("vec4<f32>(d3d_rcp({}.x))", s(self, 0)?),
-            Opcode::Rsq => format!("vec4<f32>(d3d_rsq({}.x))", s(self, 0)?),
+            // Scalar instructions read the source's last component: the
+            // same as any with a replicate swizzle, and what a Direct3D 8
+            // shader without one gets (rcp oD0, c0 reads c0.w).
+            Opcode::Rcp => format!("vec4<f32>(d3d_rcp({}.w))", s(self, 0)?),
+            Opcode::Rsq => format!("vec4<f32>(d3d_rsq({}.w))", s(self, 0)?),
             Opcode::Dp3 => format!("vec4<f32>(dot({}.xyz, {}.xyz))", s(self, 0)?, s(self, 1)?),
             Opcode::Dp4 => format!("vec4<f32>(dot({}, {}))", s(self, 0)?, s(self, 1)?),
             Opcode::Min => format!("min({}, {})", s(self, 0)?, s(self, 1)?),
             Opcode::Max => format!("max({}, {})", s(self, 0)?, s(self, 1)?),
             Opcode::Slt => format!("select(vec4<f32>(0.0), vec4<f32>(1.0), {} < {})", s(self, 0)?, s(self, 1)?),
             Opcode::Sge => format!("select(vec4<f32>(0.0), vec4<f32>(1.0), {} >= {})", s(self, 0)?, s(self, 1)?),
-            Opcode::Exp => format!("vec4<f32>(exp2({}.x))", s(self, 0)?),
-            Opcode::ExpP if self.sh.version.major < 2 => format!("d3d_expp({}.x)", s(self, 0)?),
-            Opcode::ExpP => format!("vec4<f32>(exp2({}.x))", s(self, 0)?),
-            Opcode::Log => format!("vec4<f32>(d3d_log({}.x))", s(self, 0)?),
-            Opcode::LogP if self.sh.version.major < 2 => format!("d3d_logp({}.x)", s(self, 0)?),
-            Opcode::LogP => format!("vec4<f32>(d3d_log({}.x))", s(self, 0)?),
+            Opcode::Exp => format!("vec4<f32>(exp2({}.w))", s(self, 0)?),
+            Opcode::ExpP if self.sh.version.major < 2 => format!("d3d_expp({}.w)", s(self, 0)?),
+            Opcode::ExpP => format!("vec4<f32>(exp2({}.w))", s(self, 0)?),
+            Opcode::Log => format!("vec4<f32>(d3d_log({}.w))", s(self, 0)?),
+            Opcode::LogP if self.sh.version.major < 2 => format!("d3d_logp({}.w)", s(self, 0)?),
+            Opcode::LogP => format!("vec4<f32>(d3d_log({}.w))", s(self, 0)?),
             Opcode::Lit => format!("d3d_lit({})", s(self, 0)?),
             Opcode::Dst => {
                 let (a, b) = (s(self, 0)?, s(self, 1)?);
@@ -831,8 +829,12 @@ impl<'a> Gen<'a> {
             Opcode::TexBem | Opcode::TexBemL => {
                 let s = src0(self)?;
                 let m = format!("drv.bump_env[{n}]");
+                // A projected stage divides the texture coordinate, not the
+                // displacement.
+                let proj = self.pkey.map(|k| k.samplers[n as usize].projected).unwrap_or(false);
+                let base = if proj { format!("d3d_proj({tc}).xy") } else { format!("{tc}.xy") };
                 let coord = format!(
-                    "vec4<f32>({tc}.x + {m}.x * {s}.x + {m}.z * {s}.y, {tc}.y + {m}.y * {s}.x + {m}.w * {s}.y, 0.0, 1.0)"
+                    "vec4<f32>({base}.x + {m}.x * {s}.x + {m}.z * {s}.y, {base}.y + {m}.y * {s}.x + {m}.w * {s}.y, 0.0, 1.0)"
                 );
                 let mut v = self.sample(n, &coord, Lod::Implicit, false)?;
                 if ins.opcode == Opcode::TexBemL {
@@ -952,15 +954,27 @@ impl<'a> Gen<'a> {
             SamplerDim::D2 => (2, "xy"),
             SamplerDim::Cube | SamplerDim::Volume => (3, "xyz"),
         };
-        let uv = if project { format!("({c}.{swz} / {c}.w)") } else { format!("{c}.{swz}") };
+        let mut uv = if project { format!("d3d_proj({c}).{swz}") } else { format!("{c}.{swz}") };
         let _ = ncomp;
         let (t, s) = (format!("tex{n}"), format!("smp{n}"));
+        // Direct3D 9 cube maps filter within one face (WebGPU's across
+        // faces); an implicit level keeps the unclamped direction's
+        // derivatives.
+        let mut cube_grad = None;
+        if dim == SamplerDim::Cube {
+            let d = self.fresh("dir_");
+            self.line(&format!("let {d} = {uv};"));
+            if matches!(lod, Lod::Implicit) && self.ps && !(key.depth && key.compare) {
+                cube_grad = Some(format!("dpdx({d}), dpdy({d})"));
+            }
+            uv = format!("d3d_cube_dir({d}, f32(textureDimensions({t}).x))");
+        }
         let r = self.fresh("smp_");
         let in_vs = !self.ps;
         let expr = if key.depth && key.compare {
             // WGSL has no textureSampleCompareGrad; level 0 also sidesteps
             // the uniformity rules.
-            let reference = if project { format!("({c}.z / {c}.w)") } else { format!("{c}.z") };
+            let reference = if project { format!("d3d_proj({c}).z") } else { format!("{c}.z") };
             if dim == SamplerDim::Volume {
                 return Err(Error::Unsupported("depth compare on a volume texture".into()));
             }
@@ -974,6 +988,9 @@ impl<'a> Gen<'a> {
             format!("vec4<f32>({call})")
         } else {
             match (&lod, in_vs) {
+                (Lod::Implicit, false) if cube_grad.is_some() => {
+                    format!("textureSampleGrad({t}, {s}, {uv}, {})", cube_grad.as_ref().unwrap())
+                }
                 (Lod::Implicit, false) => format!("textureSample({t}, {s}, {uv})"),
                 (Lod::Bias(b), false) => format!("textureSampleBias({t}, {s}, {uv}, {b})"),
                 (Lod::Level(l), _) => format!("textureSampleLevel({t}, {s}, {uv}, {l})"),
@@ -1074,9 +1091,9 @@ impl<'a> Gen<'a> {
             m += "var<private> o: array<vec4<f32>, 12>;\n";
         } else {
             m += "var<private> o_pos: vec4<f32>;\nvar<private> o_fog: vec4<f32>;\nvar<private> o_pts: vec4<f32>;\n";
-            for i in 0..2 {
-                let _ = writeln!(m, "var<private> o_d{i}: vec4<f32>;");
-            }
+            // Unwritten diffuse components are 1, specular ones 0 (as
+            // wined3d's GLSL backend has them; test_default_diffuse).
+            m += "var<private> o_d0: vec4<f32> = vec4<f32>(1.0);\nvar<private> o_d1: vec4<f32>;\n";
             for i in 0..8 {
                 let _ = writeln!(m, "var<private> o_t{i}: vec4<f32>;");
             }
@@ -1216,12 +1233,25 @@ impl<'a> Gen<'a> {
             return "vec4<f32>(0.0)".into();
         }
         let written = self.refl.vs_outputs.contains(&sem);
+        if !written && sem.usage == usage::FOG {
+            // No oFog: the fog factor is the specular alpha, as fixed
+            // function's FOGVERTEXMODE NONE has it (wined3d's vertex
+            // shaders leave the fog output to it); unwritten, it is 0 like
+            // any output, which fogs fully (fog_with_shader_test).
+            return if self.refl.vs_outputs.contains(&Semantic::new(usage::COLOR, 1)) {
+                "vec4<f32>(clamp(o_d1.w, 0.0, 1.0), 0.0, 0.0, 1.0)".into()
+            } else {
+                "vec4<f32>(0.0, 0.0, 0.0, 1.0)".into()
+            };
+        }
         if !written {
-            return "vec4<f32>(0.0)".into();
+            return if sem == Semantic::new(usage::COLOR, 0) { "vec4<f32>(1.0)" } else { "vec4<f32>(0.0)" }.into();
         }
         match sem.usage {
             usage::POSITION => "o_pos".into(),
-            usage::COLOR => format!("o_d{}", sem.index),
+            // Vertex shaders before 3.0 have their colour outputs clamped
+            // to 0..1 per vertex, before interpolation.
+            usage::COLOR => format!("clamp(o_d{}, vec4<f32>(0.0), vec4<f32>(1.0))", sem.index),
             usage::TEXCOORD => format!("o_t{}", sem.index),
             usage::FOG => "vec4<f32>(o_fog.x, 0.0, 0.0, 1.0)".into(),
             usage::PSIZE => "o_pts".into(),
@@ -1264,7 +1294,7 @@ impl<'a> Gen<'a> {
                     let _ = writeln!(prologue, "    tc{0} = in{loc};", sem.index);
                 }
             }
-            if sem.usage == usage::FOG && key.fog == Fog::Vertex {
+            if sem.usage == usage::FOG && key.fog.uses_varying() {
                 let _ = writeln!(prologue, "    let fog_in = in{loc}.x;");
             }
             loc += 1;
@@ -1279,7 +1309,10 @@ impl<'a> Gen<'a> {
             outputs = 1;
         }
         // Output struct.
-        let has_out = outputs != 0 || self.refl.writes_depth || self.ps1_writes_depth();
+        let shader_depth = self.refl.writes_depth || self.ps1_writes_depth();
+        // Depth bias applies to the rasterized depth, not a shader's own.
+        let bias = key.depth_bias && !shader_depth;
+        let has_out = outputs != 0 || shader_depth || bias;
         if has_out {
             m.push_str("struct PsOut {\n");
             for i in 0..4 {
@@ -1287,13 +1320,21 @@ impl<'a> Gen<'a> {
                     let _ = writeln!(m, "    @location({i}) c{i}: vec4<f32>,");
                 }
             }
-            if self.refl.writes_depth || self.ps1_writes_depth() {
+            if shader_depth || bias {
                 m.push_str("    @builtin(frag_depth) depth: f32,\n");
             }
             m.push_str("}\n\n");
         }
         let ret = if has_out { " -> PsOut" } else { "" };
         let _ = writeln!(m, "@fragment\nfn main({}){ret} {{", params.join(", "));
+        // The biased depth (Direct3D: DEPTHBIAS + SLOPESCALEDEPTHBIAS times
+        // the depth's largest slope), before any discard. Table fog reads it
+        // as is; the depth buffer gets it clamped.
+        if bias {
+            m.push_str("    let z_slope = max(abs(dpdx(frag_pos.z)), abs(dpdy(frag_pos.z)));\n");
+            m.push_str("    let z_biased = frag_pos.z + drv.depth_bias.x + drv.depth_bias.y * z_slope;\n");
+        }
+        let z = if bias { "z_biased" } else { "frag_pos.z" };
         if let ClipMode::Varying(mask) = key.clip {
             for i in 0..6 {
                 if mask & (1 << i) != 0 {
@@ -1323,14 +1364,33 @@ impl<'a> Gen<'a> {
                 Fog::Vertex => Some(
                     if linkage.iter().any(|v| v.semantic.usage == usage::FOG) { "fog_in" } else { "1.0" }.to_string(),
                 ),
-                Fog::Linear => Some("(drv.fog_params.y - frag_pos.z) * drv.fog_params.w".into()),
-                Fog::Exp => Some("exp(-drv.fog_params.z * frag_pos.z)".into()),
-                Fog::Exp2 => Some("exp(-(drv.fog_params.z * frag_pos.z) * (drv.fog_params.z * frag_pos.z))".into()),
+                // Table fog: eye depth (W; the fragment position's w is
+                // its reciprocal) or pixel Z.
+                Fog::Linear | Fog::Exp | Fog::Exp2 => {
+                    let d = if key.fog_w { "(1.0 / frag_pos.w)" } else { z };
+                    Some(match key.fog {
+                        Fog::Linear => format!("(drv.fog_params.y - {d}) * drv.fog_params.w"),
+                        Fog::Exp => format!("exp(-drv.fog_params.z * {d})"),
+                        _ => format!("exp(-(drv.fog_params.z * {d}) * (drv.fog_params.z * {d}))"),
+                    })
+                }
+                Fog::VertexLinear | Fog::VertexExp | Fog::VertexExp2 => {
+                    let c = if linkage.iter().any(|v| v.semantic.usage == usage::FOG) { "fog_in" } else { "0.0" };
+                    Some(match key.fog {
+                        Fog::VertexLinear => format!("(drv.fog_params.y - {c}) * drv.fog_params.w"),
+                        Fog::VertexExp => format!("exp(-drv.fog_params.z * {c})"),
+                        _ => format!("exp(-(drv.fog_params.z * {c}) * (drv.fog_params.z * {c}))"),
+                    })
+                }
             };
             if let Some(f) = f {
                 let _ = writeln!(m, "    let fog = clamp({f}, 0.0, 1.0);");
                 m.push_str("    o_c0 = vec4<f32>(mix(drv.fog_color.xyz, o_c0.xyz, fog), o_c0.w);\n");
             }
+        }
+        if key.srgb_write && outputs & 1 != 0 {
+            m.push_str("    let srgb_c = clamp(o_c0.xyz, vec3<f32>(0.0), vec3<f32>(1.0));\n");
+            m.push_str("    o_c0 = vec4<f32>(select(1.055 * pow(srgb_c, vec3<f32>(1.0 / 2.4)) - 0.055, srgb_c * 12.92, srgb_c <= vec3<f32>(0.0031308)), o_c0.w);\n");
         }
         if key.alpha_test != cmp::ALWAYS && outputs & 1 != 0 {
             // Direct3D compares the 8-bit alpha with the 8-bit reference.
@@ -1354,8 +1414,10 @@ impl<'a> Gen<'a> {
                     let _ = writeln!(m, "    out.c{i} = o_c{i};");
                 }
             }
-            if self.refl.writes_depth || self.ps1_writes_depth() {
+            if shader_depth {
                 m.push_str("    out.depth = clamp(o_depth.x, 0.0, 1.0);\n");
+            } else if bias {
+                m.push_str("    out.depth = clamp(z_biased, 0.0, 1.0);\n");
             }
             m.push_str("    return out;\n");
         }
@@ -1375,7 +1437,8 @@ enum Lod {
     Grad(String, String),
 }
 
-const HELPERS: &str = "fn d3d_rcp(x: f32) -> f32 {
+const HELPERS: &str = "var<private> d3d_zero: u32 = 0u;
+fn d3d_rcp(x: f32) -> f32 {
     return select(1.0 / x, 3.402823466e+38, x == 0.0);
 }
 fn d3d_rsq(x: f32) -> f32 {
@@ -1421,6 +1484,43 @@ fn d3d_nrm(v: vec4<f32>) -> vec4<f32> {
 }
 fn d3d_div(v: vec4<f32>, d: f32) -> vec4<f32> {
     return select(v / d, v, d == 0.0);
+}
+fn d3d_split(x: f32) -> f32 {
+    let t = x * 4097.0;
+    return t - (t - x);
+}
+// a / b rounded toward zero: Direct3D 9 hardware's projective divide lands
+// below an integer the true quotient is just below (1 / 0.1 is not 10), so
+// that a wrapped coordinate stays at the end of the texture
+// (test_texture_transform_flags). The remainder is exact (Dekker).
+fn d3d_tdiv(a: f32, b: f32) -> f32 {
+    let q = a / b;
+    let p = q * b;
+    let qh = d3d_split(q);
+    let bh = d3d_split(b);
+    let ql = q - qh;
+    let bl = b - bh;
+    let r = (a - p) - (((qh * bh - p) + qh * bl + ql * bh) + ql * bl);
+    let over = q != 0.0 && abs(q) < 1.0e30 && r != 0.0 && (r < 0.0) != (a < 0.0);
+    return select(q, bitcast<f32>(bitcast<u32>(q) - 1u), over);
+}
+// The cube direction kept half a texel (of level 0) inside its major
+// face, so that filtering reads that face only, clamped at its edges, as
+// on Direct3D 9 (test_cube_wrap).
+fn d3d_cube_dir(d: vec3<f32>, size: f32) -> vec3<f32> {
+    let a = abs(d);
+    let k = 1.0 - 1.0 / max(size, 1.0);
+    if (a.x >= a.y && a.x >= a.z) {
+        return vec3<f32>(d.x, clamp(d.yz, vec2<f32>(-a.x * k), vec2<f32>(a.x * k)));
+    }
+    if (a.y >= a.z) {
+        let l = a.y * k;
+        return vec3<f32>(clamp(d.x, -l, l), d.y, clamp(d.z, -l, l));
+    }
+    return vec3<f32>(clamp(d.xy, vec2<f32>(-a.z * k), vec2<f32>(a.z * k)), d.z);
+}
+fn d3d_proj(c: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(d3d_tdiv(c.x, c.w), d3d_tdiv(c.y, c.w), d3d_tdiv(c.z, c.w), 1.0);
 }
 fn d3d_udec3(p: u32) -> vec4<f32> {
     return vec4<f32>(f32(p & 1023u), f32((p >> 10u) & 1023u), f32((p >> 20u) & 1023u), 1.0);

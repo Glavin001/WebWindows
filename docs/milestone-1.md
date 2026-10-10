@@ -136,4 +136,9 @@ The benchmark is built with `i686-w64-mingw32-gcc -O2 bench.c -o bench.exe`
   in place.
 * The lookup table costs 16 KB of native memory per 4 KB code page; with
   all of Wine's DLLs loaded this needs a sparser structure (M2/M3).
-* Deep guest recursion is bounded by the WebAssembly stack.
+* Deep guest recursion was bounded by the WebAssembly stack. Translated
+  calls now count their nesting in the CPU state (`cpu::CALL_DEPTH`); past
+  1000, a call returns its target to the dispatch loop instead, which
+  calls it from there (the return address is on the guest stack), so
+  recursion is bounded by the guest stack as on Windows
+  (tests/wine/win32/recursion.c).

@@ -159,6 +159,20 @@ pub enum Fog {
     Linear,
     Exp,
     Exp2,
+    /// Vertex fog whose `FOG` varying carries the fog coordinate (eye
+    /// distance or depth), turned into the factor per pixel by
+    /// `D3DRS_FOGVERTEXMODE`'s equation: wined3d's fixed-function vertex
+    /// shaders work this way.
+    VertexLinear,
+    VertexExp,
+    VertexExp2,
+}
+
+impl Fog {
+    /// Whether the fog reads the `FOG` varying.
+    pub fn uses_varying(self) -> bool {
+        matches!(self, Fog::Vertex | Fog::VertexLinear | Fog::VertexExp | Fog::VertexExp2)
+    }
 }
 
 /// Pixel shader variant key.
@@ -168,9 +182,20 @@ pub struct PixelKey {
     /// `D3DCMPFUNC` of the alpha test; `cmp::ALWAYS` disables it.
     pub alpha_test: u8,
     pub fog: Fog,
+    /// Table fog reads eye depth (W) rather than pixel Z.
+    pub fog_w: bool,
     pub clip: ClipMode,
     /// `D3DSHADE_FLAT`: colour varyings use flat interpolation.
     pub flat_shading: bool,
+    /// Depth bias: the shader writes the depth plus `Driver::depth_bias`,
+    /// as Direct3D adds it, after clipping and in depth units. WebGPU's own
+    /// bias is in units of the depth format's precision, which for float
+    /// formats (what `depth24plus` is on many GPUs) scales with the depth.
+    pub depth_bias: bool,
+    /// `D3DRS_SRGBWRITEENABLE` on a target with an sRGB form: colour output
+    /// 0 is written sRGB-encoded (by the shader, as wined3d's GLSL backend
+    /// does; Direct3D 9 hardware blends the encoded value).
+    pub srgb_write: bool,
 }
 
 impl Default for PixelKey {
@@ -179,8 +204,11 @@ impl Default for PixelKey {
             samplers: [SamplerKey::d2(); 16],
             alpha_test: cmp::ALWAYS,
             fog: Fog::None,
+            fog_w: false,
             clip: ClipMode::None,
             flat_shading: false,
+            depth_bias: false,
+            srgb_write: false,
         }
     }
 }
@@ -225,6 +253,7 @@ pub const DRIVER_WGSL: &str = "struct Driver {
     alpha_ref: vec4<f32>,
     bump_env: array<vec4<f32>, 8>,
     bump_lum: array<vec4<f32>, 8>,
+    depth_bias: vec4<f32>,
 }
 @group(0) @binding(2) var<uniform> drv: Driver;
 ";
@@ -247,6 +276,9 @@ pub struct Driver {
     pub bump_env: [[f32; 4]; 8],
     /// `D3DTSS_BUMPENVLSCALE, LOFFSET` per texture stage.
     pub bump_lum: [[f32; 4]; 8],
+    /// `D3DRS_DEPTHBIAS` (x) and `D3DRS_SLOPESCALEDEPTHBIAS` (y), applied
+    /// by the pixel shader ([`PixelKey::depth_bias`]).
+    pub depth_bias: [f32; 4],
 }
 
 impl Default for Driver {
@@ -259,12 +291,13 @@ impl Default for Driver {
             alpha_ref: [0.0; 4],
             bump_env: [[0.0; 4]; 8],
             bump_lum: [[0.0; 4]; 8],
+            depth_bias: [0.0; 4],
         }
     }
 }
 
 impl Driver {
-    pub const SIZE: usize = 16 * (1 + 6 + 1 + 1 + 1 + 8 + 8);
+    pub const SIZE: usize = 16 * (1 + 6 + 1 + 1 + 1 + 8 + 8 + 1);
 
     /// The uniform buffer bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -281,6 +314,7 @@ impl Driver {
         put(&self.alpha_ref);
         self.bump_env.iter().for_each(&mut put);
         self.bump_lum.iter().for_each(&mut put);
+        put(&self.depth_bias);
         out
     }
 }

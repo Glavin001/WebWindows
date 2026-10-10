@@ -7,6 +7,7 @@
 // host's layout (`this.L`), and pointer-sized fields (pointers, handles,
 // SIZE_T) are read and written with `this.ptr` and `this.wptr`.
 
+import { afdOpen, afdIoctl, afdClose } from './afd.mjs';
 import { ProcessExit, GuestFault, hex } from '../runtime.mjs';
 import { parsePe, GL_UNIXLIB, WS2_32_UNIXLIB } from './host.mjs';
 import { WIN32U_UNIXLIB } from './unix.mjs';
@@ -41,6 +42,7 @@ export const STATUS = {
   NOT_MAPPED_VIEW: 0xc0000019,
   UNABLE_TO_FREE_VM: 0xc000001a,
   ACCESS_DENIED: 0xc0000022,
+  ACCESS_VIOLATION: 0xc0000005,
   BUFFER_TOO_SMALL: 0xc0000023,
   OBJECT_TYPE_MISMATCH: 0xc0000024,
   OBJECT_NAME_INVALID: 0xc0000033,
@@ -118,6 +120,8 @@ function writeFileBytes(h, f, pos, bytes) {
   let data = fileBytes(h, f);
   if (pos + bytes.length > data.length) data = setFileSize(h, f, pos + bytes.length);
   data.set(bytes, pos);
+  if (f.path) h.fileTimes.set(f.path, filetimeFromMs(Date.now()));
+  h.onFileWrite?.(f.path);
 }
 
 /** Deletes files whose last handle closed with a deletion pending. */
@@ -165,8 +169,15 @@ function fileInfo(h, path) {
   return null;
 }
 
-function writeTimes(h, at) {
-  for (let i = 0; i < 4; i++) h.w64(at + i * 8, FILETIME_2020);
+/** Creation, access, write and change times: the file's (see WineHost.fileTimes), or a fixed date. */
+function writeTimes(h, at, path) {
+  const t = h.fileTimes.get(path) ?? FILETIME_2020;
+  for (let i = 0; i < 4; i++) h.w64(at + i * 8, t);
+}
+
+/** A FILETIME (100 ns since 1601) from milliseconds since 1970. */
+export function filetimeFromMs(ms) {
+  return BigInt(Math.round(ms * 10000)) + 116444736000000000n;
 }
 
 function memInfo(h, addr, buf) {
@@ -301,9 +312,10 @@ export const SYSCALLS = {
       }
       // DLLs that refuse to load without a Unix library get one whose
       // calls all fail (STATUS_NOT_IMPLEMENTED), so that programs importing
-      // them start: ws2_32 (sockets; a page has none) and crypt32 (the
-      // system's certificate stores).
-      if (img && /\\(ws2_32|crypt32)\.dll$/i.test(img.path)) {
+      // them start: crypt32 (the system's certificate stores). (ws2_32 has
+      // its own below: matched here first, it got this one, and its name
+      // lookups returned success with nothing filled in.)
+      if (img && /\\crypt32\.dll$/i.test(img.path)) {
         this.w32(buf, STUB_UNIXLIB);
         this.w32(buf + 4, 0);
         return STATUS.SUCCESS;
@@ -349,6 +361,7 @@ export const SYSCALLS = {
     const obj = this.handles.get(h);
     this.handles.delete(h);
     if (obj?.type === 'file') closeFile(this, obj);
+    if (obj?.type === 'socket' && ![...this.handles.values()].includes(obj)) afdClose(this, obj);
     return STATUS.SUCCESS;
   },
   NtDuplicateObject(a) {
@@ -398,8 +411,9 @@ export const SYSCALLS = {
 
   // -- process, thread, system
   NtQueryInformationProcess(a) {
-    const [, cls, buf, len, pret] = [a(0), a(1), a(2), a(3), a(4)];
+    const [handle, cls, buf, len, pret] = [a(0), a(1), a(2), a(3), a(4)];
     const ret = (n) => (pret && this.w32(pret, n), STATUS.SUCCESS);
+    if (!handle) return STATUS.INVALID_HANDLE;
     switch (cls) {
       case 0: { // ProcessBasicInformation
         const B = this.L.PROCESS_BASIC_INFORMATION;
@@ -418,6 +432,10 @@ export const SYSCALLS = {
       case 31: // ProcessDebugFlags
         this.w32(buf, cls === 31 ? 1 : 0);
         return ret(4);
+      case 21: // ProcessAffinityMask: the one processor
+        if (len < this.ps) return STATUS.INFO_LENGTH_MISMATCH;
+        this.wptr(buf, 1);
+        return ret(this.ps);
       case 26: // ProcessWow64Information
         this.wptr(buf, 0);
         return ret(this.ps);
@@ -435,7 +453,8 @@ export const SYSCALLS = {
       case 43: { // ProcessImageFileNameWin32
         const name = cls === 27 ? '\\Device\\HarddiskVolume1' + this.exePath.slice(2) : this.exePath;
         const us = this.L.UNICODE_STRING.__size;
-        if (len < us + name.length * 2 + 2) return STATUS.INFO_LENGTH_MISMATCH;
+        // Too small: the length needed, for the caller to allocate.
+        if (len < us + name.length * 2 + 2) return (ret(us + name.length * 2 + 2), STATUS.INFO_LENGTH_MISMATCH);
         this.putUstr(buf, buf + us, name);
         return ret(us + name.length * 2 + 2);
       }
@@ -455,7 +474,7 @@ export const SYSCALLS = {
           if (n >= 48) this.w32(buf + 44, 0x2000000);
           return ret(n);
         }
-        this.log(`NtQueryInformationProcess class ${cls} not implemented`);
+        this.fixme(`NtQueryInformationProcess class ${cls} not implemented`);
         return STATUS.INVALID_INFO_CLASS;
     }
   },
@@ -492,6 +511,7 @@ export const SYSCALLS = {
         this.w16(buf, this.x64 ? 9 : 0); // PROCESSOR_ARCHITECTURE_AMD64 / _INTEL
         this.w16(buf + 2, 6); // level
         this.w16(buf + 4, 0x0f29);
+        this.w16(buf + 6, 1); // MaximumProcessors (GetSystemInfo's dwNumberOfProcessors)
         this.w32(buf + 8, 0x1 | 0x8 | 0x40); // feature set
         return ret(12);
       }
@@ -511,7 +531,7 @@ export const SYSCALLS = {
       }
       case 0x4c: // SystemFirmwareTableInformation etc.
       default:
-        this.log(`NtQuerySystemInformation class ${hex(cls)} not implemented`);
+        this.fixme(`NtQuerySystemInformation class ${hex(cls)} not implemented`);
         // No length needed: callers that size a buffer from it (kernel32's
         // firmware tables) then see the class as unavailable.
         ret(0);
@@ -526,6 +546,7 @@ export const SYSCALLS = {
     return STATUS.SUCCESS;
   },
   NtQueryPerformanceCounter(a) {
+    if (!this.writable(a(0), 8) || (a(1) && !this.writable(a(1), 8))) return STATUS.ACCESS_VIOLATION;
     this.w64(a(0), BigInt(Math.floor(performance.now() * 10000)));
     if (a(1)) this.w64(a(1), 10000000n);
     return STATUS.SUCCESS;
@@ -633,7 +654,7 @@ export const SYSCALLS = {
     this.log(`NtQueryAttributesFile ${path} -> ${fi ? (fi.dir ? 'dir' : fi.size) : 'missing'}`);
     if (!fi) return STATUS.OBJECT_NAME_NOT_FOUND;
     const buf = a(1);
-    writeTimes(this, buf);
+    writeTimes(this, buf, path);
     this.w32(buf + 32, fi.dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
     return STATUS.SUCCESS;
   },
@@ -642,7 +663,7 @@ export const SYSCALLS = {
     const fi = path && fileInfo(this, path);
     if (!fi) return STATUS.OBJECT_NAME_NOT_FOUND;
     const buf = a(1);
-    writeTimes(this, buf);
+    writeTimes(this, buf, path);
     this.w64(buf + 32, fi.size);
     this.w64(buf + 40, fi.size);
     this.w32(buf + 48, fi.dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
@@ -656,7 +677,7 @@ export const SYSCALLS = {
     const done = (n) => (iosb(this, piosb, 0, n), STATUS.SUCCESS);
     switch (cls) {
       case 4: // FileBasicInformation
-        writeTimes(this, buf);
+        writeTimes(this, buf, f.path);
         this.w32(buf + 32, f.dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
         return done(40);
       case 5: // FileStandardInformation
@@ -673,7 +694,7 @@ export const SYSCALLS = {
         this.w64(buf, size);
         return done(8);
       case 34: // FileNetworkOpenInformation
-        writeTimes(this, buf);
+        writeTimes(this, buf, f.path);
         this.w64(buf + 32, size);
         this.w64(buf + 40, size);
         this.w32(buf + 48, f.dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
@@ -682,7 +703,7 @@ export const SYSCALLS = {
         if (len < 72) return STATUS.INFO_LENGTH_MISMATCH;
         this.m.u8.fill(0, buf, buf + 72);
         this.w64(buf, 0);
-        writeTimes(this, buf + 8);
+        writeTimes(this, buf + 8, f.path);
         this.w64(buf + 40, (size + 4095) & ~4095);
         this.w64(buf + 48, size);
         this.w32(buf + 56, f.dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
@@ -700,7 +721,7 @@ export const SYSCALLS = {
         return done(4 + name.length * 2);
       }
       default:
-        this.log(`NtQueryInformationFile class ${cls} not implemented`);
+        this.fixme(`NtQueryInformationFile class ${cls} not implemented`);
         return STATUS.INVALID_INFO_CLASS;
     }
   },
@@ -800,6 +821,8 @@ export const SYSCALLS = {
   },
   NtDeviceIoControlFile(a) {
     const code = a(5);
+    const obj = this.object(a(0));
+    if (obj?.type === 'socket') return afdIoctl(this, obj, a, iosb);
     this.log(`NtDeviceIoControlFile ${hex(code)} on ${hex(a(0))}`);
     return STATUS.NOT_SUPPORTED;
   },
@@ -817,7 +840,7 @@ export const SYSCALLS = {
     const LAYOUT = { 1: [64], 2: [68], 3: [94], 12: [12], 37: [104, 96], 38: [80, 72], 60: [88, 72], 63: [114, 72] };
     const layout = LAYOUT[cls];
     if (!layout) {
-      this.log(`NtQueryDirectoryFile class ${cls} not implemented`);
+      this.fixme(`NtQueryDirectoryFile class ${cls} not implemented`);
       return STATUS.INVALID_INFO_CLASS;
     }
     // The listing is taken on the first call (or a restart), with its mask.
@@ -842,7 +865,9 @@ export const SYSCALLS = {
         const i = rest.indexOf('\\');
         names.set(i < 0 ? rest : rest.slice(0, i), i >= 0);
       }
-      dir.listing = [...names].filter(([n]) => re.test(n)).map(([name, isDir]) => ({ name, isDir }));
+      dir.listing = [...names]
+        .filter(([n]) => re.test(n))
+        .map(([name, isDir]) => ({ name: this.caseNames.get(prefix + name) ?? name, isDir }));
       dir.listPos = 0;
       if (!dir.listing.length) {
         iosb(this, piosb, STATUS.NO_SUCH_FILE, 0);
@@ -867,8 +892,9 @@ export const SYSCALLS = {
       if (cls === 12) {
         this.w32(e + 8, name.length * 2);
       } else {
-        const data = isDir ? null : this.files.get(`${dir.path}\\${name}`);
-        writeTimes(this, e + 8);
+        const path = `${dir.path}\\${name.toLowerCase()}`;
+        const data = isDir ? null : this.files.get(path);
+        writeTimes(this, e + 8, path);
         this.w64(e + 40, data?.length ?? 0);
         this.w64(e + 48, data ? (data.length + 4095) & ~4095 : 0);
         this.w32(e + 56, isDir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_ARCHIVE);
@@ -1005,6 +1031,12 @@ function mapReadOnlyFile(h, path) {
 }
 
 function openFile(h, ph, oa, piosb, disposition, options = 0) {
+  // A socket (./afd.mjs).
+  if (/^\\Device\\Afd/i.test(oaName(h, oa))) {
+    h.wptr(ph, h.newHandle(afdOpen()));
+    iosb(h, piosb, 0, 0);
+    return STATUS.SUCCESS;
+  }
   const path = oaPath(h, oa);
   if (!path) return STATUS.OBJECT_NAME_INVALID;
   const raw = oaName(h, oa);
@@ -1027,6 +1059,9 @@ function openFile(h, ph, oa, piosb, disposition, options = 0) {
     } else {
       h.files.set(path, new Uint8Array(0));
     }
+    // The name as the program wrote it, for directory listings.
+    const given = raw.replace(/^\\\?\?\\/, '');
+    if (given.toLowerCase() === path) h.rememberCase(given);
     fi = fileInfo(h, path);
   } else if (disposition === 2) {
     return STATUS.OBJECT_NAME_COLLISION;
@@ -1071,7 +1106,7 @@ export const SYSCALLS64 = {
       if (pret) this.w32(pret, this.ps);
       return STATUS.SUCCESS;
     }
-    this.log(`NtQueryInformationThread class ${cls} not implemented`);
+    this.fixme(`NtQueryInformationThread class ${cls} not implemented`);
     return STATUS.INVALID_INFO_CLASS;
   },
   NtRaiseException(a) {

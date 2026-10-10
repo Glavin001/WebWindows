@@ -60,6 +60,8 @@ struct wgpu_open_params
     UINT32 shared_size;    /* out: bytes of the readback region */
     char name[64];         /* out: adapter description */
     UINT32 flags;          /* out: WGPU_HOST_* */
+    UINT32 vendor_id;      /* out: the GPU's PCI vendor, 0 when unknown */
+    UINT32 device_id;      /* out: its PCI device, 0 when unknown */
 };
 
 struct wgpu_submit_params
@@ -128,6 +130,9 @@ struct wined3d_device_wgpu
      * textures (pixel 0-15, vertex 16-19), vertex streams, and targets
      * (render targets 0-3, depth/stencil 4). */
     uint32_t bound_textures, bound_streams, bound_targets;
+    /* A clear bound its own targets (wgpu_invalidate_targets) since the
+     * draw being prepared bound the draw's. */
+    bool targets_disturbed;
     /* The dirty-state bits a draw applies (wined3d_context.dirty_graphics_states
      * words and masks of their representatives). */
     unsigned int applied_words[13];
@@ -144,6 +149,11 @@ struct wined3d_device_wgpu
         uint32_t ss_known[20];
         uint32_t tex[20];
         uint32_t tex_known;
+        uint32_t ttff[4];
+        uint32_t ttff_known;
+        /* D3DTSS_BUMPENVMAT00..11, LSCALE, LOFFSET per stage. */
+        uint32_t bumpenv[WINED3D_MAX_FFP_TEXTURES][6];
+        uint32_t bumpenv_known;
         uint32_t target[5][3]; /* render targets 0-3, then depth/stencil */
         uint32_t target_known;
         uint32_t viewport[6];
@@ -304,6 +314,7 @@ static void wgpu_set_viewport(struct wined3d_device_wgpu *device, uint32_t x, ui
  * draw's again. */
 static void wgpu_invalidate_targets(struct wined3d_device_wgpu *device)
 {
+    device->targets_disturbed = true;
     context_invalidate_state(&device->context, STATE_FRAMEBUFFER);
     context_invalidate_state(&device->context, STATE_VIEWPORT);
 }
@@ -478,6 +489,9 @@ static inline void wgpu_set_render_state(struct wined3d_device_wgpu *device, uin
         wgpu_send_render_state(device, state, value);
 }
 
+/* The last fence any device signalled. */
+static uint64_t wgpu_last_fence;
+
 /* Signals a fence and waits for it, then copies `size` bytes of the
  * readback region at `offset` to `dst`. */
 static void wgpu_wait(struct wined3d_device_wgpu *device, uint32_t offset, uint32_t size, void *dst)
@@ -485,7 +499,11 @@ static void wgpu_wait(struct wined3d_device_wgpu *device, uint32_t offset, uint3
     struct d3dgpu_cmd_signal *cmd;
     struct wgpu_wait_params params;
 
-    ++device->fence;
+    /* The core's fence counts for the whole process: a device created
+     * after another continues from it, or it would take the first one's
+     * completed fences for its own and read stale data. */
+    device->fence = max(device->fence, wgpu_last_fence) + 1;
+    wgpu_last_fence = device->fence;
     if ((cmd = wgpu_cmd(device, D3DGPU_OP_SIGNAL, sizeof(*cmd))))
     {
         cmd->fence_lo = device->fence;
@@ -631,6 +649,9 @@ struct wined3d_bo_wgpu
     bool gpu;
     /* Bytes written since the constants in it were last sent. */
     size_t dirty_lo, dirty_hi;
+    /* Mapped with WINED3D_MAP_NOOVERWRITE: its writes need not wait for
+     * the draws before them (D3DGPU_OP_WRITE_BUFFER_NO_OVERWRITE). */
+    bool no_overwrite;
 };
 
 static inline struct wined3d_bo_wgpu *wined3d_bo_wgpu(struct wined3d_bo *bo)
@@ -657,7 +678,8 @@ static void wgpu_write_bo(struct wined3d_device_wgpu *device, struct wined3d_bo_
         size_t chunk = min(size, wgpu_host.max_batch / 2);
         struct d3dgpu_cmd_write_buffer *cmd;
 
-        if (!(cmd = wgpu_cmd_data(device, D3DGPU_OP_WRITE_BUFFER, sizeof(*cmd), bo->shadow + offset, chunk)))
+        if (!(cmd = wgpu_cmd_data(device, bo->no_overwrite ? D3DGPU_OP_WRITE_BUFFER_NO_OVERWRITE
+                : D3DGPU_OP_WRITE_BUFFER, sizeof(*cmd), bo->shadow + offset, chunk)))
             return;
         cmd->id = bo->id;
         cmd->offset = offset;
@@ -713,6 +735,10 @@ BOOL wined3d_buffer_wgpu_prepare_location(struct wined3d_buffer *buffer,
                 cmd->usage = usage;
             }
             buffer->buffer_object = &bo->b;
+            /* As the GL and Vulkan backends do: a new buffer object needs all
+             * of the buffer, such as after EvictManagedResources dropped the
+             * old one (wined3d cleared the dirty ranges with it). */
+            wined3d_buffer_invalidate_location(buffer, WINED3D_LOCATION_BUFFER);
             return TRUE;
 
         default:
@@ -750,9 +776,13 @@ void wined3d_buffer_wgpu_unload_location(struct wined3d_buffer *buffer,
 static void *adapter_wgpu_map_bo_address(struct wined3d_context *context,
         const struct wined3d_bo_address *data, size_t size, uint32_t map_flags)
 {
+    struct wined3d_bo_wgpu *bo;
+
     if (!data->buffer_object)
         return data->addr;
-    return wined3d_bo_wgpu(data->buffer_object)->shadow + (uintptr_t)data->addr;
+    bo = wined3d_bo_wgpu(data->buffer_object);
+    bo->no_overwrite = !!(map_flags & WINED3D_MAP_NOOVERWRITE);
+    return bo->shadow + (uintptr_t)data->addr;
 }
 
 static void adapter_wgpu_unmap_bo_address(struct wined3d_context *context,
@@ -767,6 +797,7 @@ static void adapter_wgpu_unmap_bo_address(struct wined3d_context *context,
     bo = wined3d_bo_wgpu(data->buffer_object);
     for (i = 0; i < range_count; ++i)
         wgpu_write_bo(device, bo, (uintptr_t)data->addr + ranges[i].offset, ranges[i].size);
+    bo->no_overwrite = false;
 }
 
 static void adapter_wgpu_copy_bo_address(struct wined3d_context *context,
@@ -786,7 +817,10 @@ static void adapter_wgpu_copy_bo_address(struct wined3d_context *context,
         for (i = 0; i < range_count; ++i)
             wgpu_write_bo(device, wined3d_bo_wgpu(dst->buffer_object),
                     (uintptr_t)dst->addr + ranges[i].offset, ranges[i].size);
+        wined3d_bo_wgpu(dst->buffer_object)->no_overwrite = false;
     }
+    if (src->buffer_object)
+        wined3d_bo_wgpu(src->buffer_object)->no_overwrite = false;
 }
 
 static void adapter_wgpu_flush_bo_address(struct wined3d_context *context,
@@ -950,8 +984,8 @@ static void wgpu_download(struct wined3d_device_wgpu *device, struct wined3d_tex
             cmd->dest_offset = 0;
             cmd->row_pitch = row_pitch;
             cmd->slice_pitch = row_pitch * ((part.height + block_h - 1) / block_h);
-            cmd->fence_lo = device->fence + 1;
-            cmd->fence_hi = (device->fence + 1) >> 32;
+            cmd->fence_lo = max(device->fence, wgpu_last_fence) + 1;
+            cmd->fence_hi = (max(device->fence, wgpu_last_fence) + 1) >> 32;
             wgpu_wait(device, 0, cmd->slice_pitch, dst + z * slice_pitch + (y / block_h) * row_pitch);
         }
     }
@@ -1292,10 +1326,24 @@ static void shader_wgpu_free(struct wined3d_device *device, struct wined3d_conte
 static void wgpu_vp_apply_draw_state(struct wined3d_context *context, const struct wined3d_state *state) {}
 static void wgpu_vp_disable(const struct wined3d_context *context) {}
 
+/* What ffp_hlsl's vertex shaders implement (as the GLSL pipe reports it):
+ * zero lights would have wined3d refuse every LightEnable, leaving lit
+ * geometry only its ambient and emissive colour. */
 static void wgpu_vp_get_caps(const struct wined3d_adapter *adapter, struct wined3d_vertex_caps *caps)
 {
     memset(caps, 0, sizeof(*caps));
     caps->emulated_flatshading = true;
+    caps->max_active_lights = WINED3D_MAX_ACTIVE_LIGHTS;
+    caps->max_vertex_blend_matrices = MAX_VERTEX_BLENDS;
+    caps->vertex_processing_caps = WINED3DVTXPCAPS_TEXGEN
+            | WINED3DVTXPCAPS_MATERIALSOURCE7
+            | WINED3DVTXPCAPS_VERTEXFOG
+            | WINED3DVTXPCAPS_DIRECTIONALLIGHTS
+            | WINED3DVTXPCAPS_POSITIONALLIGHTS
+            | WINED3DVTXPCAPS_LOCALVIEWER
+            | WINED3DVTXPCAPS_TEXGEN_SPHEREMAP;
+    caps->fvf_caps = WINED3DFVFCAPS_PSIZE | 8; /* 8 texture coordinates. */
+    caps->raster_caps = WINED3DPRASTERCAPS_FOGRANGE;
 }
 
 static unsigned int wgpu_vp_get_emul_mask(const struct wined3d_adapter *adapter)
@@ -1330,10 +1378,26 @@ static const struct wined3d_vertex_pipe_ops wgpu_vertex_pipe =
 static void wgpu_fp_apply_draw_state(struct wined3d_context *context, const struct wined3d_state *state) {}
 static void wgpu_fp_disable(const struct wined3d_context *context) {}
 
+/* The fixed-function fragment pipeline is wined3d's generated HLSL
+ * (ffp_hlsl), which implements every texture operation and argument. Games
+ * check these caps before they create a device (Far Cry finds no suitable
+ * device with no texture operations or simultaneous textures). */
 static void wgpu_fp_get_caps(const struct wined3d_adapter *adapter, struct fragment_caps *caps)
 {
     memset(caps, 0, sizeof(*caps));
+    caps->PrimitiveMiscCaps = WINED3DPMISCCAPS_TSSARGTEMP | WINED3DPMISCCAPS_PERSTAGECONSTANT;
+    caps->TextureOpCaps = WINED3DTEXOPCAPS_DISABLE | WINED3DTEXOPCAPS_SELECTARG1 | WINED3DTEXOPCAPS_SELECTARG2
+            | WINED3DTEXOPCAPS_MODULATE4X | WINED3DTEXOPCAPS_MODULATE2X | WINED3DTEXOPCAPS_MODULATE
+            | WINED3DTEXOPCAPS_ADDSIGNED2X | WINED3DTEXOPCAPS_ADDSIGNED | WINED3DTEXOPCAPS_ADD
+            | WINED3DTEXOPCAPS_SUBTRACT | WINED3DTEXOPCAPS_ADDSMOOTH | WINED3DTEXOPCAPS_BLENDCURRENTALPHA
+            | WINED3DTEXOPCAPS_BLENDFACTORALPHA | WINED3DTEXOPCAPS_BLENDTEXTUREALPHA
+            | WINED3DTEXOPCAPS_BLENDDIFFUSEALPHA | WINED3DTEXOPCAPS_BLENDTEXTUREALPHAPM
+            | WINED3DTEXOPCAPS_MODULATEALPHA_ADDCOLOR | WINED3DTEXOPCAPS_MODULATECOLOR_ADDALPHA
+            | WINED3DTEXOPCAPS_MODULATEINVCOLOR_ADDALPHA | WINED3DTEXOPCAPS_MODULATEINVALPHA_ADDCOLOR
+            | WINED3DTEXOPCAPS_DOTPRODUCT3 | WINED3DTEXOPCAPS_MULTIPLYADD | WINED3DTEXOPCAPS_LERP
+            | WINED3DTEXOPCAPS_BUMPENVMAP | WINED3DTEXOPCAPS_BUMPENVMAPLUMINANCE;
     caps->max_blend_stages = WINED3D_MAX_FFP_TEXTURES;
+    caps->max_textures = WINED3D_MAX_FFP_TEXTURES;
 }
 
 static unsigned int wgpu_fp_get_emul_mask(const struct wined3d_adapter *adapter)
@@ -1379,6 +1443,9 @@ static const struct wined3d_fragment_pipe_ops wgpu_fragment_pipe =
 static uint32_t wgpu_shader_id(struct wined3d_device_wgpu *device, struct wined3d_shader *shader)
 {
     struct d3dgpu_cmd_create_shader *cmd;
+    void *extra = NULL;
+    const void *code;
+    size_t size;
     uint32_t id;
 
     if (!shader)
@@ -1390,25 +1457,53 @@ static uint32_t wgpu_shader_id(struct wined3d_device_wgpu *device, struct wined3
         FIXME("Shader model %u shaders are not supported yet.\n", shader->reg_maps.shader_version.major);
         return 0;
     }
-    if (!(cmd = wgpu_cmd_data(device, D3DGPU_OP_CREATE_SHADER, sizeof(*cmd),
-            shader->byte_code, shader->byte_code_size)))
+    code = shader->byte_code;
+    size = shader->byte_code_size;
+    /* Direct3D 8 vertex declarations set constants (D3DVSD_CONST) that
+     * wined3d keeps with the shader's def constants, outside its bytecode:
+     * they go in as def instructions after the version token. */
+    if (shader->reg_maps.shader_version.type == WINED3D_SHADER_TYPE_VERTEX
+            && shader->reg_maps.shader_version.major < 2 && !list_empty(&shader->constantsF)
+            && (extra = malloc(size + list_count(&shader->constantsF) * 6 * sizeof(DWORD))))
+    {
+        const struct wined3d_shader_lconst *lconst;
+        DWORD *t = extra;
+
+        *t++ = ((const DWORD *)code)[0];
+        LIST_FOR_EACH_ENTRY(lconst, &shader->constantsF, struct wined3d_shader_lconst, entry)
+        {
+            *t++ = 0x00000051; /* def */
+            *t++ = 0xa00f0000 | lconst->idx; /* c#, all components */
+            memcpy(t, lconst->value, sizeof(lconst->value));
+            t += 4;
+        }
+        memcpy(t, (const DWORD *)code + 1, size - sizeof(DWORD));
+        size += (t - (DWORD *)extra - 1) * sizeof(DWORD);
+        code = extra;
+    }
+    cmd = wgpu_cmd_data(device, D3DGPU_OP_CREATE_SHADER, sizeof(*cmd), code, size);
+    if (!cmd)
+    {
+        free(extra);
         return 0;
+    }
     id = wgpu_alloc_id();
     cmd->id = id;
     cmd->stage = shader->reg_maps.shader_version.type == WINED3D_SHADER_TYPE_PIXEL
             ? D3DGPU_STAGE_PIXEL : D3DGPU_STAGE_VERTEX;
     /* The core caches translations by this hash (FNV-1a over the bytecode). */
     {
-        const BYTE *b = shader->byte_code;
+        const BYTE *b = code;
         uint64_t h = 0xcbf29ce484222325ull;
         unsigned int i;
 
-        for (i = 0; i < shader->byte_code_size; ++i)
+        for (i = 0; i < size; ++i)
             h = (h ^ b[i]) * 0x100000001b3ull;
         h |= 1;
         cmd->hash_lo = h;
         cmd->hash_hi = h >> 32;
     }
+    free(extra);
     shader->backend_data = (void *)(ULONG_PTR)id;
     return id;
 }
@@ -1585,6 +1680,10 @@ static inline bool wgpu_state_dirty(const struct wined3d_context *context, unsig
 
 /* Whether the constant buffer was written since this was last asked
  * (the fixed-function extra constants: alpha test, clip planes). */
+/* Whether the fixed-function extra constants changed since the last draw.
+ * Read before wgpu_upload_constants(), which clears the range when the same
+ * buffer holds the shader's constants (wined3d's fixed-function shaders);
+ * wgpu_extra_constants_clean() clears it after. */
 static bool wgpu_extra_constants_dirty(const struct wined3d_constant_buffer_state *cb)
 {
     struct wined3d_bo_wgpu *bo;
@@ -1592,17 +1691,24 @@ static bool wgpu_extra_constants_dirty(const struct wined3d_constant_buffer_stat
     if (!cb->buffer || !cb->buffer->buffer_object)
         return !!cb->buffer;
     bo = wined3d_bo_wgpu(cb->buffer->buffer_object);
-    if (bo->dirty_hi <= bo->dirty_lo)
-        return false;
+    return bo->dirty_hi > bo->dirty_lo;
+}
+
+static void wgpu_extra_constants_clean(const struct wined3d_constant_buffer_state *cb)
+{
+    struct wined3d_bo_wgpu *bo;
+
+    if (!cb->buffer || !cb->buffer->buffer_object)
+        return;
+    bo = wined3d_bo_wgpu(cb->buffer->buffer_object);
     bo->dirty_lo = ~(size_t)0;
     bo->dirty_hi = 0;
-    return true;
 }
 
 /* Render states from wined3d's blend, depth/stencil and rasterizer objects
  * and the fixed-function extras, each part when wined3d changed it. */
 static void wgpu_apply_render_states(struct wined3d_device_wgpu *device, struct wined3d_context *context,
-        const struct wined3d_state *state)
+        const struct wined3d_state *state, bool extras_ps, bool extras_vs)
 {
     const struct wined3d_rasterizer_state *r = state->rasterizer_state;
     const struct wined3d_depth_stencil_state *ds = state->depth_stencil_state;
@@ -1612,7 +1718,6 @@ static void wgpu_apply_render_states(struct wined3d_device_wgpu *device, struct 
     const struct wined3d_ffp_ps_constants *ps_consts = NULL;
     const struct wined3d_ffp_vs_constants *vs_consts = NULL;
     bool all = !device->sent.states_known;
-    bool extras_ps = wgpu_extra_constants_dirty(ps_extra), extras_vs = wgpu_extra_constants_dirty(vs_extra);
     const BYTE *data;
     uint32_t cull;
     unsigned int i;
@@ -1722,6 +1827,97 @@ static void wgpu_apply_render_states(struct wined3d_device_wgpu *device, struct 
     if (ps_consts)
         wgpu_set_render_state(device, WINED3D_RS_ALPHAREF, lrintf(ps_consts->alpha_test_ref * 255.0f));
     wgpu_set_render_state(device, WINED3D_RS_SRGBWRITEENABLE, state->extra_ps_args.srgb_write);
+    /* Pixel shaders 1.1-1.3 divide texture coordinates by their last
+     * component when the stage's D3DTTFF_PROJECTED is set (Far Cry's
+     * shader model 1 water and shadows). */
+    for (i = 0; i < ARRAY_SIZE(device->sent.ttff); ++i)
+    {
+        struct d3dgpu_cmd_set_texture_stage_state *cmd;
+        uint32_t flags = state->extra_ps_args.texture_transform_flags[i];
+
+        if ((device->sent.ttff_known & (1u << i)) && device->sent.ttff[i] == flags)
+            continue;
+        if (!(cmd = wgpu_cmd(device, D3DGPU_OP_SET_TEXTURE_STAGE_STATE, sizeof(*cmd))))
+            break;
+        cmd->stage = i;
+        cmd->state = 24; /* D3DTSS_TEXTURETRANSFORMFLAGS */
+        cmd->value = flags;
+        device->sent.ttff[i] = flags;
+        device->sent.ttff_known |= 1u << i;
+    }
+    /* texbem's matrix and luminance scale and offset, which wined3d keeps
+     * with its fixed-function constants. */
+    for (i = 0; ps_consts && i < WINED3D_MAX_FFP_TEXTURES; ++i)
+    {
+        static const uint32_t states[6] = {7, 8, 9, 10, 22, 23}; /* D3DTSS_BUMPENVMAT00..11, LSCALE, LOFFSET */
+        const struct wined3d_ffp_bumpenv_constants *b = &ps_consts->bumpenv;
+        uint32_t values[6] =
+        {
+            float_bits(b->matrices[i]._00), float_bits(b->matrices[i]._01),
+            float_bits(b->matrices[i]._10), float_bits(b->matrices[i]._11),
+            float_bits(b->lscale[i]), float_bits(b->loffset[i]),
+        };
+        unsigned int j;
+
+        for (j = 0; j < 6; ++j)
+        {
+            struct d3dgpu_cmd_set_texture_stage_state *cmd;
+
+            if ((device->sent.bumpenv_known & (1u << i)) && device->sent.bumpenv[i][j] == values[j])
+                continue;
+            if (!(cmd = wgpu_cmd(device, D3DGPU_OP_SET_TEXTURE_STAGE_STATE, sizeof(*cmd))))
+                break;
+            cmd->stage = i;
+            cmd->state = states[j];
+            cmd->value = values[j];
+            device->sent.bumpenv[i][j] = values[j];
+        }
+        device->sent.bumpenv_known |= 1u << i;
+    }
+    /* Fog, applied by the core after pixel shaders before 3.0. wined3d's
+     * fixed-function vertex shaders output the fog coordinate, which the
+     * core turns into the factor with FOGVERTEXMODE's equation; a program's
+     * vertex shader (or pre-transformed vertices) gives the factor itself,
+     * which FOGVERTEXMODE NONE tells it. Start and end come back from the
+     * constants (end, 1 / (end - start)); a zero scale fogs everything. */
+    wgpu_set_render_state(device, WINED3D_RS_FOGENABLE, state->extra_ps_args.fog_enable);
+    /* The core's own state 1: table fog reads eye depth (W) under a
+     * perspective projection, pixel Z under an orthographic one. */
+    wgpu_set_render_state(device, 1, !state->extra_vs_args.ortho_fog);
+    {
+        const struct wined3d_shader *vs = state->shader[WINED3D_SHADER_TYPE_VERTEX];
+        bool rhw = state->vertex_declaration && state->vertex_declaration->position_transformed;
+        bool ffp_vs = !vs || vs->is_ffp_vs;
+        enum wined3d_fog_mode table = state->extra_ps_args.fog_mode;
+
+        /* Pre-transformed vertices with table fog under an orthographic
+         * projection: wined3d's vertex shader writes their original Z as
+         * the fog coordinate (its output Z is flushed to 0 when depth
+         * testing is off, so that they are not clipped), and the table
+         * equation reads that, as wined3d's own pixel shaders do. */
+        if (ffp_vs && rhw && table != WINED3D_FOG_NONE && state->extra_vs_args.ortho_fog)
+        {
+            wgpu_set_render_state(device, WINED3D_RS_FOGTABLEMODE, WINED3D_FOG_NONE);
+            wgpu_set_render_state(device, WINED3D_RS_FOGVERTEXMODE, table);
+        }
+        else
+        {
+            wgpu_set_render_state(device, WINED3D_RS_FOGTABLEMODE, table);
+            wgpu_set_render_state(device, WINED3D_RS_FOGVERTEXMODE, ffp_vs && !rhw
+                    ? state->render_states[WINED3D_RS_FOGVERTEXMODE] : WINED3D_FOG_NONE);
+        }
+    }
+    if (ps_consts)
+    {
+        const struct wined3d_ffp_fog_constants *fog = &ps_consts->fog;
+        /* scale is 1 / (end - start), negative for reversed fog. */
+        float start = fog->scale != 0.0f ? fog->end - 1.0f / fog->scale : fog->end;
+
+        wgpu_set_render_state(device, WINED3D_RS_FOGCOLOR, d3dcolor_from_wined3d(&fog->colour));
+        wgpu_set_render_state(device, WINED3D_RS_FOGSTART, float_bits(start));
+        wgpu_set_render_state(device, WINED3D_RS_FOGEND, float_bits(fog->end));
+        wgpu_set_render_state(device, WINED3D_RS_FOGDENSITY, float_bits(fog->density));
+    }
     wgpu_set_render_state(device, WINED3D_RS_CLIPPLANEENABLE, state->extra_vs_args.clip_planes);
     if (vs_consts && state->extra_vs_args.clip_planes)
     {
@@ -1855,6 +2051,50 @@ static void wgpu_target_written(struct wined3d_rendertarget_view *rtv)
     wined3d_rendertarget_view_invalidate_location(rtv, ~WINED3D_LOCATION_TEXTURE_RGB);
 }
 
+/* For an indexed draw: sends the indices it reads when the index buffer is
+ * mapped, and returns the vertices they cover when a vertex buffer is
+ * mapped (first, count; count 0 otherwise). */
+static void wgpu_write_mapped_indices(struct wined3d_device_wgpu *device, const struct wined3d_state *state,
+        const struct wined3d_direct_draw_parameters *direct, unsigned int *first, unsigned int *count)
+{
+    struct wined3d_buffer *ib = state->index_buffer;
+    unsigned int index_size = state->index_format == WINED3DFMT_R32_UINT ? 4 : 2;
+    unsigned int i, lo = ~0u, hi = 0, index;
+    bool vertices_mapped = false;
+    struct wined3d_bo_wgpu *bo;
+    size_t offset;
+    uint32_t map;
+
+    *first = *count = 0;
+    if (!ib->buffer_object)
+        return;
+    bo = wined3d_bo_wgpu(ib->buffer_object);
+    offset = state->index_offset + (size_t)direct->start_idx * index_size;
+    if (offset >= bo->size)
+        return;
+    if (ib->resource.map_count)
+        wgpu_write_bo(device, bo, offset, (size_t)direct->index_count * index_size);
+    for (map = device->bound_streams; map;)
+    {
+        const struct wined3d_buffer *buffer = state->streams[wined3d_bit_scan(&map)].buffer;
+
+        vertices_mapped |= buffer->resource.map_count && buffer->buffer_object;
+    }
+    if (!vertices_mapped)
+        return;
+    for (i = 0; i < direct->index_count && offset + (i + 1) * index_size <= bo->size; ++i)
+    {
+        index = index_size == 4 ? ((const uint32_t *)(bo->shadow + offset))[i]
+                : ((const uint16_t *)(bo->shadow + offset))[i];
+        lo = min(lo, index);
+        hi = max(hi, index);
+    }
+    if (lo > hi || (int)lo + direct->base_vertex_idx < 0)
+        return;
+    *first = lo + direct->base_vertex_idx;
+    *count = hi - lo + 1;
+}
+
 static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
         const struct wined3d_state *state, const struct wined3d_draw_parameters *parameters)
 {
@@ -1864,6 +2104,8 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
     struct d3dgpu_cmd_set_object *obj;
     unsigned int i, prim_count;
     uint32_t vs, ps, decl, map;
+    unsigned int first, count;
+    bool extras_ps, extras_vs;
     bool all;
 
     TRACE("device %p, state %p, parameters %p.\n", device, state, parameters);
@@ -1903,6 +2145,7 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
         if (!state->fb.depth_stencil)
             wgpu_set_target(device_wgpu, 4, 0, 0, 0);
     }
+    device_wgpu->targets_disturbed = false;
     for (map = device_wgpu->bound_targets; map;)
     {
         i = wined3d_bit_scan(&map);
@@ -1954,6 +2197,16 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
                         stream->frequency ? stream->frequency : 1);
         }
     }
+    if (parameters->indexed && state->index_buffer)
+    {
+        wined3d_buffer_load(state->index_buffer, context, state);
+        wgpu_write_mapped_indices(device_wgpu, state, direct, &first, &count);
+    }
+    else
+    {
+        first = direct->start_idx;
+        count = direct->index_count;
+    }
     for (map = device_wgpu->bound_streams; map;)
     {
         const struct wined3d_stream_state *stream;
@@ -1961,6 +2214,19 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
         i = wined3d_bit_scan(&map);
         stream = &state->streams[i];
         wined3d_buffer_load(stream->buffer, context, state);
+        if (stream->buffer->resource.map_count && stream->buffer->buffer_object)
+        {
+            /* Drawn from while mapped (as Castlevania: Lords of Shadow 2
+             * does): send what the draw reads as it is now, as the GPU of a
+             * persistently mapped buffer would read it. */
+            struct wined3d_bo_wgpu *bo = wined3d_bo_wgpu(stream->buffer->buffer_object);
+
+            if (stream->flags & WINED3DSTREAMSOURCE_INSTANCEDATA || !stream->stride)
+                wgpu_write_bo(device_wgpu, bo, stream->offset, bo->size);
+            else if (count)
+                wgpu_write_bo(device_wgpu, bo, stream->offset + (size_t)first * stream->stride,
+                        (size_t)count * stream->stride);
+        }
         wgpu_set_stream(device_wgpu, i, stream->buffer->buffer_object
                 ? wined3d_bo_wgpu(stream->buffer->buffer_object)->id : 0, stream->offset, stream->stride,
                 (stream->flags & WINED3DSTREAMSOURCE_INDEXEDDATA ? 0x40000000 : 0)
@@ -1973,6 +2239,24 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
         wgpu_set_indices(device_wgpu, state->index_buffer->buffer_object
                 ? wined3d_bo_wgpu(state->index_buffer->buffer_object)->id : 0,
                 state->index_format == WINED3DFMT_R32_UINT ? 102 : 101); /* D3DFMT_INDEX32/16 */
+    }
+
+    /* Loading a texture or buffer that was never written clears it, through
+     * a binding of its own (wgpu_clear_sub_resource), after this draw bound
+     * its targets: bind them again, or the draw renders into that texture. */
+    if (device_wgpu->targets_disturbed)
+    {
+        for (i = 0; i < 5; ++i)
+        {
+            if (!(device_wgpu->bound_targets & (1u << i)))
+                wgpu_set_target(device_wgpu, i, 0, 0, 0);
+        }
+        for (map = device_wgpu->bound_targets; map;)
+        {
+            i = wined3d_bit_scan(&map);
+            wgpu_bind_target(device_wgpu, context, i == 4 ? -1 : (int)i,
+                    i == 4 ? state->fb.depth_stencil : state->fb.render_targets[i]);
+        }
     }
 
     vs = wgpu_shader_id(device_wgpu, state->shader[WINED3D_SHADER_TYPE_VERTEX]);
@@ -1997,11 +2281,15 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
     if (decl != device_wgpu->decl_id && (obj = wgpu_cmd(device_wgpu, D3DGPU_OP_SET_VERTEX_DECL, sizeof(*obj))))
         obj->id = device_wgpu->decl_id = decl;
 
+    extras_ps = wgpu_extra_constants_dirty(&state->cb[WINED3D_SHADER_TYPE_PIXEL][WINED3D_FFP_CONSTANTS_EXTRA_REGISTER]);
+    extras_vs = wgpu_extra_constants_dirty(&state->cb[WINED3D_SHADER_TYPE_VERTEX][WINED3D_FFP_CONSTANTS_EXTRA_REGISTER]);
     wgpu_upload_constants(device_wgpu, context, state, WINED3D_SHADER_TYPE_VERTEX);
     wgpu_upload_constants(device_wgpu, context, state, WINED3D_SHADER_TYPE_PIXEL);
     device_wgpu->consts_valid = true;
 
-    wgpu_apply_render_states(device_wgpu, context, state);
+    wgpu_apply_render_states(device_wgpu, context, state, extras_ps, extras_vs);
+    wgpu_extra_constants_clean(&state->cb[WINED3D_SHADER_TYPE_PIXEL][WINED3D_FFP_CONSTANTS_EXTRA_REGISTER]);
+    wgpu_extra_constants_clean(&state->cb[WINED3D_SHADER_TYPE_VERTEX][WINED3D_FFP_CONSTANTS_EXTRA_REGISTER]);
     if (all || wgpu_state_dirty(context, STATE_VIEWPORT) || wgpu_state_dirty(context, STATE_SCISSORRECT))
     {
         const struct wined3d_viewport *vp = &state->viewports[0];
@@ -2009,8 +2297,12 @@ static void adapter_wgpu_draw_primitive(struct wined3d_device *device,
         if (!device_wgpu->sent.viewport_from_known
                 || !wgpu_words_equal(vp, &device_wgpu->sent.viewport_from, sizeof(*vp) / sizeof(uint32_t)))
         {
+            float min_z, max_z;
+
+            /* wined3d's depth range: at least 0.001 deep (test_viewport). */
+            wined3d_viewport_get_z_range(vp, &min_z, &max_z);
             wgpu_set_viewport(device_wgpu, max(0, lrintf(vp->x)), max(0, lrintf(vp->y)),
-                    lrintf(vp->width), lrintf(vp->height), vp->min_z, vp->max_z);
+                    lrintf(vp->width), lrintf(vp->height), min_z, max_z);
             device_wgpu->sent.viewport_from = *vp;
             device_wgpu->sent.viewport_from_known = true;
         }
@@ -2091,7 +2383,7 @@ static void wgpu_blitter_clear(struct wined3d_blitter *blitter, struct wined3d_d
     struct wined3d_rendertarget_view *view;
     struct wined3d_context *context;
     struct d3dgpu_cmd_clear *cmd;
-    unsigned int i, n = 0;
+    unsigned int i, pass, n = 0;
     RECT r;
 
     TRACE("blitter %p, device %p, rt_count %u, fb %p, rect_count %u, clear_rects %p, "
@@ -2101,19 +2393,46 @@ static void wgpu_blitter_clear(struct wined3d_blitter *blitter, struct wined3d_d
 
     wgpu_activate(device_wgpu);
     context = context_acquire(device, NULL, 0);
-    for (i = 0; i < 4; ++i)
-        wgpu_bind_target(device_wgpu, context, i,
-                (flags & WINED3DCLEAR_TARGET) && i < rt_count ? fb->render_targets[i] : NULL);
-    wgpu_bind_target(device_wgpu, context, -1,
-            (flags & (WINED3DCLEAR_ZBUFFER | WINED3DCLEAR_STENCIL)) ? fb->depth_stencil : NULL);
+    /* Loading a target can clear it through a binding of its own
+     * (wgpu_clear_sub_resource), undoing the ones made before it: bind
+     * them all again then (with every target loaded, nothing moves). */
+    for (pass = 0; pass < 2; ++pass)
     {
-        struct wined3d_rendertarget_view *v = rt_count && fb->render_targets[0] ? fb->render_targets[0] : fb->depth_stencil;
+        device_wgpu->targets_disturbed = false;
+        for (i = 0; i < 4; ++i)
+            wgpu_bind_target(device_wgpu, context, i,
+                    (flags & WINED3DCLEAR_TARGET) && i < rt_count ? fb->render_targets[i] : NULL);
+        wgpu_bind_target(device_wgpu, context, -1,
+                (flags & (WINED3DCLEAR_ZBUFFER | WINED3DCLEAR_STENCIL)) ? fb->depth_stencil : NULL);
+        if (!device_wgpu->targets_disturbed)
+            break;
+    }
+    {
+        /* The draw rectangle has Direct3D's viewport and scissor; the
+         * viewport covers every attachment (they can differ in size). */
+        unsigned int width = 0, height = 0;
 
-        if (v)
-            wgpu_full_viewport(device_wgpu, v->width, v->height);
+        for (i = 0; i < rt_count && i < 4; ++i)
+        {
+            if ((view = fb->render_targets[i]))
+            {
+                width = max(width, view->width);
+                height = max(height, view->height);
+            }
+        }
+        if ((view = fb->depth_stencil))
+        {
+            width = max(width, view->width);
+            height = max(height, view->height);
+        }
+        if (width && height)
+            wgpu_full_viewport(device_wgpu, width, height);
         wgpu_invalidate_targets(device_wgpu);
     }
 
+    /* Clears write sRGB-encoded under D3DRS_SRGBWRITEENABLE as it is now,
+     * which only draws send otherwise. */
+    wgpu_set_render_state(device_wgpu, WINED3D_RS_SRGBWRITEENABLE, device->cs->state.extra_ps_args.srgb_write);
     if (!(cmd = wgpu_cmd(device_wgpu, D3DGPU_OP_CLEAR, sizeof(*cmd) + (rect_count ? rect_count : 1) * 16)))
     {
         context_release(context);
@@ -2140,6 +2459,10 @@ static void wgpu_blitter_clear(struct wined3d_blitter *blitter, struct wined3d_d
         ++n;
     }
     cmd->rect_count = n;
+    /* Rectangles that were all empty clear nothing (no rectangle would mean
+     * the whole target). */
+    if (rect_count && !n)
+        cmd->flags = 0;
     cmd->h.size = sizeof(*cmd) + n * 16;
     device_wgpu->cmd_size -= ((rect_count ? rect_count : 1) - n) * 16;
 
@@ -2161,6 +2484,48 @@ static void wgpu_blitter_clear(struct wined3d_blitter *blitter, struct wined3d_d
     context_release(context);
 }
 
+/* Depth blits run on the GPU: the core copies whole depth surfaces of one
+ * size, the only depth blits Direct3D 9 allows (and the CPU blitter can't
+ * read depth back). */
+static bool wgpu_blit_depth(struct wined3d_context *context, enum wined3d_blit_op op,
+        struct wined3d_texture *src_texture, unsigned int src_sub_resource_idx, const RECT *src_rect,
+        struct wined3d_texture *dst_texture, unsigned int dst_sub_resource_idx, const RECT *dst_rect,
+        enum wined3d_texture_filter_type filter)
+{
+    const struct wined3d_format *src_format = src_texture->resource.format, *dst_format = dst_texture->resource.format;
+    struct wined3d_device_wgpu *device = wined3d_device_wgpu(context->device);
+    struct d3dgpu_cmd_stretch_rect *cmd;
+
+    if (!(src_format->depth_size || src_format->stencil_size) || !(dst_format->depth_size || dst_format->stencil_size)
+            || (op != WINED3D_BLIT_OP_RAW_BLIT && op != WINED3D_BLIT_OP_DEPTH_BLIT)
+            || !(src_texture->resource.access & WINED3D_RESOURCE_ACCESS_GPU)
+            || !(dst_texture->resource.access & WINED3D_RESOURCE_ACCESS_GPU))
+        return false;
+    if (!wined3d_texture_load_location(src_texture, src_sub_resource_idx, context, WINED3D_LOCATION_TEXTURE_RGB)
+            || !wined3d_texture_prepare_location(dst_texture, dst_sub_resource_idx, context, WINED3D_LOCATION_TEXTURE_RGB)
+            || !wined3d_texture_wgpu(src_texture)->id || !wined3d_texture_wgpu(dst_texture)->id)
+        return false;
+    wgpu_activate(device);
+    if (!(cmd = wgpu_cmd(device, D3DGPU_OP_STRETCH_RECT, sizeof(*cmd))))
+        return false;
+    cmd->src = wined3d_texture_wgpu(src_texture)->id;
+    cmd->src_face = src_sub_resource_idx / src_texture->level_count;
+    cmd->src_level = src_sub_resource_idx % src_texture->level_count;
+    cmd->src_rect.x1 = src_rect->left;
+    cmd->src_rect.y1 = src_rect->top;
+    cmd->src_rect.x2 = src_rect->right;
+    cmd->src_rect.y2 = src_rect->bottom;
+    cmd->dst = wined3d_texture_wgpu(dst_texture)->id;
+    cmd->dst_face = dst_sub_resource_idx / dst_texture->level_count;
+    cmd->dst_level = dst_sub_resource_idx % dst_texture->level_count;
+    cmd->dst_rect.x1 = dst_rect->left;
+    cmd->dst_rect.y1 = dst_rect->top;
+    cmd->dst_rect.x2 = dst_rect->right;
+    cmd->dst_rect.y2 = dst_rect->bottom;
+    cmd->filter = filter;
+    return true;
+}
+
 static DWORD wgpu_blitter_blit(struct wined3d_blitter *blitter, enum wined3d_blit_op op,
         struct wined3d_context *context, struct wined3d_texture *src_texture, unsigned int src_sub_resource_idx,
         DWORD src_location, const RECT *src_rect, struct wined3d_texture *dst_texture,
@@ -2170,7 +2535,10 @@ static DWORD wgpu_blitter_blit(struct wined3d_blitter *blitter, enum wined3d_bli
 {
     struct wined3d_blitter *next;
 
-    /* Blits run on the CPU for now: the next blitter reads both
+    if (wgpu_blit_depth(context, op, src_texture, src_sub_resource_idx, src_rect,
+            dst_texture, dst_sub_resource_idx, dst_rect, filter))
+        return WINED3D_LOCATION_TEXTURE_RGB;
+    /* Colour blits run on the CPU for now: the next blitter reads both
      * sub-resources back to system memory. */
     if (!(next = blitter->next))
     {
@@ -2283,6 +2651,40 @@ static bool wgpu_present_on_gpu(struct wined3d_swapchain *swapchain, struct wine
     return true;
 }
 
+/* With several back buffers, presenting moves each one's contents to the
+ * one before it, back buffer 0's to the last (as wined3d's Vulkan backend
+ * does, by passing the GPU textures along). */
+static void wgpu_swapchain_rotate(struct wined3d_swapchain *swapchain)
+{
+    static const DWORD gpu = WINED3D_LOCATION_TEXTURE_RGB;
+    struct wined3d_texture_wgpu *texture, *prev;
+    struct wined3d_context *context;
+    DWORD locations0;
+    unsigned int i;
+    uint32_t id0;
+
+    if (swapchain->state.desc.backbuffer_count < 2)
+        return;
+    context = context_acquire(swapchain->device, NULL, 0);
+    prev = wined3d_texture_wgpu(swapchain->back_buffers[0]);
+    id0 = prev->id;
+    locations0 = prev->t.sub_resources[0].locations;
+    for (i = 1; i < swapchain->state.desc.backbuffer_count; ++i)
+    {
+        texture = wined3d_texture_wgpu(swapchain->back_buffers[i]);
+        if (!(texture->t.sub_resources[0].locations & gpu))
+            wined3d_texture_load_location(&texture->t, 0, context, gpu);
+        prev->id = texture->id;
+        wined3d_texture_validate_location(&prev->t, 0, gpu);
+        wined3d_texture_invalidate_location(&prev->t, 0, ~gpu);
+        prev = texture;
+    }
+    prev->id = id0;
+    wined3d_texture_validate_location(&prev->t, 0, locations0 & gpu);
+    wined3d_texture_invalidate_location(&prev->t, 0, ~(locations0 & gpu));
+    context_release(context);
+}
+
 static void swapchain_wgpu_present(struct wined3d_swapchain *swapchain,
         const RECT *src_rect, const RECT *dst_rect, unsigned int swap_interval, uint32_t flags)
 {
@@ -2294,8 +2696,9 @@ static void swapchain_wgpu_present(struct wined3d_swapchain *swapchain,
     /* Else read the frame back and draw it into the window with GDI. */
     if (!wgpu_present_on_gpu(swapchain, back, swap_interval))
         wgpu_present_to_window(swapchain, back, src_rect, dst_rect);
-    if (swapchain->state.desc.swap_effect == WINED3D_SWAP_EFFECT_DISCARD)
-        wined3d_texture_validate_location(back, 0, WINED3D_LOCATION_DISCARDED);
+    /* wined3d discards the last back buffer after this, for the
+     * discarding swap effects. */
+    wgpu_swapchain_rotate(swapchain);
 }
 
 static void swapchain_wgpu_frontbuffer_updated(struct wined3d_swapchain *swapchain)
@@ -2888,7 +3291,10 @@ static BOOL wgpu_init_format_info(struct wined3d_adapter *adapter)
     {
 #define TEX (WINED3D_FORMAT_CAP_TEXTURE | WINED3D_FORMAT_CAP_FILTERING | WINED3D_FORMAT_CAP_BLIT)
 #define RT (WINED3D_FORMAT_CAP_RENDERTARGET | WINED3D_FORMAT_CAP_FBO_ATTACHABLE | WINED3D_FORMAT_CAP_POSTPIXELSHADER_BLENDING)
-#define DS (WINED3D_FORMAT_CAP_DEPTH_STENCIL | WINED3D_FORMAT_CAP_FBO_ATTACHABLE | WINED3D_FORMAT_CAP_TEXTURE)
+/* Depth formats are plain surfaces too (CheckDeviceFormat with
+ * D3DUSAGE_DEPTHSTENCIL on D3DRTYPE_SURFACE asks for BLIT). */
+#define DS (WINED3D_FORMAT_CAP_DEPTH_STENCIL | WINED3D_FORMAT_CAP_FBO_ATTACHABLE | WINED3D_FORMAT_CAP_TEXTURE \
+        | WINED3D_FORMAT_CAP_BLIT)
         {WINED3DFMT_B8G8R8A8_UNORM, TEX | RT | WINED3D_FORMAT_CAP_SRGB_READ | WINED3D_FORMAT_CAP_SRGB_WRITE},
         {WINED3DFMT_B8G8R8X8_UNORM, TEX | RT | WINED3D_FORMAT_CAP_SRGB_READ | WINED3D_FORMAT_CAP_SRGB_WRITE},
         {WINED3DFMT_R8G8B8A8_UNORM, TEX | RT},
@@ -2904,7 +3310,10 @@ static BOOL wgpu_init_format_info(struct wined3d_adapter *adapter)
         {WINED3DFMT_B10G10R10A2_UNORM, TEX},
         {WINED3DFMT_R16G16_UNORM, TEX},
         {WINED3DFMT_R16G16B16A16_UNORM, TEX},
-        {WINED3DFMT_P8_UINT, WINED3D_FORMAT_CAP_TEXTURE | WINED3D_FORMAT_CAP_BLIT},
+        /* Plain surfaces (DirectDraw's 8-bit ones); never a texture, as with
+         * wined3d's GL backend: Direct3D 8/9 texture palettes aren't
+         * implemented in Wine (p8_texture_test then skips). */
+        {WINED3DFMT_P8_UINT, WINED3D_FORMAT_CAP_BLIT},
         {WINED3DFMT_L8_UNORM, TEX},
         {WINED3DFMT_L8A8_UNORM, TEX},
         {WINED3DFMT_L4A4_UNORM, TEX},
@@ -2938,6 +3347,9 @@ static BOOL wgpu_init_format_info(struct wined3d_adapter *adapter)
         {WINED3DFMT_D32_FLOAT, DS},
         {WINED3DFMT_S8_UINT_D24_FLOAT, DS},
         {WINED3DFMT_INTZ, DS | WINED3D_FORMAT_CAP_FILTERING},
+        /* Plain surfaces only: the CPU blitter converts them to RGB
+         * (StretchRect, CheckDeviceFormatConversion). */
+        {WINED3DFMT_YUY2, WINED3D_FORMAT_CAP_BLIT},
 #undef TEX
 #undef RT
 #undef DS
@@ -3020,7 +3432,10 @@ static void wgpu_init_d3d_info(struct wined3d_adapter *adapter, unsigned int win
     d3d_info->vertex_bgra = true;
     d3d_info->texture_swizzle = true;
     d3d_info->clip_control = true;
-    d3d_info->full_ffp_varyings = true;
+    /* The core links varyings by semantic: fixed-function shaders write
+     * only the texture coordinates the vertices have, and the others read
+     * 0 as on Windows (pretransformed_varying_test). */
+    d3d_info->full_ffp_varyings = false;
     d3d_info->pbo = false;
     d3d_info->feature_level = WINED3D_FEATURE_LEVEL_9_3;
     d3d_info->subpixel_viewport = true;
@@ -3034,10 +3449,10 @@ static void wgpu_init_d3d_info(struct wined3d_adapter *adapter, unsigned int win
 
 struct wined3d_adapter *wined3d_adapter_wgpu_create(unsigned int ordinal, unsigned int wined3d_creation_flags)
 {
-    struct wined3d_gpu_description gpu_description =
-    {
-        HW_VENDOR_SOFTWARE, CARD_WINE, "WebGPU (d3dgpu)", DRIVER_WINE, 512,
-    };
+    struct wined3d_gpu_description description = {0};
+    const struct wined3d_gpu_description *gpu_description;
+    enum wined3d_pci_vendor vendor;
+    enum wined3d_pci_device device;
     struct wined3d_adapter *adapter;
     LUID primary_luid, *luid = NULL;
 
@@ -3050,14 +3465,36 @@ struct wined3d_adapter *wined3d_adapter_wgpu_create(unsigned int ordinal, unsign
     }
     wgpu_host.version = D3DGPU_VERSION;
     wgpu_host.flags = 0;
+    wgpu_host.vendor_id = wgpu_host.device_id = 0;
     if (WINE_UNIX_CALL(unix_wgpu_open, &wgpu_host) || !wgpu_host.max_batch)
     {
         TRACE("The host has no WebGPU device.\n");
         return NULL;
     }
     wgpu_host.name[sizeof(wgpu_host.name) - 1] = 0;
-    if (wgpu_host.name[0])
-        gpu_description.description = wgpu_host.name;
+    /* The card programs see, as the GL and Vulkan adapters report it: the
+     * host GPU's when wined3d knows it, else a card of its vendor (NVIDIA
+     * for an unknown one) at this adapter's feature level. Games choose
+     * their rendering paths by vendor; a "software" adapter gets the least
+     * tested one (Far Cry's fog). Browsers tell the vendor but not the
+     * device. */
+    vendor = wgpu_host.vendor_id;
+    device = wgpu_host.device_id;
+    if (!device)
+        device = wined3d_gpu_from_feature_level(&vendor, WINED3D_FEATURE_LEVEL_9_3);
+    if (!(gpu_description = wined3d_get_user_override_gpu_description(vendor, device))
+            && !(gpu_description = wined3d_get_gpu_description(vendor, device)))
+    {
+        description.vendor = vendor;
+        description.device = device;
+        description.description = wgpu_host.name[0] ? wgpu_host.name : "WebGPU (d3dgpu)";
+        description.driver = DRIVER_WINE;
+        description.vidmem = 512;
+        gpu_description = &description;
+    }
+    TRACE("Host GPU %s %04x:%04x, reported as %s %04x:%04x.\n", debugstr_a(wgpu_host.name),
+            wgpu_host.vendor_id, wgpu_host.device_id, debugstr_a(gpu_description->description),
+            gpu_description->vendor, gpu_description->device);
     /* There is no thread for the command stream yet: run it on the
      * application's thread. */
     wined3d_settings.cs_multithreaded = 0;
@@ -3077,7 +3514,7 @@ struct wined3d_adapter *wined3d_adapter_wgpu_create(unsigned int ordinal, unsign
         free(adapter);
         return NULL;
     }
-    if (!wined3d_driver_info_init(&adapter->driver_info, &gpu_description, WINED3D_FEATURE_LEVEL_9_3, 0, 0))
+    if (!wined3d_driver_info_init(&adapter->driver_info, gpu_description, WINED3D_FEATURE_LEVEL_9_3, 0, 0))
     {
         wined3d_adapter_cleanup(adapter);
         free(adapter);

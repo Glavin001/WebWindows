@@ -1283,6 +1283,15 @@ impl<'a> Lifter<'a> {
                 let d = self.loc(i, 0);
                 self.write(d, c, 8);
             }
+            M::Smsw => {
+                // The machine status word (CR0) as Windows runs user code:
+                // paging, write protection, numeric errors, protected mode.
+                // Processor identification code reads its PE bit.
+                let w = self.op_width(i, 0);
+                let v = self.c32(if w == 16 { 0x003b } else { 0x8005_003b });
+                let d = self.loc(i, 0);
+                self.write(d, v, w);
+            }
             M::Push => self.lift_push(i),
             M::Pop => self.lift_pop(i),
             M::Pushad | M::Pusha => {
@@ -1503,10 +1512,11 @@ impl<'a> Lifter<'a> {
             }
             M::Cpuid => self.lift_cpuid(),
             M::Rdtsc => {
-                // A deterministic counter: advances by 1000 per read.
+                // Follows the host's clock (programs time it against the
+                // timers to find the processor's speed), and moves on every
+                // read even between ticks.
                 let t = self.load_native(Ty::I64, 8, crate::abi::cpu::SCRATCH);
-                let k = self.c64(1000);
-                let t = self.bin(BinOp::I64Add, t, k);
+                let t = self.emit(Ty::I64, Op::CallHelper(Helper::Tsc, vec![t]));
                 self.store_native(t, 8, crate::abi::cpu::SCRATCH);
                 let lo = self.un(UnOp::I32WrapI64, t);
                 let k32 = self.c64(32);

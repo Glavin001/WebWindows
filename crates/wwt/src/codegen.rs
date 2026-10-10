@@ -103,6 +103,11 @@ const G_TICK: u32 = 5;
 /// 64-bit code only.
 const G_CODE_PAGES: u32 = 6;
 
+/// Translated calls nested in WebAssembly calls before one returns to the
+/// dispatch loop instead (`call_depth_enter`). Browsers give a worker
+/// about 1 MB of stack; translated frames take up to a few hundred bytes.
+const MAX_CALL_DEPTH: u32 = 1000;
+
 /// How far (bytes) a load may be from an address that passed a check and
 /// still skip its own (see `check_covered`).
 const CHECK_WINDOW: u32 = 0x8000 - 16;
@@ -685,6 +690,8 @@ struct FnGen<'g, 'a> {
     loop_header: Vec<bool>,
     /// Scratch locals.
     tmp_i32: u32,
+    /// The thread's call depth before a call (see `call_depth_enter`).
+    depth_local: u32,
     /// Labels open at the current point of the body (blocks, loops, ifs).
     open_labels: u32,
     /// Shared fault blocks: (state mask, fault code), in creation order.
@@ -760,6 +767,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             merge: vec![false; n],
             loop_header: vec![false; n],
             tmp_i32: 0,
+            depth_local: 0,
             open_labels: 0,
             fault_blocks: vec![],
             fault_eip: 0,
@@ -788,6 +796,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
         g.local_of[CPU as usize] = 0;
         g.assign_locals();
         g.tmp_i32 = g.new_local(ValType::I32);
+        if f.blocks.iter().any(|b| b.term.clobbers_state()) {
+            g.depth_local = g.new_local(ValType::I32);
+        }
         g.fault_eip = g.new_local(m.code_type());
         g.tmp_map = g.new_local(ValType::I32);
         g.tmp_i32b = g.new_local(ValType::I32);
@@ -1191,6 +1202,40 @@ impl<'g, 'a> FnGen<'g, 'a> {
     }
 
     /// Calls (or tail-calls) the x86 address in local `t` through the table.
+    /// Before a call that nests a WebAssembly call: past `MAX_CALL_DEPTH`
+    /// nested calls, leaves with the callee's address instead, so the
+    /// frames unwind to the dispatch loop, which calls it from there (the
+    /// state is written back and the return address is on the guest
+    /// stack). Deep guest recursion then fits the WebAssembly stack.
+    fn call_depth_enter(&mut self, target: CallTarget) {
+        let d = self.depth_local;
+        self.emit(W::LocalGet(0));
+        self.emit(W::I32Load(memarg(cpu::CALL_DEPTH, 2)));
+        self.emit(W::LocalTee(d));
+        self.emit(W::I32Const(MAX_CALL_DEPTH as i32));
+        self.emit(W::I32GeU);
+        self.emit(W::If(BlockType::Empty));
+        match target {
+            CallTarget::Direct(addr) => self.code_const(addr),
+            CallTarget::Indirect(v) => self.get_code(v),
+        }
+        self.emit(W::Return);
+        self.emit(W::End);
+        self.emit(W::LocalGet(0));
+        self.emit(W::LocalGet(d));
+        self.emit(W::I32Const(1));
+        self.emit(W::I32Add);
+        self.emit(W::I32Store(memarg(cpu::CALL_DEPTH, 2)));
+    }
+
+    /// After the call: the depth from before it (also right when frames
+    /// below unwound without restoring theirs).
+    fn call_depth_leave(&mut self) {
+        self.emit(W::LocalGet(0));
+        self.emit(W::LocalGet(self.depth_local));
+        self.emit(W::I32Store(memarg(cpu::CALL_DEPTH, 2)));
+    }
+
     fn call_lookup(&mut self, t: u32, tail: bool) {
         self.residue.lookups += 1;
         self.emit(W::LocalGet(0));
@@ -1611,6 +1656,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             Term::Call { target, ret, cont } => {
                 self.sync(dirty);
+                self.call_depth_enter(target.clone());
                 match target {
                     CallTarget::Direct(addr) => match self.m.direct_target(addr) {
                         Some(fi) => {
@@ -1634,7 +1680,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 }
                 // Continue inline only if the callee returned to us.
                 let t = self.tmp_code();
-                self.emit(W::LocalTee(t));
+                self.emit(W::LocalSet(t));
+                self.call_depth_leave();
+                self.emit(W::LocalGet(t));
                 self.code_const(ret);
                 self.emit(if self.code64() { W::I64Ne } else { W::I32Ne });
                 self.emit(W::If(BlockType::Empty));
@@ -3241,6 +3289,29 @@ fn gen_helper(h: Helper, eflags: u32) -> wasm_encoder::Function {
             }
             out.push(W::End);
             out.push(W::I32Const(0));
+        }
+        Helper::Tsc => {
+            // param: previous (i64); local 1: the clock's value.
+            locals.push(ValType::I64);
+            out.push(W::GlobalGet(G_TICK));
+            out.push(W::I32Load(MemArg {
+                offset: 0,
+                align: 2,
+                memory_index: 0,
+            }));
+            out.push(W::I64ExtendI32U);
+            out.push(W::I64Const(3_000_000));
+            out.push(W::I64Mul);
+            out.push(W::LocalSet(1));
+            out.push(W::LocalGet(0));
+            out.push(W::I64Const(64));
+            out.push(W::I64Add);
+            out.push(W::LocalTee(0));
+            out.push(W::LocalGet(1));
+            out.push(W::LocalGet(0));
+            out.push(W::LocalGet(1));
+            out.push(W::I64GtU);
+            out.push(W::Select);
         }
         Helper::DivU128 => {
             // params: hi lo d (i64); locals: 3 = i (i32), 4 = top bit (i64).

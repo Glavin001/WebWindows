@@ -35,9 +35,7 @@ use std::sync::Arc;
 
 use d3dgpu_emu::format::{self as fmt, Conversion, FormatOptions};
 use d3dgpu_proto::d3d9::*;
-use d3dgpu_proto::{
-    buffer_usage, texture_usage, Command, Data, Handle, Rect, Stage, TextureDesc, TextureKind, TextureRegion,
-};
+use d3dgpu_proto::{buffer_usage, Command, Data, Handle, Rect, Stage, TextureDesc, TextureKind, TextureRegion};
 
 pub use present::{HeadlessPresenter, PresentContext, Presenter, SurfacePresenter};
 use resources::{Buffer, FastMap, Object, Ring, Texture};
@@ -166,8 +164,12 @@ impl std::error::Error for Error {}
 struct PassTargets {
     colors: [Option<Target>; MAX_RENDER_TARGETS],
     depth: Option<Target>,
+    /// The size draws and clears use: the render targets'.
     width: u32,
     height: u32,
+    /// The render target each colour attachment stands in for, when the
+    /// depth buffer is larger (see `current_targets`).
+    real: [Option<Target>; MAX_RENDER_TARGETS],
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -233,6 +235,16 @@ pub struct Core {
     queue: wgpu::Queue,
     opts: Options,
     objects: FastMap<u32, Object>,
+    /// Render targets standing in for smaller ones bound with a larger depth
+    /// buffer, by (target id, face, level, width, height); their ids count
+    /// down from the top of the range, which wined3d's counter never reaches.
+    stand_ins: HashMap<(u32, u32, u32, u32, u32), u32>,
+    /// Pipelines that copy depth by drawing it (`copy_depth`), by format.
+    depth_copy_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    next_stand_in: u32,
+    /// Copies of textures a draw samples while rendering to them, by id:
+    /// (copy, its sample view, the view's id).
+    feedback: HashMap<u32, (wgpu::Texture, wgpu::TextureView, u64)>,
     st: State,
     enc: Option<wgpu::CommandEncoder>,
     pass: Option<wgpu::RenderPass<'static>>,
@@ -251,6 +263,10 @@ pub struct Core {
     presenters: HashMap<u32, Box<dyn Presenter>>,
     presented: Vec<u32>,
     last_present: Option<u32>,
+    /// The texture the last Present showed, for [`Core::copy_last_present`].
+    last_presented: Option<Handle>,
+    /// Readbacks whose buffer failed to map.
+    failed_reads: u64,
     pending: VecDeque<Pending>,
     completed_fence: u64,
     next_id: u64,
@@ -283,6 +299,10 @@ impl Core {
             queue,
             opts,
             objects: FastMap::default(),
+            stand_ins: HashMap::new(),
+            depth_copy_pipelines: HashMap::new(),
+            next_stand_in: u32::MAX,
+            feedback: HashMap::new(),
             st: State::new(),
             enc: None,
             pass: None,
@@ -299,6 +319,8 @@ impl Core {
             presenters: HashMap::new(),
             presented: Vec::new(),
             last_present: None,
+            last_presented: None,
+            failed_reads: 0,
             pending: VecDeque::new(),
             completed_fence: 0,
             next_id: 1,
@@ -438,13 +460,34 @@ impl Core {
         match cmd {
             Command::CreateBuffer { id, size, usage } => self.create_buffer(id, size, usage),
             Command::Destroy { id } => {
+                // A pending clear of the texture goes first: once it is
+                // gone, that clear's pass would have no attachment, an
+                // error that loses everything recorded with it.
+                if self
+                    .clear
+                    .as_ref()
+                    .is_some_and(|(t, _)| t.colors.iter().flatten().chain(t.depth.iter()).any(|a| a.texture == id))
+                {
+                    self.flush_clear();
+                }
                 self.objects.remove(&id.0);
+                self.feedback.remove(&id.0);
+                // Stand-ins go with the render target they stand in for.
+                let stand_ins = &mut self.stand_ins;
+                let objects = &mut self.objects;
+                stand_ins.retain(|k, v| {
+                    let keep = k.0 != id.0;
+                    if !keep {
+                        objects.remove(v);
+                    }
+                    keep
+                });
                 self.d11.dirty = d3d11::dirty::ALL;
                 self.d11.caches.forget_handles();
             }
-            Command::WriteBuffer { id, offset, data } => {
+            Command::WriteBuffer { id, offset, data, no_overwrite } => {
                 if let Some(bytes) = self.resolve(data, shared) {
-                    self.write_buffer(id, offset, bytes);
+                    self.write_buffer(id, offset, bytes, no_overwrite);
                 }
             }
             Command::CreateTexture { id, desc } => self.create_texture(id, desc),
@@ -635,11 +678,15 @@ impl Core {
         });
         self.stats.buffers_created += 1;
         let bid = self.id();
-        let b = Buffer { gpu, id: bid, size, shadow: vec![0; padded as usize], last_use: 0 };
+        let b = Buffer { gpu, id: bid, size, shadow: vec![0; padded as usize], last_use: 0, ordered: (0, 0, 0) };
         self.objects.insert(id.0, Object::Buffer(b));
     }
 
-    fn write_buffer(&mut self, id: Handle, offset: u32, bytes: &[u8]) {
+    /// `no_overwrite`: the bytes are none that recorded commands read
+    /// (a Direct3D NOOVERWRITE map), so they can be written ahead of those
+    /// commands, without ending the render pass; as on Direct3D hardware,
+    /// commands not yet run that read them see them (test_map_synchronisation).
+    fn write_buffer(&mut self, id: Handle, offset: u32, bytes: &[u8], no_overwrite: bool) {
         let epoch = self.epoch;
         let Some(Object::Buffer(b)) = self.objects.get_mut(&id.0) else {
             return self.warn(format!("WriteBuffer: {id:?} is not a buffer"));
@@ -655,8 +702,11 @@ impl Core {
         let start = offset as usize & !3;
         let stop = end.next_multiple_of(4);
         let in_use = b.last_use == epoch;
+        // Not over bytes copied in command order this epoch, which would
+        // land after it.
+        let ahead = no_overwrite && (b.ordered.0 != epoch || stop <= b.ordered.1 || start >= b.ordered.2);
         self.stats.bytes_uploaded += (stop - start) as u64;
-        if !in_use {
+        if !in_use || ahead {
             let Some(Object::Buffer(b)) = self.objects.get(&id.0) else { unreachable!() };
             self.queue.write_buffer(&b.gpu, start as u64, &b.shadow[start..stop]);
             return;
@@ -677,13 +727,25 @@ impl Core {
             }
         };
         let upload = self.uploads.buffer.clone();
-        let Some(Object::Buffer(b)) = self.objects.get(&id.0) else { unreachable!() };
+        let epoch = self.epoch;
+        let Some(Object::Buffer(b)) = self.objects.get_mut(&id.0) else { unreachable!() };
+        b.ordered = if b.ordered.0 == epoch {
+            (epoch, b.ordered.1.min(start), b.ordered.2.max(stop))
+        } else {
+            (epoch, start, stop)
+        };
         let dst = b.gpu.clone();
         self.encoder().copy_buffer_to_buffer(&upload, src, &dst, start as u64, (stop - start) as u64);
     }
 
     fn create_texture(&mut self, id: Handle, desc: TextureDesc) {
-        let opts = FormatOptions { bc_supported: self.opts.bc };
+        // Block-compressed volumes need a feature WebGPU makes optional
+        // (texture-compression-bc-sliced-3d): they are decoded instead.
+        let opts = FormatOptions {
+            bc_supported: self.opts.bc && desc.kind != TextureKind::Volume,
+            // As float32 when it filters and blends like the float16 it replaces.
+            float32: self.opts.float32_filterable && self.device.features().contains(wgpu::Features::FLOAT32_BLENDABLE),
+        };
         let Some(plan) = fmt::plan(desc.format, &opts) else {
             return self.warn(format!("CreateTexture {id:?}: unsupported format {:?}", desc.format));
         };
@@ -703,8 +765,17 @@ impl Core {
                 usage |= wgpu::TextureUsages::COPY_DST;
             }
         }
-        let renderable = desc.kind != TextureKind::Volume && !format.is_compressed();
-        if renderable && (desc.usage & (texture_usage::RENDER_TARGET | texture_usage::DEPTH_STENCIL) != 0 || depth) {
+        // Any surface Direct3D can colour-fill or blit to is drawn into
+        // here (ColorFill on an offscreen plain surface, StretchRect to a
+        // texture): render-attachable whenever the format allows it, not
+        // only when it is a render target.
+        let renderable = desc.kind != TextureKind::Volume
+            && !format.is_compressed()
+            && format
+                .guaranteed_format_features(self.device.features())
+                .allowed_usages
+                .contains(wgpu::TextureUsages::RENDER_ATTACHMENT);
+        if renderable {
             usage |= wgpu::TextureUsages::RENDER_ATTACHMENT;
         }
         let srgb = plan.gpu.srgb().map(convert::texture_format);
@@ -853,9 +924,41 @@ impl Core {
     }
 
     fn end_pass(&mut self) {
-        self.pass = None;
-        self.pass_targets = None;
+        let ended = self.pass.take().is_some();
+        let targets = self.pass_targets.take();
         self.d11.pass = None;
+        // Stand-ins go back to the render targets they stood in for.
+        if let (true, Some(t)) = (ended, targets) {
+            for i in 0..MAX_RENDER_TARGETS {
+                if let (Some(real), Some(stand_in)) = (t.real[i], t.colors[i]) {
+                    self.copy_color(stand_in, real, t.width, t.height);
+                }
+            }
+        }
+    }
+
+    /// Copies the top-left `w` x `h` of colour target `src` to `dst`.
+    fn copy_color(&mut self, src: Target, dst: Target, w: u32, h: u32) {
+        let gpu = |t: Target| match self.objects.get(&t.texture.0) {
+            Some(Object::Texture(tex)) => {
+                Some((tex.gpu.clone(), if tex.desc.kind == TextureKind::Cube { t.face } else { 0 }))
+            }
+            _ => None,
+        };
+        let (Some((src_gpu, src_z)), Some((dst_gpu, dst_z))) = (gpu(src), gpu(dst)) else {
+            return;
+        };
+        let at = |texture, mip_level, z| wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level,
+            origin: wgpu::Origin3d { x: 0, y: 0, z },
+            aspect: wgpu::TextureAspect::All,
+        };
+        self.encoder().copy_texture_to_texture(
+            at(&src_gpu, src.level, src_z),
+            at(&dst_gpu, dst.level, dst_z),
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
     }
 
     /// The attachments the current state renders to, or `None` when
@@ -869,7 +972,13 @@ impl Core {
                 continue;
             }
             match self.objects.get(&rt.texture.0) {
-                Some(Object::Texture(tex)) if !tex.is_depth() && rt.level < tex.levels => {
+                // Compressed and other formats WebGPU can't render to
+                // (ColorFill on a DXT surface) are left out.
+                Some(Object::Texture(tex))
+                    if !tex.is_depth()
+                        && rt.level < tex.levels
+                        && tex.gpu.usage().contains(wgpu::TextureUsages::RENDER_ATTACHMENT) =>
+                {
                     t.colors[i] = Some(rt);
                     size.get_or_insert(tex.level_size(rt.level));
                 }
@@ -877,23 +986,151 @@ impl Core {
             }
         }
         let ds = self.st.ds;
+        let mut grow = None;
         if !ds.texture.is_none() {
             if let Some(Object::Texture(tex)) = self.objects.get(&ds.texture.0) {
                 if tex.is_depth() && ds.level < tex.levels {
-                    t.depth = Some(ds);
-                    size.get_or_insert(tex.level_size(ds.level));
+                    let (dw, dh) = tex.level_size(ds.level);
+                    match size {
+                        // Direct3D 9 renders to a target with a larger
+                        // depth buffer (its top-left part), which stays one
+                        // buffer: what one target's draws leave in it, the
+                        // next one's see. WebGPU wants attachments of one
+                        // size, so the pass renders into stand-ins of the
+                        // depth buffer's size for the targets, copied from
+                        // them before (begin_pass) and back after
+                        // (end_pass). A smaller depth buffer is undefined in
+                        // Direct3D: no depth.
+                        Some((w, h)) if (dw, dh) != (w, h) => {
+                            if dw >= w && dh >= h {
+                                t.depth = Some(ds);
+                                grow = Some((dw, dh));
+                            }
+                        }
+                        _ => {
+                            t.depth = Some(ds);
+                            size.get_or_insert((dw, dh));
+                        }
+                    }
                 }
             }
         }
         let (w, h) = size?;
         t.width = w;
         t.height = h;
+        if let Some((dw, dh)) = grow {
+            for i in 0..MAX_RENDER_TARGETS {
+                let Some(rt) = t.colors[i] else { continue };
+                let Some(Object::Texture(tex)) = self.objects.get(&rt.texture.0) else { continue };
+                let desc = tex.desc;
+                t.colors[i] = Some(self.stand_in(rt, desc, dw, dh));
+                t.real[i] = Some(rt);
+            }
+        }
         Some(t)
+    }
+
+    /// A `w` x `h` texture of `of`'s format used in its place (see
+    /// `current_targets`), made on first use and kept with `of`'s id.
+    fn stand_in(&mut self, of: Target, desc: TextureDesc, w: u32, h: u32) -> Target {
+        let key = (of.texture.0, of.face, of.level, w, h);
+        let id = match self.stand_ins.get(&key) {
+            Some(&id) if self.objects.contains_key(&id) => id,
+            _ => {
+                let id = self.next_stand_in;
+                self.next_stand_in -= 1;
+                let desc = TextureDesc { kind: TextureKind::D2, width: w, height: h, depth: 1, levels: 1, ..desc };
+                self.create_texture(Handle(id), desc);
+                self.stand_ins.insert(key, id);
+                id
+            }
+        };
+        Target { texture: Handle(id), face: 0, level: 0 }
+    }
+
+    /// A view of a copy of texture `id`, taken now, for a draw that samples
+    /// it while rendering to it: undefined in Direct3D but done by games
+    /// (they get the contents from before the draw), and a usage conflict
+    /// that makes WebGPU drop the whole submit.
+    fn feedback_copy(&mut self, id: u32) -> Option<(wgpu::TextureView, u64)> {
+        let Some(Object::Texture(t)) = self.objects.get(&id) else { return None };
+        if !t.gpu.usage().contains(wgpu::TextureUsages::COPY_SRC) {
+            return None;
+        }
+        let (size, levels, dim, format, kind) = (t.gpu.size(), t.levels, t.gpu.dimension(), t.format, t.desc.kind);
+        let stale = match self.feedback.get(&id) {
+            Some((copy, ..)) => copy.size() != size || copy.format() != format || copy.mip_level_count() != levels,
+            None => true,
+        };
+        if stale {
+            let copy = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("d3dgpu feedback copy"),
+                size,
+                mip_level_count: levels,
+                sample_count: 1,
+                dimension: dim,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let depth = format.is_depth_stencil_format();
+            let view = copy.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("d3dgpu feedback view"),
+                dimension: Some(match kind {
+                    TextureKind::D2 => wgpu::TextureViewDimension::D2,
+                    TextureKind::Cube => wgpu::TextureViewDimension::Cube,
+                    TextureKind::Volume => wgpu::TextureViewDimension::D3,
+                }),
+                aspect: if depth { wgpu::TextureAspect::DepthOnly } else { wgpu::TextureAspect::All },
+                ..Default::default()
+            });
+            let view_id = self.id();
+            self.feedback.insert(id, (copy, view, view_id));
+        }
+        // What is drawn so far, pending clears included, goes into the copy.
+        if self.clear.is_some() {
+            self.flush_clear();
+        }
+        self.end_pass();
+        let Some(Object::Texture(t)) = self.objects.get(&id) else { return None };
+        let src = t.gpu.clone();
+        let (copy, view, view_id) = self.feedback.get(&id).cloned()?;
+        let encoder = self.encoder();
+        for level in 0..levels {
+            let w = (size.width >> level).max(1);
+            let h = (size.height >> level).max(1);
+            let layers = if dim == wgpu::TextureDimension::D3 {
+                (size.depth_or_array_layers >> level).max(1)
+            } else {
+                size.depth_or_array_layers
+            };
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &src,
+                    mip_level: level,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &copy,
+                    mip_level: level,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: layers },
+            );
+        }
+        Some((view, view_id))
     }
 
     /// Makes sure a render pass is open on the current targets.
     fn ensure_pass(&mut self) -> Option<PassTargets> {
         let targets = self.current_targets()?;
+        self.ensure_pass_for(targets)
+    }
+
+    /// A pass on `targets` (the open one if it is on them).
+    fn ensure_pass_for(&mut self, targets: PassTargets) -> Option<PassTargets> {
         if self.pass.is_some() && self.pass_targets == Some(targets) {
             return Some(targets);
         }
@@ -908,10 +1145,16 @@ impl Core {
             None => PendingClear::default(),
         };
         self.begin_pass(targets, clear);
-        Some(targets)
+        self.pass.is_some().then_some(targets)
     }
 
     fn begin_pass(&mut self, targets: PassTargets, clear: PendingClear) {
+        // Stand-ins start with their render targets' contents, unless cleared.
+        for i in 0..MAX_RENDER_TARGETS {
+            if let (Some(real), Some(stand_in), None) = (targets.real[i], targets.colors[i], clear.colors[i]) {
+                self.copy_color(real, stand_in, targets.width, targets.height);
+            }
+        }
         let epoch = self.epoch;
         let mut colors: Vec<Option<(wgpu::TextureView, Option<wgpu::Color>)>> = Vec::new();
         for (i, c) in targets.colors.iter().enumerate() {
@@ -933,6 +1176,14 @@ impl Core {
             }
             _ => None,
         });
+        // A pass without attachments is an error that invalidates the
+        // whole encoder (targets destroyed since they were bound).
+        if colors.is_empty() && depth.is_none() {
+            self.warn("pass skipped: its targets no longer exist");
+            self.pass = None;
+            self.pass_targets = None;
+            return;
+        }
         let color_attachments: Vec<Option<wgpu::RenderPassColorAttachment>> = colors
             .iter()
             .map(|c| {
@@ -1023,6 +1274,43 @@ impl Core {
         let Some(targets) = self.current_targets() else {
             return self.warn("Clear with no render target or depth buffer bound");
         };
+        // Direct3D clears each attachment at its own size, where a pass has
+        // one size (and draws use a stand-in for a larger depth buffer):
+        // attachments of different sizes are cleared one at a time.
+        let mut singles = Vec::new();
+        for i in 0..MAX_RENDER_TARGETS {
+            if let Some(rt) = targets.real[i].or(targets.colors[i]) {
+                let mut t = PassTargets::default();
+                t.colors[i] = Some(rt);
+                singles.push((t, self.target_size(rt)));
+            }
+        }
+        if !self.st.ds.texture.is_none() && flags & (clear::ZBUFFER | clear::STENCIL) != 0 {
+            let ds = self.st.ds;
+            if matches!(self.objects.get(&ds.texture.0), Some(Object::Texture(t)) if t.is_depth() && ds.level < t.levels)
+            {
+                singles.push((PassTargets { depth: Some(ds), ..Default::default() }, self.target_size(ds)));
+            }
+        }
+        if singles.iter().any(|(_, size)| *size != (targets.width, targets.height)) {
+            for (mut t, (w, h)) in singles {
+                (t.width, t.height) = (w, h);
+                self.clear_targets(t, flags, color, z, stencil, rects);
+            }
+            return;
+        }
+        self.clear_targets(targets, flags, color, z, stencil, rects);
+    }
+
+    /// The size of the level a target binds.
+    fn target_size(&self, t: Target) -> (u32, u32) {
+        match self.objects.get(&t.texture.0) {
+            Some(Object::Texture(tex)) => tex.level_size(t.level),
+            _ => (0, 0),
+        }
+    }
+
+    fn clear_targets(&mut self, targets: PassTargets, flags: u32, color: u32, z: f32, stencil: u32, rects: &[Rect]) {
         let vp = self.st.viewport;
         let mut region = Rect::new(vp.x as i32, vp.y as i32, (vp.x + vp.width) as i32, (vp.y + vp.height) as i32);
         if self.st.r(RenderState::ScissorTestEnable) != 0 {
@@ -1046,7 +1334,16 @@ impl Core {
         if flags & clear::TARGET != 0 {
             for (i, c) in targets.colors.iter().enumerate() {
                 if c.is_some() {
-                    want.colors[i] = Some(convert::color(color));
+                    let mut c = convert::color(color);
+                    // D3DRS_SRGBWRITEENABLE: the clear colour is linear and
+                    // written sRGB-encoded, to formats that have an sRGB form.
+                    let srgb_target = matches!(self.objects.get(&targets.colors[i].unwrap().texture.0),
+                        Some(Object::Texture(t)) if t.srgb_view.is_some());
+                    if self.st.r(RenderState::SrgbWriteEnable) != 0 && srgb_target {
+                        let enc = |v: f64| if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+                        (c.r, c.g, c.b) = (enc(c.r), enc(c.g), enc(c.b));
+                    }
+                    want.colors[i] = Some(c);
                 }
             }
         }
@@ -1090,7 +1387,7 @@ impl Core {
     }
 
     fn quad_clear(&mut self, targets: PassTargets, want: &PendingClear, color: u32, regions: &[Rect]) {
-        if self.ensure_pass().is_none() {
+        if self.ensure_pass_for(targets).is_none() {
             return;
         }
         let mut formats = [None; MAX_RENDER_TARGETS];
@@ -1114,7 +1411,8 @@ impl Core {
         let pipeline = self.caches.clear_pipeline(&self.device, &key, &mut self.stats);
         let pass = self.pass.as_mut().unwrap();
         pass.set_pipeline(&pipeline);
-        let c = convert::color(color);
+        // The colour as the clear computed it (sRGB writes encode it).
+        let c = want.colors.iter().flatten().next().copied().unwrap_or_else(|| convert::color(color));
         pass.set_blend_constant(c);
         let z = want.depth.unwrap_or(0.0);
         pass.set_viewport(0.0, 0.0, targets.width as f32, targets.height as f32, z, z);
@@ -1227,6 +1525,17 @@ impl Core {
             match (&p.kind, s) {
                 (PendingKind::Read { buffer, read }, 1) => self.finish_read(buffer, read, shared),
                 (PendingKind::Raw { buffer, read }, 1) => self.finish_raw(buffer, read, shared),
+                // The fence still completes, or the program would wait for
+                // ever; what it reads is whatever the region held before.
+                (_, 2) => {
+                    self.failed_reads += 1;
+                    if self.failed_reads.is_power_of_two() {
+                        self.warn(format!(
+                            "readback failed ({} so far): the program reads stale data",
+                            self.failed_reads
+                        ));
+                    }
+                }
                 _ => {}
             }
             self.completed_fence = self.completed_fence.max(p.fence);
@@ -1275,7 +1584,35 @@ impl Core {
         self.presenters.entry(window).or_insert_with(|| Box::new(HeadlessPresenter::new()));
     }
 
+    /// A copy of the last presented frame as RGBA8, made now (for a debug
+    /// report: what the program presented, before any scaling to a window),
+    /// or None when nothing was presented or its texture is gone.
+    pub fn copy_last_present(&mut self) -> Option<(wgpu::Texture, (u32, u32))> {
+        let texture = self.last_presented?;
+        let (src, size, alpha_is_one) = match self.objects.get_mut(&texture.0) {
+            Some(Object::Texture(t)) => (t.rt_view(0, 0), t.level_size(0), t.plan.alpha_is_one()),
+            _ => return None,
+        };
+        self.end_pass();
+        self.flush_clear();
+        let mut copy = HeadlessPresenter::new();
+        {
+            let enc = self.enc.get_or_insert_with(|| self.device.create_command_encoder(&Default::default()));
+            let mut ctx = PresentContext {
+                device: &self.device,
+                queue: &self.queue,
+                encoder: enc,
+                blitter: &mut self.blitter,
+                uniforms: &mut self.uniforms,
+            };
+            copy.present(&mut ctx, &src, size, alpha_is_one);
+        }
+        self.submit();
+        copy.front_buffer().map(|(t, s)| (t.clone(), s))
+    }
+
     fn present(&mut self, texture: Handle, window: u32) {
+        self.last_presented = Some(texture);
         self.end_pass();
         self.flush_clear();
         let (src, (w, h), alpha_is_one) = match self.objects.get_mut(&texture.0) {
@@ -1322,8 +1659,16 @@ impl Core {
             }
             _ => return self.warn("StretchRect: destination is not a render target"),
         };
+        if src_depth && dst_format.is_depth_stencil_format() {
+            // Direct3D 9 copies whole depth surfaces of one size only.
+            let whole = |r: Rect, (w, h): (u32, u32)| r.width() == 0 || r == Rect::new(0, 0, w as i32, h as i32);
+            if src_size != dst_size || !whole(src_rect, src_size) || !whole(dst_rect, dst_size) {
+                return self.warn("StretchRect between depth surfaces of different sizes or parts");
+            }
+            return self.copy_depth(src, dst);
+        }
         if src_depth || dst_format.is_depth_stencil_format() {
-            return self.warn("StretchRect between depth surfaces is not supported yet");
+            return self.warn("StretchRect between depth and colour surfaces");
         }
         let full = |r: Rect, (w, h): (u32, u32)| if r.width() == 0 { Rect::new(0, 0, w as i32, h as i32) } else { r };
         let (sr, dr) = (full(src_rect, src_size), full(dst_rect, dst_size));
@@ -1346,6 +1691,101 @@ impl Core {
             gamma: None,
         };
         ctx.blit(&src_view, &dst_view, dst_format, &params);
+    }
+}
+
+impl Core {
+    /// Copies a depth buffer into one of the same size by drawing its depth:
+    /// WebGPU can't copy `depth24plus` textures. Stencil is not copied.
+    fn copy_depth(&mut self, src: Target, dst: Target) {
+        let src_view = match self.objects.get(&src.texture.0) {
+            Some(Object::Texture(t)) if t.desc.kind == TextureKind::D2 => {
+                t.gpu.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("d3dgpu depth copy source"),
+                    dimension: Some(wgpu::TextureViewDimension::D2),
+                    aspect: wgpu::TextureAspect::DepthOnly,
+                    base_mip_level: src.level,
+                    mip_level_count: Some(1),
+                    ..Default::default()
+                })
+            }
+            _ => return self.warn("StretchRect: depth copy from a cube or volume"),
+        };
+        let (dst_view, format, stencil) = match self.objects.get_mut(&dst.texture.0) {
+            Some(Object::Texture(t)) => (t.rt_view(dst.face, dst.level), t.format, t.format.has_stencil_aspect()),
+            _ => return,
+        };
+        let device = self.device.clone();
+        let pipeline = self
+            .depth_copy_pipelines
+            .entry(format)
+            .or_insert_with(|| {
+                let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("d3dgpu depth copy"),
+                    source: wgpu::ShaderSource::Wgsl(
+                        "@group(0) @binding(0) var src: texture_depth_2d;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4<f32>(p * 2.0 - 1.0, 0.0, 1.0);
+}
+struct Out { @builtin(frag_depth) depth: f32 }
+@fragment fn fs(@builtin(position) p: vec4<f32>) -> Out {
+    return Out(textureLoad(src, vec2<i32>(p.xy), 0));
+}"
+                        .into(),
+                    ),
+                });
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("d3dgpu depth copy"),
+                    layout: None,
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs"),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("fs"),
+                        compilation_options: Default::default(),
+                        targets: &[],
+                    }),
+                    primitive: Default::default(),
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(wgpu::CompareFunction::Always),
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: Default::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            })
+            .clone();
+        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("d3dgpu depth copy"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&src_view) }],
+        });
+        let keep = wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store };
+        let mut pass = self.encoder().begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("d3dgpu depth copy"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &dst_view,
+                depth_ops: Some(keep),
+                stencil_ops: stencil
+                    .then_some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &group, &[]);
+        pass.draw(0..3, 0..1);
     }
 }
 

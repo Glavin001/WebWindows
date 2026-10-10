@@ -1,0 +1,676 @@
+{
+  "test_process_vertices": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_coop_level_create_device_window": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_clipper_blt": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_coop_level_d3d_state": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_surface_interface_mismatch": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_coop_level_threaded": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_depth_blit": {
+    "status": "done",
+    "failures": 8,
+    "failed": [
+      "ddraw7.c:1798: Test failed: Hardware device: Expected color 0x00ff0000 at 80,60, got 0x0000ff00, software device 0.",
+      "ddraw7.c:1798: Test failed: Hardware device: Expected color 0x00ff0000 at 240,60, got 0x0000ff00, software device 0.",
+      "ddraw7.c:1798: Test failed: Hardware device: Expected color 0x00ff0000 at 80,180, got 0x0000ff00, software device 0.",
+      "ddraw7.c:1798: Test failed: Hardware device: Expected color 0x00ff0000 at 240,180, got 0x0000ff00, software device 0.",
+      "ddraw7.c:1798: Test failed: Software device: Expected color 0x00ff0000 at 80,60, got 0x0000ff00, software device 0x1.",
+      "ddraw7.c:1798: Test failed: Software device: Expected color 0x00ff0000 at 240,60, got 0x0000ff00, software device 0x1.",
+      "ddraw7.c:1798: Test failed: Software device: Expected color 0x00ff0000 at 80,180, got 0x0000ff00, software device 0x1.",
+      "ddraw7.c:1798: Test failed: Software device: Expected color 0x00ff0000 at 240,180, got 0x0000ff00, software device 0x1."
+    ]
+  },
+  "test_texture_load_ckey": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_zenable": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_ck_rgba": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_ck_default": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_ck_complex": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_surface_qi": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_device_qi": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_wndproc": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_window_style": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_redundant_mode_set": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_coop_level_mode_set": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_coop_level_mode_set_multi": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_initialize": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_coop_level_surf_create": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_vb_discard": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_coop_level_multi_window": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_draw_strided": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_lighting": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_specular_lighting": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_clear_rect_count": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_coop_level_versions": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_fog_special": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_lighting_interface_versions": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_coop_level_activateapp": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_texturemanage": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_block_formats_creation": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_unsupported_formats": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_rt_caps": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_primary_caps": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_surface_lock": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_surface_discard": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_flip": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_set_surface_desc": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_user_memory_getdc": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_sysmem_overlay": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_primary_palette": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_surface_attachment": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_private_data": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_pixel_format": {
+    "status": "done",
+    "failures": 4,
+    "failed": [
+      "ddraw7.c:9217: Test failed: Expected no format, got 1.",
+      "ddraw7.c:9225: Test failed: Expected no format, got 1.",
+      "ddraw7.c:9251: Test failed: Expected no format, got 1.",
+      "ddraw7.c:9259: Test failed: Expected no format, got 1."
+    ]
+  },
+  "test_create_surface_pitch": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_mipmap": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_palette_complex": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_p8_blit": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_material": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_palette_gdi": {
+    "status": "done",
+    "failures": 2,
+    "failed": [
+      "ddraw7.c:10143: Test failed: Clear index 3: Got unexpected color 0x00000000.",
+      "ddraw7.c:10145: Test failed: Clear index 4: Got unexpected color 0x00000000."
+    ]
+  },
+  "test_palette_alpha": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_vb_writeonly": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_lost_device": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_resource_priority": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_surface_desc_lock": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_fog_interpolation": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_fog_process_vertices": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_negative_fixedfunction_fog": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_table_fog_zw": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_signed_formats": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_color_fill": {
+    "status": "done",
+    "failures": 4,
+    "failed": [
+      "ddraw7.c:12181: Test failed: Got clear result 0x00ffffff, expected 0x00adbeef, surface vidmem zbuffer.",
+      "ddraw7.c:12204: Test failed: Got clear result 0xffffffff, expected 0x00000000, surface vidmem zbuffer.",
+      "ddraw7.c:12181: Test failed: Got clear result 0x00ffffff, expected 0x00adbeef, surface sysmem zbuffer.",
+      "ddraw7.c:12204: Test failed: Got clear result 0xffffffff, expected 0x00000000, surface sysmem zbuffer."
+    ]
+  },
+  "test_texcoordindex": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_colorkey_precision": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_range_colorkey": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_shademode": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_lockrect_invalid": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_yv12_overlay": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_offscreen_overlay": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_overlay_rect": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_blt": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_blt_z_alpha": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_cross_device_blt": {
+    "status": "done",
+    "failures": 2,
+    "failed": [
+      "ddraw7.c:456: Test failed: Failed to lock surface, hr 0x80004005.",
+      "ddraw7.c:13904: Test failed: Got unexpected color 0xdeadbeef."
+    ]
+  },
+  "test_color_clamping": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_getdc": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_draw_primitive": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_edge_antialiasing_blending": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_display_mode_surface_pixel_format": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_surface_desc_size": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_get_surface_from_dc": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_ck_operation": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_vb_refcount": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_compute_sphere_visibility": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_clip_planes_limits": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_texture_stages_limits": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_set_render_state": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_map_synchronisation": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_depth_readback": {
+    "status": "done",
+    "failures": 48,
+    "failed": [
+      "ddraw7.c:16274: Test failed: Test 1: Got depth 0x005c4000 (diff -3948545), expected 0x001fffff+/-11796, at 80, 60.",
+      "ddraw7.c:16274: Test failed: Test 1: Got depth 0x008fb332 (diff -3545497), expected 0x00599999+/-11796, at 240, 60.",
+      "ddraw7.c:16274: Test failed: Test 1: Got depth 0x006a400d (diff 2683685), expected 0x00933332+/-11796, at 400, 60.",
+      "ddraw7.c:16274: Test failed: Test 1: Got depth 0x009cb340 (diff 3152267), expected 0x00cccccb+/-11796, at 560, 60.",
+      "ddraw7.c:16274: Test failed: Test 1: Got depth 0x00294ccc (diff -190054), expected 0x00266666+/-11796, at 80, 180.",
+      "ddraw7.c:16274: Test failed: Test 1: Got depth 0x005bbfff (diff 278528), expected 0x005fffff+/-11796, at 240, 180.",
+      "ddraw7.c:16274: Test failed: Test 1: Got depth 0x00364cda (diff 6507711), expected 0x00999999+/-11796, at 400, 180.",
+      "ddraw7.c:16274: Test failed: Test 1: Got depth 0x0069c00d (diff 6910757), expected 0x00d33332+/-11796, at 560, 180."
+    ]
+  },
+  "test_clear": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_enum_surfaces": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_viewport": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_device_load": {
+    "status": "done",
+    "failures": 6,
+    "failed": [
+      "ddraw7.c:17251: Test failed: Test 2, face 0, level 7: Unexpected destination texture level pixels; 1/1/1 differences.",
+      "ddraw7.c:17251: Test failed: Test 3, face 0, level 0: Unexpected destination texture level pixels; 16383/16383/16383 differences.",
+      "ddraw7.c:17251: Test failed: Test 6, face 5, level 7: Unexpected destination texture level pixels; 1/1/1 differences.",
+      "ddraw7.c:17251: Test failed: Test 8, face 0, level 3: Unexpected destination texture level pixels; 45/45/1 differences.",
+      "ddraw7.c:17251: Test failed: Test 10, face 0, level 0: Unexpected destination texture level pixels; 256/16/1 differences.",
+      "ddraw7.c:17251: Test failed: Test 11, face 0, level 3: Unexpected destination texture level pixels; 4/1/1 differences."
+    ]
+  },
+  "test_color_vertex": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_killfocus": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_sysmem_draw": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_gdi_surface": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_multiply_transform": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_alphatest": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_clipper_refcount": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_begin_end_state_block": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_caps": {
+    "status": "done",
+    "failures": 1,
+    "failed": [
+      "ddraw7.c:18419: Test failed: depth 32: Got caps 0x10024000."
+    ]
+  },
+  "test_d32_support": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_surface_format_conversion_alpha": {
+    "status": "done",
+    "failures": 56,
+    "failed": [
+      "ddraw7.c:18766: Test failed: Test (0, R5G6B5 -> RGBA), row 0, unexpected surface data.",
+      "ddraw7.c:18766: Test failed: Test (1, R5G6B5 -> RGBA), row 0, unexpected surface data.",
+      "ddraw7.c:18766: Test failed: Test (2, R5G6B5 -> RGBA), row 0, unexpected surface data.",
+      "ddraw7.c:18766: Test failed: Test (3, R5G6B5 -> RGBA), row 0, unexpected surface data.",
+      "ddraw7.c:18766: Test failed: Test (0, R5G6B5 -> R5G5B5A1), row 0, unexpected surface data.",
+      "ddraw7.c:18766: Test failed: Test (1, R5G6B5 -> R5G5B5A1), row 0, unexpected surface data.",
+      "ddraw7.c:18766: Test failed: Test (2, R5G6B5 -> R5G5B5A1), row 0, unexpected surface data.",
+      "ddraw7.c:18766: Test failed: Test (3, R5G6B5 -> R5G5B5A1), row 0, unexpected surface data."
+    ]
+  },
+  "test_compressed_surface_stretch": {
+    "status": "done",
+    "failures": 61,
+    "failed": [
+      "ddraw7.c:19016: Test failed: Test (0, 0, 0, 1), x 0, y 0, got unexpected colour 0xffff.",
+      "ddraw7.c:19016: Test failed: Test (0, 0, 0, 2), x 0, y 0, got unexpected colour 0xffff.",
+      "ddraw7.c:19016: Test failed: Test (0, 0, 1, 0), x 0, y 0, got unexpected colour 0x0000.",
+      "ddraw7.c:19016: Test failed: Test (0, 0, 1, 1), x 0, y 0, got unexpected colour 0xffff.",
+      "ddraw7.c:19016: Test failed: Test (0, 0, 1, 2), x 0, y 0, got unexpected colour 0xffff.",
+      "ddraw7.c:19016: Test failed: Test (0, 0, 2, 0), x 0, y 0, got unexpected colour 0x0000.",
+      "ddraw7.c:19016: Test failed: Test (0, 0, 2, 1), x 0, y 0, got unexpected colour 0xffff.",
+      "ddraw7.c:19016: Test failed: Test (0, 0, 2, 2), x 0, y 0, got unexpected colour 0xffff."
+    ]
+  },
+  "test_cursor_clipping": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_window_position": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_get_display_mode": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_texture_wrong_caps": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_filling_convention": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_enum_devices": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_user_memory": {
+    "status": "done",
+    "failures": 24,
+    "failed": [
+      "ddraw7.c:20101: Test failed: Hardware device: Got unexpected color 0x00999999.",
+      "ddraw7.c:20186: Test failed: Hardware device: level 0: Got unexpected color 0x00999999.",
+      "ddraw7.c:20186: Test failed: Hardware device: level 1: Got unexpected color 0x00999999.",
+      "ddraw7.c:20186: Test failed: Hardware device: level 2: Got unexpected color 0x00999999.",
+      "ddraw7.c:20186: Test failed: Hardware device: level 3: Got unexpected color 0x00999999.",
+      "ddraw7.c:20186: Test failed: Hardware device: level 4: Got unexpected color 0x00999999.",
+      "ddraw7.c:20246: Test failed: Hardware device: face 0: Got unexpected color 0x00999999.",
+      "ddraw7.c:20246: Test failed: Hardware device: face 1: Got unexpected color 0x00999999."
+    ]
+  },
+  "test_flip_3d": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_multiple_devices": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_vb_desc": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_d3d_state_reset": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_sysmem_x_channel": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  },
+  "test_yuv_blit": {
+    "status": "done",
+    "failures": 592,
+    "failed": [
+      "ddraw7.c:20799: Test failed: format UYVY: value (0x10,0x80,0x80): Got color 0 at (80, 60).",
+      "ddraw7.c:20799: Test failed: format UYVY: value (0x10,0x80,0x80): Got color 0 at (240, 60).",
+      "ddraw7.c:20799: Test failed: format UYVY: value (0x10,0x80,0x80): Got color 0 at (80, 180).",
+      "ddraw7.c:20799: Test failed: format UYVY: value (0x10,0x80,0x80): Got color 0 at (240, 180).",
+      "ddraw7.c:20799: Test failed: format UYVY: value (0xeb,0x80,0x80): Got color 0 at (80, 60).",
+      "ddraw7.c:20799: Test failed: format UYVY: value (0xeb,0x80,0x80): Got color 0 at (240, 60).",
+      "ddraw7.c:20802: Test failed: format UYVY: value (0xeb,0x80,0x80): Got color 0 at (400, 60), expected 0xffffff.",
+      "ddraw7.c:20802: Test failed: format UYVY: value (0xeb,0x80,0x80): Got color 0 at (560, 60), expected 0xffffff."
+    ]
+  },
+  "test_blit_to_self": {
+    "status": "done",
+    "failures": 0,
+    "failed": []
+  }
+}

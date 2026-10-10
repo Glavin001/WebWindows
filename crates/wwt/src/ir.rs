@@ -505,6 +505,9 @@ pub enum Helper {
     EvalCond64,
     /// (hi, lo, d) -> quotient of the 128-bit hi:lo by d, for hi < d.
     DivU128,
+    /// (previous) -> the time stamp counter: the host's millisecond tick at
+    /// a nominal 3 GHz, and always past the previous value.
+    Tsc,
 }
 
 impl Helper {
@@ -520,6 +523,7 @@ impl Helper {
             Eflags64 => (&[I32, I64, I64, I64, I64], I32),
             EvalCond64 => (&[I32, I32, I64, I64, I64, I64], I32),
             DivU128 => (&[I64, I64, I64], I64),
+            Tsc => (&[I64], I64),
         }
     }
 }

@@ -176,7 +176,13 @@ onmessage = async (e) => {
       postMessage({ type: 'error', message: String(err) });
       return;
     }
-    postMessage({ type: 'ready', adapter: renderer.adapter(), info: JSON.parse(renderer.adapter_info_json()) });
+    // The GPU's vendor as WebGPU names it ("nvidia", "amd", "intel", ...),
+    // which wgpu does not carry over: Direct3D reports it to programs.
+    const vendor = await navigator.gpu
+      ?.requestAdapter()
+      .then((a) => a?.info?.vendor ?? '')
+      .catch(() => '');
+    postMessage({ type: 'ready', adapter: renderer.adapter(), vendor, info: JSON.parse(renderer.adapter_info_json()) });
     pump();
     loop();
   }

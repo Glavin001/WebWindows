@@ -234,6 +234,10 @@ export class WineHost {
     this.L = this.x64 ? layout64 : layout;
     this.translate = opts.translate;
     this.files = opts.files;
+    /** lower-case DOS path -> its last name as created (see rememberCase) */
+    this.caseNames = opts.caseNames ?? new Map();
+    /** lower-case DOS path -> FILETIME (BigInt) of its last write; others read as a fixed date */
+    this.fileTimes = opts.fileTimes ?? new Map();
     this.dirs = indexDirectories(this.files);
     // The side-by-side store wineboot would have filled.
     installAssemblies(this.files);
@@ -258,6 +262,8 @@ export class WineHost {
     this.unix?.attach(this);
     /** wined3d's WebGPU bridge (./d3d.mjs), or null: Direct3D without 3D */
     this.d3d = opts.d3d ?? null;
+    /** OpenGL on WebGL 2 (./webgl.mjs), where the host has it. */
+    this.webgl = opts.webgl ?? null;
     // Translated loops preempt against the ticker's tick count (set before
     // any module is instantiated: it is an import).
     machine.tickAddr = USER_SHARED_DATA;
@@ -271,6 +277,9 @@ export class WineHost {
     this.aliasThunks = opts.aliasThunks ?? true;
     this.modulesByPath = new Map();
     this.unimplemented = new Map();
+    /** A ./status.mjs StatusSampler a host can attach; ticked from system calls and preemption. */
+    this.status = null;
+    this.statusCalls = 0;
     /** The system call being run: its name, return address and stack. */
     this.sys = { name: '', ret: 0, esp: 0, espAfter: undefined };
     this.syscallEntries = [];
@@ -324,6 +333,22 @@ export class WineHost {
   }
   w64(a, v) {
     this.m.dv.setBigUint64(a, BigInt.asUintN(64, BigInt(v)), true);
+  }
+  /**
+   * Remembers the case of each name in a DOS path (paths are kept lower
+   * case, for Windows' case-insensitive lookups): directory listings give
+   * names as they were created, as Windows does (Far Cry finds its shaders
+   * by the names it lists).
+   */
+  rememberCase(path) {
+    recordCase(this.caseNames, path);
+  }
+
+  /** Whether a program's pointer to `size` bytes is committed memory above the null page. */
+  writable(a, size) {
+    if (a < 0x10000 || a + size > this.m.guestLimit) return false;
+    for (let p = this.vm.pageOf(a); p <= this.vm.pageOf(a + size - 1); p++) if (!this.vm.prot[p]) return false;
+    return true;
   }
   u64(a) {
     return this.m.dv.getBigUint64(a, true);
@@ -447,6 +472,18 @@ export class WineHost {
     if (this.trace) this.stderr(new TextEncoder().encode(`[wine] ${s}\n`));
   }
 
+  /**
+   * Something the host does not do, or only approximates: said once on
+   * stderr, in Wine's style, so a wrong or missing answer shows where the
+   * program first asked instead of as a crash later.
+   */
+  fixme(s) {
+    this.fixmes ??= new Set();
+    if (this.fixmes.has(s)) return;
+    this.fixmes.add(s);
+    this.stderr(new TextEncoder().encode(`fixme:wwt:${s}\n`));
+  }
+
   // ---- Process setup -----------------------------------------------------------
 
   boot(ntdllPath, exeDosPath) {
@@ -501,7 +538,10 @@ export class WineHost {
     this.ex = ex;
     this.stackReserve = exe.info.stackReserve;
     this.threads = new Scheduler(this);
-    this.m.onPreempt = (cpu, eip) => this.threads.preempt(cpu, eip);
+    this.m.onPreempt = (cpu, eip) => {
+      this.status?.tick();
+      return this.threads.preempt(cpu, eip);
+    };
     // Fast mode translates within the executable section around a miss.
     this.m.codeEnd = (addr) => this.codeEnd(addr);
     // The main thread: its TEB, CPU state and initial context. Wine's Unix
@@ -779,7 +819,9 @@ export class WineHost {
       // spin between the cooperative scheduler's switches). With a WebGPU
       // bridge (./d3d.mjs) it renders through that; without one, DirectDraw
       // runs without 3D and presents through GDI.
-      WINE_D3D_CONFIG: this.d3d && !this.x64 ? 'csmt=0' : 'renderer=no3d,csmt=0',
+      WINE_D3D_CONFIG: [this.d3d && !this.x64 ? 'csmt=0' : 'renderer=no3d,csmt=0']
+        .filter(Boolean)
+        .join(','),
       ...this.env,
     })
       .map(([k, v]) => `${k}=${v}`)
@@ -892,6 +934,8 @@ export class WineHost {
     const e = this.syscallEntries[id] ?? this.syscallEntry(id);
     const { name, impl, unixImpl, threadImpl, win32uWait } = e;
     e.calls++;
+    // Status samples (./status.mjs), checked every 64 calls.
+    if (this.status && (++this.statusCalls & 63) === 0) this.status.tick();
     const argBase = esp + 8; // [esp] -> stub, [esp+4] -> caller
     const a = (i) => this.u32(argBase + i * 4);
     const t = this.threads.current;
@@ -929,11 +973,18 @@ export class WineHost {
       // Waits an object satisfies complete when it is signalled.
       if (SIGNALLING.has(name) && !status) this.threads.signalled();
     } else if (!impl) {
-      if (!this.unimplemented.has(name)) this.log(`UNIMPLEMENTED ${name}`);
+      if (!this.unimplemented.has(name)) this.fixme(`${name} not implemented`);
       this.unimplemented.set(name, (this.unimplemented.get(name) ?? 0) + 1);
       status = STATUS.NOT_IMPLEMENTED;
     } else {
-      status = impl.call(this, a, cpu, argBase);
+      try {
+        status = impl.call(this, a, cpu, argBase);
+      } catch (e) {
+        // A pointer outside memory: Windows checks the program's pointers
+        // and fails the call.
+        if (!(e instanceof RangeError) || /call stack/.test(e.message)) throw e;
+        status = STATUS.ACCESS_VIOLATION;
+      }
     }
     if (status && typeof status === 'object') {
       if (status.jump !== undefined) {
@@ -991,7 +1042,7 @@ export class WineHost {
     } else if (unixImpl && this.routeToUnix(name, a)) {
       status = unixImpl(slots());
     } else if (!impl) {
-      if (!this.unimplemented.has(name)) this.log(`UNIMPLEMENTED ${name}`);
+      if (!this.unimplemented.has(name)) this.fixme(`${name} not implemented`);
       this.unimplemented.set(name, (this.unimplemented.get(name) ?? 0) + 1);
       status = STATUS.NOT_IMPLEMENTED;
     } else {
@@ -1141,6 +1192,9 @@ export class WineHost {
       }
     } else if (handle === WS2_32_UNIXLIB) {
       status = this.winsockCall(code, args);
+    } else if (handle === GL_UNIXLIB && this.webgl && code >= 0x1000) {
+      // opengl32 on WebGL 2 (native/opengl32-webgl).
+      status = this.webgl.unixCall(m, code, args);
     } else if (handle === GL_UNIXLIB) {
       // opengl32 without OpenGL: it attaches (wined3d imports it), and
       // every GL call fails.
@@ -1159,14 +1213,41 @@ export class WineHost {
 
   /**
    * ws2_32's Unix side: its name lookups (dlls/ws2_32/unixlib.c), which
-   * return Winsock error codes. There is no network: the machine is named
-   * and every lookup fails, so games fall back to their local (loopback)
-   * play. Sockets themselves go through ntdll's AFD device, which does not
-   * exist, so creating one fails.
+   * return Winsock error codes. There is no network: the machine is named,
+   * it and localhost resolve to the loopback address (as on a Windows
+   * machine without a network), and every other lookup fails, so games
+   * fall back to their local play. Sockets themselves go through ntdll's
+   * AFD device, which does not exist, so creating one fails.
    */
   winsockCall(code, args) {
     const WSAEFAULT = 10014;
     const WSAHOST_NOT_FOUND = 11001;
+    const ERROR_INSUFFICIENT_BUFFER = 122;
+    if (code === 2) {
+      // gethostbyname({const char *name, WS_hostent *host, unsigned *size}),
+      // laid out as hostent_from_unix does: the hostent, the alias and
+      // address lists, the address, the name.
+      const name = this.m.readCString(this.u32(args)).toLowerCase();
+      if (name !== 'localhost' && name !== 'webwindows') return WSAHOST_NOT_FOUND;
+      const host = this.u32(args + 4);
+      const psize = this.u32(args + 8);
+      const needed = 16 + 4 + 8 + 4 + name.length + 1;
+      if (this.u32(psize) < needed) return (this.w32(psize, needed), ERROR_INSUFFICIENT_BUFFER);
+      this.m.u8.fill(0, host, host + needed);
+      const aliases = host + 16;
+      const list = aliases + 4;
+      const addr = list + 8;
+      const str = addr + 4;
+      this.w32(host + 4, aliases);
+      this.w16(host + 8, 2); // AF_INET
+      this.w16(host + 10, 4);
+      this.w32(host + 12, list);
+      this.w32(list, addr);
+      this.m.u8.set([127, 0, 0, 1], addr);
+      for (let i = 0; i < name.length; i++) this.m.u8[str + i] = name.charCodeAt(i);
+      this.w32(host, str);
+      return 0;
+    }
     if (code === 3) {
       // gethostname({char *name, unsigned size})
       const name = 'webwindows';
@@ -1249,7 +1330,7 @@ export class WineHost {
         return 0;
       }
       default:
-        this.log(`ntdll unix call ${code} not implemented`);
+        this.fixme(`ntdll unix call ${code} not implemented`);
         return STATUS.NOT_IMPLEMENTED;
     }
   }
@@ -1287,4 +1368,10 @@ function indexDirectories(files) {
     return set(k, v);
   };
   return dirs;
+}
+
+/** Records the case of each name in a DOS path in `map` (lower-case path -> name). */
+export function recordCase(map, path) {
+  const parts = path.split('\\');
+  for (let i = 1; i < parts.length; i++) map.set(parts.slice(0, i + 1).join('\\').toLowerCase(), parts[i]);
 }

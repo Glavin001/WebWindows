@@ -200,7 +200,7 @@ try {
     const summary = (await out()).match(/summary: .*/)?.[0];
     check('d3d9bench: ran and exited', !!summary && (await page.evaluate(() => window.lastExit?.code)) === 0, summary);
 
-    // OpenGL through opengl32 (native/opengl32, over Direct3D 9): gltri's
+    // OpenGL through opengl32 (native/opengl32-webgl: gl4es on WebGL 2): gltri's
     // frame. Window at (40,30) as d3d9tri's, client area from (44,53): a
     // yellow square at (10,10)-(60,60), a green square in front of a red
     // one at (230,20)-(310,100) (depth test), a 2x2 red and white texture
@@ -224,6 +224,15 @@ try {
     await until(() => page.evaluate(() => !!window.lastExit), 60000);
     const glSummary = (await out()).match(/summary: .*/)?.[0];
     check('glbench: ran and exited', !!glSummary && (await page.evaluate(() => window.lastExit?.code)) === 0, glSummary);
+
+    // gl2test: OpenGL 2.0 checked pixel by pixel (GLSL, buffers, client
+    // arrays, render to texture, fixed-function state); it exits with the
+    // number of checks that failed.
+    await open(page, 'gl2test.exe', '/tests/programs/gui/gl2test.exe', '&d3dpresent=gdi');
+    await until(() => page.evaluate(() => !!window.lastExit), 120000);
+    const gl2 = (await out()).match(/gl2test: .*/)?.[0];
+    check('gl2test: every check passed', (await page.evaluate(() => window.lastExit?.code)) === 0,
+      gl2 ?? (await out()).split('\n').filter((l) => /^not ok/.test(l)).join(' | '));
 
     // Presenting on the GPU (no readback), to an offscreen buffer the page
     // can read (headless Chromium cannot show the canvas it uses

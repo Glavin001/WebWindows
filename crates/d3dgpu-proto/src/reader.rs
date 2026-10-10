@@ -19,6 +19,8 @@ pub enum Command<'a> {
         id: Handle,
         offset: u32,
         data: Data<'a>,
+        /// Written by WriteBufferNoOverwrite.
+        no_overwrite: bool,
     },
     CreateTexture {
         id: Handle,
@@ -545,7 +547,12 @@ fn decode_body<'a>(op: Op, c: &mut Cursor<'a>) -> Option<Command<'a>> {
     Some(match op {
         Op::CreateBuffer => Command::CreateBuffer { id: c.h()?, size: c.u32()?, usage: c.u32()? },
         Op::Destroy => Command::Destroy { id: c.h()? },
-        Op::WriteBuffer => Command::WriteBuffer { id: c.h()?, offset: c.u32()?, data: c.data()? },
+        Op::WriteBuffer | Op::WriteBufferNoOverwrite => Command::WriteBuffer {
+            id: c.h()?,
+            offset: c.u32()?,
+            data: c.data()?,
+            no_overwrite: op == Op::WriteBufferNoOverwrite,
+        },
         Op::CreateTexture => {
             let id = c.h()?;
             let kind = TextureKind::from_u32(c.u32()?)?;

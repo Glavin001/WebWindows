@@ -336,6 +336,10 @@ pub enum Conversion {
     Unorm16ToHalf,
     /// Each 16-bit snorm channel (`V16U16`, `Q16W16V16U16`) to float16, with the same precision loss.
     Snorm16ToHalf,
+    /// Each 16-bit unorm channel to float32, exactly (on devices that filter float32 textures).
+    Unorm16ToFloat,
+    /// Each 16-bit snorm channel to float32, exactly.
+    Snorm16ToFloat,
     /// Block-compressed data decoded on the CPU (no `texture-compression-bc`).
     Decode(Bc),
 }
@@ -345,6 +349,9 @@ pub enum Conversion {
 pub struct FormatOptions {
     /// The device has `texture-compression-bc`.
     pub bc_supported: bool,
+    /// The device filters float32 textures (`float32-filterable`): 16-bit unorm and snorm formats are stored
+    /// as float32, exactly, rather than as float16.
+    pub float32: bool,
 }
 
 /// How a `D3DFORMAT` is stored and read on WebGPU.
@@ -378,7 +385,7 @@ impl FormatPlan {
     /// The GPU format is float standing in for a unorm format (`G16R16`, `A16B16G16R16`): as a render target the
     /// shader must saturate its output, since Direct3D would clamp to [0, 1].
     pub fn needs_output_saturate(&self) -> bool {
-        self.conversion == Conversion::Unorm16ToHalf
+        matches!(self.conversion, Conversion::Unorm16ToHalf | Conversion::Unorm16ToFloat)
     }
 
     /// The texels depend on the palette, so a palette change means converting the texture again.
@@ -417,7 +424,9 @@ pub fn plan(format: Format, opts: &FormatOptions) -> Option<FormatPlan> {
         Format::A8R3G3B2 => p(G::Rgba8Unorm, id, C::A8R3G3B2ToRgba8, false),
         Format::A2B10G10R10 => p(G::Rgb10a2Unorm, id, C::None, true),
         Format::A2R10G10B10 => p(G::Rgb10a2Unorm, id, C::A2R10G10B10ToRgb10a2, true),
+        Format::G16R16 if opts.float32 => p(G::Rg32Float, Swizzle::RG, C::Unorm16ToFloat, true),
         Format::G16R16 => p(G::Rg16Float, Swizzle::RG, C::Unorm16ToHalf, true),
+        Format::A16B16G16R16 if opts.float32 => p(G::Rgba32Float, id, C::Unorm16ToFloat, true),
         Format::A16B16G16R16 => p(G::Rgba16Float, id, C::Unorm16ToHalf, true),
         Format::P8 => p(G::Rgba8Unorm, id, C::P8ToRgba8, false),
         Format::A8P8 => p(G::Rgba8Unorm, id, C::A8P8ToRgba8, false),
@@ -425,12 +434,15 @@ pub fn plan(format: Format, opts: &FormatOptions) -> Option<FormatPlan> {
         Format::A8L8 => p(G::Rg8Unorm, Swizzle::LUMINANCE_ALPHA, C::None, false),
         Format::A4L4 => p(G::Rg8Unorm, Swizzle::LUMINANCE_ALPHA, C::A4L4ToRg8, false),
         Format::A8 => p(G::R8Unorm, Swizzle::ALPHA, C::None, false),
+        Format::L16 if opts.float32 => p(G::R32Float, Swizzle::LUMINANCE, C::Unorm16ToFloat, false),
         Format::L16 => p(G::R16Float, Swizzle::LUMINANCE, C::Unorm16ToHalf, false),
         Format::V8U8 => p(G::Rg8Snorm, Swizzle::RG, C::None, false),
         Format::L6V5U5 => p(G::Rgba8Snorm, opaque, C::L6V5U5ToRgba8Snorm, false),
         Format::X8L8V8U8 => p(G::Rgba8Snorm, opaque, C::X8L8V8U8ToRgba8Snorm, false),
         Format::Q8W8V8U8 => p(G::Rgba8Snorm, id, C::None, false),
+        Format::V16U16 if opts.float32 => p(G::Rg32Float, Swizzle::RG, C::Snorm16ToFloat, false),
         Format::V16U16 => p(G::Rg16Float, Swizzle::RG, C::Snorm16ToHalf, false),
+        Format::Q16W16V16U16 if opts.float32 => p(G::Rgba32Float, id, C::Snorm16ToFloat, false),
         Format::Q16W16V16U16 => p(G::Rgba16Float, id, C::Snorm16ToHalf, false),
         Format::A2W10V10U10 => p(G::Rgba16Float, id, C::A2W10V10U10ToRgba16Float, false),
         Format::R16F => p(G::R16Float, Swizzle::RED, C::None, true),
@@ -481,8 +493,12 @@ fn quantize(v: u8, bits: u32) -> u32 {
 }
 
 /// A signed `bits`-bit field (sign-extended) as snorm8, using the `max(v / max, -1)` rule.
+/// A signed `v` of range `-(max + 1)..=max` as snorm8: as Direct3D 9
+/// hardware does (test_signed_formats), negative values are in steps of
+/// 1 / (max + 1), so min + 1 is not -1.0 as it would be on OpenGL.
 fn snorm8(v: i32, max: i32) -> u8 {
-    ((v as f32 / max as f32).max(-1.0) * 127.0).round() as i8 as u8
+    let scale = if v < 0 { max + 1 } else { max };
+    (v as f32 / scale as f32 * 127.0).round() as i8 as u8
 }
 
 fn sext(v: u32, bits: u32) -> i32 {
@@ -525,6 +541,7 @@ fn unit_layout(c: Conversion, gpu: GpuFormat) -> (usize, usize, u32) {
         C::X8L8V8U8ToRgba8Snorm | C::A2R10G10B10ToRgb10a2 => (4, 4, 1),
         C::A2W10V10U10ToRgba16Float => (4, 8, 1),
         C::Unorm16ToHalf | C::Snorm16ToHalf => (2, 2, gpu.channels()),
+        C::Unorm16ToFloat | C::Snorm16ToFloat => (2, 4, gpu.channels()),
         C::None | C::NoUpload | C::Decode(_) => unreachable!("not a per-texel conversion"),
     }
 }
@@ -583,6 +600,8 @@ fn convert_unit(c: Conversion, s: &[u8], d: &mut [u8], palette: &[[u8; 4]; 256])
             let v = u16_at(s) as u16 as i16;
             put(&f32_to_f16((v as f32 / 32767.0).max(-1.0)).to_le_bytes())
         }
+        C::Unorm16ToFloat => put(&(u16_at(s) as f32 / 65535.0).to_le_bytes()),
+        C::Snorm16ToFloat => put(&((u16_at(s) as u16 as i16) as f32 / 32767.0).max(-1.0).to_le_bytes()),
         C::None | C::NoUpload | C::Decode(_) => unreachable!("not a per-texel conversion"),
     }
 }
@@ -680,6 +699,14 @@ fn convert_unit_back(c: Conversion, s: &[u8], d: &mut [u8]) {
         }
         C::Snorm16ToHalf => {
             let f = f16_to_f32(u16_at(s) as u16);
+            put16((f.clamp(-1.0, 1.0) * 32767.0).round() as i16 as u16 as u32)
+        }
+        C::Unorm16ToFloat => {
+            let f = f32::from_le_bytes(s[..4].try_into().unwrap());
+            put16((f.clamp(0.0, 1.0) * 65535.0).round() as u32)
+        }
+        C::Snorm16ToFloat => {
+            let f = f32::from_le_bytes(s[..4].try_into().unwrap());
             put16((f.clamp(-1.0, 1.0) * 32767.0).round() as i16 as u16 as u32)
         }
         _ => unreachable!("{c:?} has no inverse"),

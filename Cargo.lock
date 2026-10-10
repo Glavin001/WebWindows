@@ -446,6 +446,7 @@ dependencies = [
  "d3dgpu-proto",
  "d3dgpu-scenes",
  "d3dgpu-shader",
+ "flate2",
  "pollster",
  "wasm-bindgen",
  "wgpu",

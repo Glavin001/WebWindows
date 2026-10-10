@@ -30,6 +30,7 @@
 // would download it and map it for nothing).
 
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,22 +59,25 @@ const GUI_DLLS = [
 // Sound, DirectDraw, Direct3D, DirectInput and Winsock (games): fetched
 // only for programs that use one of them (wined3d alone is megabytes), see
 // runtime/web/worker.mjs. wined3d draws Direct3D with its WebGPU backend
-// and needs no opengl32; opengl32 is native/opengl32 (OpenGL 1.1 over
-// Direct3D 9); d3dcompiler_47 compiles HLSL for programs that do it at run
+// and needs no opengl32; opengl32 is native/opengl32-webgl (OpenGL 2.1 on
+// WebGL 2, below); d3dcompiler_47 compiles HLSL for programs that do it at run
 // time. Winsock has no network behind it (single-player games
 // talk to their own server in memory).
 const MEDIA_DLLS = [
-  'version', 'winmm', 'msacm32', 'dsound', 'mmdevapi', 'winepulse.drv', 'ddraw', 'wined3d', 'd3d9',
-  'd3dcompiler_47', 'opengl32', 'dinput', 'dinput8', 'hid', 'setupapi',
+  'version', 'winmm', 'msacm32', 'dsound', 'mmdevapi', 'winepulse.drv', 'ddraw', 'wined3d', 'd3d8', 'd3d9',
+  'd3dcompiler_47', 'opengl32', 'dinput', 'dinput8', 'hid', 'setupapi', 'msvfw32', 'avifil32',
   'ws2_32', 'wsock32', 'iphlpapi', 'dnsapi', 'nsi',
 ];
 // Networking and cryptography (PuTTY, curl): likewise fetched only for
 // programs that import one of them.
-const NET_DLLS = ['ws2_32', 'crypt32', 'dnsapi', 'nsi', 'iphlpapi', 'secur32', 'bcrypt', 'normaliz', 'wldap32'];
+const NET_DLLS = ['ws2_32', 'crypt32', 'dnsapi', 'nsi', 'iphlpapi', 'secur32', 'bcrypt', 'normaliz', 'wldap32', 'wininet', 'mpr'];
+// Rich edit controls: loaded by name (Unreal's Window.dll loads RICHED32.DLL
+// for its RICHEDIT class), so fetched for programs whose files name them.
+const RICHEDIT_DLLS = ['riched20', 'riched32'];
 // Translator flags per DLL. The Direct3D DLLs never write code, so their
 // stores skip the self-modifying-code check (the C runtime's memcpy, which
 // could copy code for a program, keeps it); the same list is in wine.mjs.
-const TRANSLATE_FLAGS = { wined3d: ['--no-smc-checks'], d3d9: ['--no-smc-checks'] };
+const TRANSLATE_FLAGS = { wined3d: ['--no-smc-checks'], d3d8: ['--no-smc-checks'], d3d9: ['--no-smc-checks'] };
 // MinGW's default DLL base, and where the bundle moves those DLLs to.
 const DEFAULT_BASE = x64 ? 0x1_8000_0000 : 0x10000000;
 const PRELINK_BASE = mem64 ? 0x1_9000_0000 : 0x60000000;
@@ -113,9 +117,13 @@ const withStrings = existsSync(stringsWasm);
 mkdirSync(out, { recursive: true });
 const manifest = { wine: '11.0', arch: x64 ? 'x64' : 'x86', mem64, dlls: {}, nls: [] };
 const fileName = (d) => (d.includes('.') ? d : `${d}.dll`);
-const dllPath = (d) => join(wineBuild, 'dlls', d, peDir, fileName(d));
+// opengl32 is the build's WebGL 2 one where there is one (gl4es,
+// native/opengl32-webgl): Node keeps the one over Direct3D 9.
+const webglOpengl = join(wineBuild, 'dlls', 'opengl32', peDir, 'opengl32-webgl.dll');
+const dllPath = (d) =>
+  d === 'opengl32' && existsSync(webglOpengl) ? webglOpengl : join(wineBuild, 'dlls', d, peDir, fileName(d));
 let nextBase = PRELINK_BASE;
-for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS, ...NET_DLLS] : [])]) {
+for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS, ...NET_DLLS, ...RICHEDIT_DLLS] : [])]) {
   const pe = dllPath(d);
   const name = fileName(d);
   if (!existsSync(pe)) {
@@ -134,7 +142,7 @@ for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS, ...NET_DLL
     }
   }
   writeFileSync(join(out, name), bytes);
-  const group = MEDIA_DLLS.includes(d) ? 'media' : NET_DLLS.includes(d) ? 'network' : null;
+  const group = MEDIA_DLLS.includes(d) ? 'media' : NET_DLLS.includes(d) ? 'network' : RICHEDIT_DLLS.includes(d) ? 'richedit' : null;
   // The browser runs Wine with a 2 GB guest on a 32-bit memory
   // (runtime/web/worker.mjs), a constant in the memory checks; a 64-bit
   // memory reads its limit at run time. The native heap and string
@@ -143,9 +151,16 @@ for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS, ...NET_DLL
   if (process.env.WWT_MEM_TRAPS === '1') flags.push('--mem-traps');
   if (withHeap && !x64 && d === 'ntdll') flags.push(NATIVE_HEAP_FLAG);
   if (withStrings && !x64 && NATIVE_STRINGS_DLLS.includes(name)) flags.push(NATIVE_STRINGS_FLAG);
-  execFileSync(wwt, ['translate', ...flags, join(out, name), '-o', join(out, `${name}.wasm`)], {
-    stdio: ['ignore', 'ignore', 'inherit'],
-  });
+  // Translated again only when the DLL, the flags or the translator changed
+  // (the key file next to the translation records them).
+  const key = createHash('sha256').update(bytes).update(JSON.stringify(flags)).update(String(statSync(wwt).mtimeMs)).digest('hex');
+  const keyFile = join(out, `${name}.wasm.key`);
+  if (!existsSync(join(out, `${name}.wasm`)) || !existsSync(keyFile) || readFileSync(keyFile, 'utf8') !== key) {
+    execFileSync(wwt, ['translate', ...flags, join(out, name), '-o', join(out, `${name}.wasm`)], {
+      stdio: ['ignore', 'ignore', 'inherit'],
+    });
+    writeFileSync(keyFile, key);
+  }
   manifest.dlls[name] = { pe: name, wasm: `${name}.wasm`, ...(group && { group }) };
 }
 if (withHeap && !x64) {

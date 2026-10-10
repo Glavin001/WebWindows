@@ -59,6 +59,9 @@ pub mod cpu {
     /// with nearby accesses. Runtimes that do not track page protections
     /// leave it set.
     pub const CODE_WRITABLE: u32 = 372;
+    /// Translated calls currently nested in WebAssembly calls on this
+    /// thread: past a limit a call unwinds to the dispatch loop instead.
+    pub const CALL_DEPTH: u32 = 376;
     /// Scratch space for the host and kernel.
     pub const SCRATCH: u32 = 384;
     pub const SIZE: u32 = 512;
@@ -293,7 +296,7 @@ pub const RESIDUE_SECTION: &str = "wwt.residue";
 /// address, flags (`trap`) and the x86 memory operand's displacement.
 pub const TRAPS_SECTION: &str = "wwt.traps";
 /// Bumped whenever generated code changes incompatibly, to invalidate caches.
-pub const ABI_VERSION: u32 = 9;
+pub const ABI_VERSION: u32 = 11;
 /// Every translated module exports its lazy-flags evaluator under this
 /// name: `(fk, fr, fa, fb, fc) -> eflags` (the arithmetic flags).
 pub const EFLAGS_EXPORT: &str = "eflags";
@@ -347,6 +350,7 @@ pub fn abi_json() -> String {
         ("RESUME", RESUME),
         ("PREEMPT_AT", PREEMPT_AT),
         ("CODE_WRITABLE", CODE_WRITABLE),
+        ("CALL_DEPTH", CALL_DEPTH),
         ("SCRATCH", SCRATCH),
         ("SIZE", SIZE),
     ]
