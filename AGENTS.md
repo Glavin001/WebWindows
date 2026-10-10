@@ -5,6 +5,28 @@ Notes for agents and people picking the work up. The project itself:
 gotchas: [docs/handoff.md](docs/handoff.md). Performance work on games:
 [docs/game-performance.md](docs/game-performance.md).
 
+## Compatibility, not circumvention
+
+WebWindows follows Wine's policy: its goal is to run Windows programs as
+they run on Windows, copy protection and anti-tamper code included, and it
+never breaks or works around that protection.
+
+- **No cheating.** Don't patch, unwrap, decrypt or skip a program's copy
+  protection, licence or activation checks; don't use "no-CD" or cracked
+  executables, emulate a disc the user does not have, or special-case a
+  program by name to get past a check.
+- **Be faithful, not clever.** When protected code (SecuROM, SafeDisc,
+  StarForce, Denuvo-style anti-tamper) fails, find where WebWindows differs
+  from Windows and fix that difference for every program: CPU semantics
+  (exceptions, the trap flag, `int 3`/`int 2d`, `rdtsc`, self-modifying
+  code), the structures Windows exposes (PEB, TEB, heap flags), and system
+  calls answering exactly as Windows (and Wine) do. Faking answers backfires
+  anyway: Wine found SecuROM writes into the PEB to catch an
+  `IsDebuggerPresent` that lies ([Wine bug 7065](https://bugs.winehq.org/show_bug.cgi?id=7065)).
+- **Every fix comes with a test** of the Windows behaviour it reproduces
+  (`tests/wine/win32/*.c` or an instruction fixture), not of the protected
+  program.
+
 ## Where things run
 
 Building is CPU work and happens in a Linux container; the browser, and so
