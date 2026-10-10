@@ -561,6 +561,44 @@ export const SYSCALLS = {
     return Math.floor(performance.now()) >>> 0;
   },
   NtTerminateProcess(a) {
+    // Traced with the faults (WWT_TRACE_FAULTS, the page): which code ends a
+    // program that quits on its own, and with what.
+    if ((this.traceFaults ?? Number(globalThis.process?.env?.WWT_TRACE_FAULTS ?? 0)) > 0) {
+      const t = this.threads.current;
+      const frames = t ? this.backtrace(t, 16).join(' < ') : '-';
+      // The code before the innermost return addresses (the calls that led
+      // here; code written at run time is only in memory).
+      let code = '';
+      let ebp = t ? this.m.reg(t.cpu, 5) >>> 0 : 0;
+      for (let i = 0; i < 3 && ebp > 0x10000 && ebp < 0x80000000; i++) {
+        const ret = this.u32(ebp + 4) >>> 0;
+        let s = '';
+        for (let x = ret - 64; x < ret; x++) s += x >= 0x10000 && this.vm.prot[this.vm.pageOf(x)] ? this.m.u8[x].toString(16).padStart(2, '0') : '??';
+        code += `[exit]   code ${hex((ret - 64) >>> 0)}..${hex(ret)}: ${s}\n`;
+        ebp = this.u32(ebp) >>> 0;
+      }
+      // And, for code without frame pointers, the stack's words that point
+      // into loaded images (likely return addresses), innermost first.
+      const scan = [];
+      const esp = t ? this.m.reg(t.cpu, 4) >>> 0 : 0;
+      for (let p = esp; t && p < esp + 0x800 && scan.length < 24; p += 4) {
+        const v = this.u32(p) >>> 0;
+        const d = this.describeAddress(v);
+        if (!d.startsWith('0x')) scan.push(`${hex(p - esp)}:${d}`);
+      }
+      this.stderr(new TextEncoder().encode(`[exit] NtTerminateProcess(${hex(a(0) >>> 0)}, ${hex(a(1) >>> 0)}) thread ${hex(t?.tid ?? 0)}; frames ${frames}\n${code}[exit]   stack ${scan.join(' ')}\n[exit]   eflags (system bits) ${t ? hex(this.m.r32(t.cpu + this.m.abi.cpu.EFLAGS_SYS) >>> 0) : '-'}\n`));
+    }
+    // WWT_DUMP_ON_EXIT=DIR (Node): each loaded image's memory as it is now,
+    // DIR/NAME-BASE.bin, for code a program decrypts or writes at run time.
+    const dumpDir = globalThis.process?.env?.WWT_DUMP_ON_EXIT;
+    const fs = dumpDir && globalThis.process.getBuiltinModule?.('node:fs');
+    if (fs && a(0) !== 0) {
+      fs.mkdirSync(dumpDir, { recursive: true });
+      for (const [base, img] of this.images) {
+        const name = img.path.split('\\').pop();
+        fs.writeFileSync(`${dumpDir}/${name}-${(base >>> 0).toString(16)}.bin`, this.m.u8.slice(base, base + img.size));
+      }
+    }
     if (a(0) === 0) {
       // Every thread but this one (ExitProcess does this first).
       for (const t of this.threads.live()) {
