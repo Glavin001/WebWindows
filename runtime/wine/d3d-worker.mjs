@@ -32,6 +32,9 @@ let vsync = true;
 // presented frames per second, average and worst time between them, the
 // share of the time spent executing batches, and draws per frame.
 let perf = { since: performance.now(), frames: 0, last: 0, worst: 0, execute: 0, draws: 0 };
+// Frames presented so far: with the time of the last one (this worker's
+// clock) and the core's draw count, tools time an exact number of frames.
+let presented = 0;
 function reportPerf(now) {
   const dt = now - perf.since;
   if (dt < 500) return;
@@ -47,6 +50,9 @@ function reportPerf(now) {
     worstMs: perf.worst,
     busy: perf.execute / dt,
     drawsPerFrame: f ? (draws - perf.draws) / f : 0,
+    presented,
+    totalDraws: draws,
+    lastPresentAt: perf.last,
   });
   perf = { since: now, frames: 0, last: perf.last, worst: 0, execute: 0, draws };
 }
@@ -163,6 +169,7 @@ async function loop() {
         if (perf.last) perf.worst = Math.max(perf.worst, now - perf.last);
         perf.last = now;
         perf.frames++;
+        presented++;
       }
       reportPerf(now);
     }

@@ -22,13 +22,15 @@
 //   --syms DIR    unstripped PE files to name guest functions (drive.mjs --syms)
 //   --page-args Q the page's settings for an experiment ("bundle=URL&translator=URL")
 //   --chrome-args A  Chrome flags for an experiment ("--js-flags=--no-liftoff")
+//   --fixed-step S   the game advances S seconds a frame (0.0166): frame N is
+//                 the same scene on every run, so runs compare closely
 //
 // The game's menu takes the mouse as relative movement from where its own
 // cursor starts (the screen's centre), so the clicks are moves, not
 // coordinates; they are the same on every run at the page's 800x600.
 
 import { spawn } from 'node:child_process';
-import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -54,8 +56,39 @@ const syms = opt('syms', '');
 const port = opt('port', '19621');
 const pageArgs = opt('page-args', '');
 const chromeArgs = opt('chrome-args', '');
-const dir = resolve(argv[0] ?? join(root, 'target/games/farcry-x/far-cry-demo'));
+const fixedStep = opt('fixed-step', '');
+const levelFrames = Number(opt('level-frames', 1500));
+let dir = resolve(argv[0] ?? join(root, 'target/games/farcry-x/far-cry-demo'));
 mkdirSync(dirname(out), { recursive: true });
+
+// --fixed-step S: the game advances S seconds a frame, whatever the frame
+// rate (Far Cry's fixed_time_step), so frame N shows the same scene on
+// every run and runs compare (in real time the boat drifts and the draws
+// per frame with it). Set in systemcfgoverride.lua, which the game reads
+// after its own systemcfg.lua, in a copy of the folder made of hard links
+// (the original is left alone).
+if (fixedStep) {
+  const copy = join(dirname(out), `farcry-folder-step-${fixedStep}`);
+  const link = (from, to) => {
+    for (const e of readdirSync(from, { withFileTypes: true })) {
+      const [f, t] = [join(from, e.name), join(to, e.name)];
+      if (e.isDirectory()) {
+        mkdirSync(t, { recursive: true });
+        link(f, t);
+      } else if (!existsSync(t)) {
+        try {
+          linkSync(f, t);
+        } catch {
+          copyFileSync(f, t);
+        }
+      }
+    }
+  };
+  mkdirSync(copy, { recursive: true });
+  link(dir, copy);
+  writeFileSync(join(copy, 'systemcfgoverride.lua'), `fixed_time_step = "${fixedStep}"\n`);
+  dir = copy;
+}
 
 const perf = 'window.webwindows.d3dPerf()';
 const commands = [
@@ -79,8 +112,9 @@ const commands = [
   // The level draws hundreds of times a frame; the menu and the loading
   // screen tens.
   `waitpage (${perf}?.drawsPerFrame ?? 0) > 300 600000`,
-  'wait 10000',
-  `fps ${levelSecs * 1000}`,
+  // With a fixed step, the same frames of the level on every run (300 to
+  // settle, then levelFrames); otherwise 10 s to settle and a time window.
+  ...(fixedStep ? [`frames ${levelFrames} 300`] : ['wait 10000', `fps ${levelSecs * 1000}`]),
   'frame level',
   `profile ${profileMs} level`,
   'quit',

@@ -54,6 +54,9 @@
 //                       a summary (time by category, DLL and function), and
 //                       PREFIX-NAME-guest.cpuprofile / -render.cpuprofile
 //                       (open them in Chrome DevTools) with -images.json
+//   frames N [SKIP]     the frame rate over exactly N presented frames, after
+//                       skipping SKIP, timed by the render worker; as a line
+//                       "fps {json}" too
 //   fps MS              the frame rate over the next MS: average, worst
 //                       frame, draws per frame, render worker busy; as a
 //                       line "fps {json}" too
@@ -244,7 +247,29 @@ try {
     else if (cmd === 'focus') await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
     else if (cmd === 'js') console.log('= ' + JSON.stringify(await page.evaluate(line.slice(3))));
     else if (cmd === 'profile') await cpuProfile(Number(a ?? 5000), b ?? `p${++shot}`);
-    else if (cmd === 'fps') {
+    else if (cmd === 'frames') {
+      // An exact number of presented frames, timed by the render worker's
+      // clock: with a fixed game step, the same frames on every run.
+      const sample = () => page.evaluate(() => window.webwindows.d3dPerf());
+      const until = async (test) => {
+        for (let p; ; await page.waitForTimeout(100)) if ((p = await sample()) && test(p)) return p;
+      };
+      const begin = (await until((p) => p.presented !== undefined)).presented;
+      const s = await until((p) => p.presented >= begin + Number(b ?? 0));
+      const e = await until((p) => p.presented >= s.presented + Number(a ?? 1000));
+      const frames = e.presented - s.presented;
+      const ms = e.lastPresentAt - s.lastPresentAt;
+      const r = {
+        fps: +((frames * 1000) / ms).toFixed(1),
+        frames,
+        firstFrame: s.presented,
+        drawsPerFrame: Math.round((e.totalDraws - s.totalDraws) / frames),
+        usPerDraw: +((ms * 1000) / (e.totalDraws - s.totalDraws)).toFixed(2),
+        seconds: +(ms / 1000).toFixed(1),
+      };
+      console.log(`[${secs()} s] ${r.fps} fps over frames ${r.firstFrame}..${r.firstFrame + frames}, ${r.drawsPerFrame} draws/frame`);
+      console.log(`fps ${JSON.stringify(r)}`);
+    } else if (cmd === 'fps') {
       const from = await page.evaluate(() => performance.now());
       await page.waitForTimeout(Number(a ?? 10000));
       const h = (await page.evaluate(() => window.webwindows.d3dPerfHistory())).filter((p) => p.at > from);
