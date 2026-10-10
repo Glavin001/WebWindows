@@ -29,6 +29,8 @@ cp -r "$bundle" "$out/target/wine-bundle"
 for b in wine-bundle64 wine-bundle64-m32; do
   if [ -f "$root/target/$b/manifest.json" ]; then cp -r "$root/target/$b" "$out/target/$b"; fi
 done
+# The translation cache's keys stay behind (the page doesn't read them).
+find "$out/target" -name '*.wasm.key' -delete
 # The sample programs the page lists (runtime/web/samples.json).
 node -e 'for (const s of JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))) console.log(s.path)' \
   "$root/runtime/web/samples.json" | while read -r p; do

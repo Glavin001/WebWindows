@@ -9,8 +9,8 @@
 //
 //   node tests/web/picker.mjs
 
-import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,7 +29,17 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 // and a file seven levels down (games keep data that deep; the page once
 // read three levels and dropped the rest).
 const deep = 'data/a/b/c/d/e/deep.txt';
+// And a program with two DLLs of its own at the same base (tests/web/dllpair):
+// both translations are cached, the one the loader moves at its new base.
+const built = join(root, 'target/web/dllpair');
+mkdirSync(built, { recursive: true });
+const gcc = (...args) => execFileSync('i686-w64-mingw32-gcc', ['-O2', ...args], { stdio: 'inherit' });
+for (const d of ['a', 'b']) gcc('-shared', '-Wl,--image-base,0x10000000', '-o', join(built, `${d}.dll`), join(root, `tests/web/dllpair/${d}.c`));
+gcc('-o', join(built, 'usedlls.exe'), join(root, 'tests/web/dllpair/main.c'), join(built, 'a.dll'), join(built, 'b.dll'));
 const folder = {
+  'game/usedlls.exe': [...readFileSync(join(built, 'usedlls.exe'))],
+  'game/a.dll': [...readFileSync(join(built, 'a.dll'))],
+  'game/b.dll': [...readFileSync(join(built, 'b.dll'))],
   'bin/readfile.exe': [...readFileSync(join(root, 'tests/programs/readfile.exe'))],
   'bin/data.txt': [...Buffer.from('hello from the chosen folder\n')],
   'readme.txt': [...Buffer.from('not a program\n')],
@@ -68,7 +78,7 @@ try {
   await page.waitForFunction(() => !document.getElementById('run').disabled);
   const programs = await page.$$eval('#exe option', (os) => os.map((o) => o.value));
   console.log(`programs in the folder: ${programs.join(', ')}`);
-  if (programs.join() !== 'bin/readfile.exe') failed = true;
+  if (programs.join() !== 'bin/readfile.exe,game/usedlls.exe') failed = true;
   const picked = await page.evaluate(() => window.webwindows.folder());
   console.log(`folder: ${picked.files} files, ${picked.depth} levels deep`);
   if (picked.files !== Object.keys(folder).length || !picked.paths.includes(deep) || picked.depth !== 7) {
@@ -76,6 +86,7 @@ try {
     failed = true;
   }
 
+  await page.selectOption('#exe', 'bin/readfile.exe');
   for (const launch of ['first', 'second']) {
     await page.evaluate(() => (window.lastExit = undefined));
     await page.click('#run');
@@ -91,6 +102,29 @@ try {
     if (launch === 'first' && !translated) failed = true;
     if (launch === 'second' && (translated || !log.includes('loaded cached translation'))) {
       console.error('FAIL: the second launch translated again instead of using the cache');
+      failed = true;
+    }
+  }
+
+  // The DLLs: translated on the first launch, from the cache on the second.
+  await page.selectOption('#exe', 'game/usedlls.exe');
+  for (const launch of ['first', 'second']) {
+    await page.evaluate(() => (window.lastExit = undefined));
+    await page.click('#run');
+    await page.waitForFunction(() => window.lastExit !== undefined, null, { timeout: 120000 });
+    const out = await page.textContent('#out');
+    const log = await page.textContent('#log');
+    const lines = log.split('\n').filter((l) => /c:\\app\\game\\[ab]\.dll|DLL cache/.test(l));
+    console.log(`--- usedlls, ${launch} launch: ${out.trim()}`);
+    console.log(lines.join('\n'));
+    if (!out.includes('dlls: 42')) failed = true;
+    const want = launch === 'first' ? /^translated c:\\app\\game\\/ : /^loaded cached translation of c:\\app\\game\\/;
+    if (lines.filter((l) => want.test(l)).length !== 2) {
+      console.error(`FAIL: the ${launch} launch should have ${launch === 'first' ? 'translated' : 'loaded from the cache'} both DLLs`);
+      failed = true;
+    }
+    if (launch === 'second' && !lines.some((l) => / \(at 0x/.test(l))) {
+      console.error('FAIL: the DLL the loader moved was not loaded from the cache at its new base');
       failed = true;
     }
   }

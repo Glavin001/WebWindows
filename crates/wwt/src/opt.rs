@@ -15,6 +15,7 @@
 
 use std::collections::HashMap;
 
+use crate::abi::cpu;
 use crate::abi::flags as fl;
 use crate::flags::{self, E};
 use crate::ir::*;
@@ -1062,12 +1063,195 @@ pub fn optimize(f: &mut Function, level: u32) {
         return;
     }
     simplify(f);
+    forward_x87(f);
     dce(f);
     simplify(f);
     propagate_state_copies(f);
     fold_address_offsets(f);
     narrow(f);
     dce(f);
+}
+
+// ---- x87 registers ------------------------------------------------------
+
+/// Where a value stands relative to the x87 stack top at the start of the
+/// block, `B` (0..=7).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TopRel {
+    /// `(B + k) & 7`
+    Top(i32),
+    /// `B + k`, not yet masked
+    Raw(i32),
+    /// `((B + k) & 7) << 3`, the offset of st(k) in the register file
+    Off(i32),
+    /// The CPU struct pointer plus `Off(k)`: st(k)'s address
+    Slot(i32),
+}
+
+/// x87 registers live in the CPU struct, addressed through the stack top
+/// (`lift::fpu`): each instruction loads its operands from there and stores
+/// its result back, and pushes and pops rewrite the tag word. Within a
+/// block the stack top is the block's starting top plus a known amount, so
+/// accesses to the same register are known for what they are: a load of a
+/// register the block already loaded or stored becomes a copy of that
+/// value, and a store that a later store to the same register replaces,
+/// with nothing in between that reads it or can fault (so a fault still
+/// sees every register as the instructions before it left them), is
+/// removed. The tag word, at a fixed offset, likewise.
+pub fn forward_x87(f: &mut Function) {
+    let mut consts = vec![None; f.vtypes.len()];
+    for b in &f.blocks {
+        for inst in &b.insts {
+            if let (Some(d), Op::Const(c)) = (inst.dst, &inst.op) {
+                if d >= NUM_STATE {
+                    consts[d as usize] = Some(*c as i64 as i32);
+                }
+            }
+        }
+    }
+    for b in 0..f.blocks.len() {
+        forward_x87_block(f, b, &consts);
+    }
+}
+
+fn forward_x87_block(f: &mut Function, b: usize, consts: &[Option<i32>]) {
+    use std::collections::HashMap;
+    const ST_END: u32 = cpu::FPU_ST + 64;
+    // Register file slots 0..8 (st(k) for k mod 8), and the tag word as 8.
+    const TAG: usize = 8;
+    let mut rel: HashMap<V, TopRel> = HashMap::new();
+    let mut top = Some(TopRel::Top(0));
+    // The value each slot holds (as of the last load or store of it) and the
+    // last store to it that nothing has read or depended on since.
+    let mut known: [Option<V>; 9] = [None; 9];
+    let mut pending: [Option<usize>; 9] = [None; 9];
+    let mut dead = vec![false; f.blocks[b].insts.len()];
+    let c = |v: V| consts.get(v as usize).copied().flatten();
+    for i in 0..f.blocks[b].insts.len() {
+        let inst = &f.blocks[b].insts[i];
+        let get = |v: V, rel: &HashMap<V, TopRel>, top: Option<TopRel>| {
+            if v == FPU_TOP {
+                top
+            } else {
+                rel.get(&v).copied()
+            }
+        };
+        // The slot a native access touches: Some(Some(s)) a known slot,
+        // Some(None) somewhere in the x87 area, None elsewhere.
+        let slot_of =
+            |addr: V, mem: &Mem, rel: &HashMap<V, TopRel>, top| -> Option<Option<usize>> {
+                if mem.space != Space::Native {
+                    return None;
+                }
+                if let Some(TopRel::Slot(k)) = get(addr, rel, top) {
+                    return Some(
+                        (mem.offset == cpu::FPU_ST && mem.size == 8)
+                            .then(|| k.rem_euclid(8) as usize),
+                    );
+                }
+                if addr != CPU {
+                    return Some(None);
+                }
+                let (lo, hi) = (mem.offset, mem.offset + mem.size as u32);
+                if (lo, hi) == (cpu::FPU_TAG, cpu::FPU_TAG + 1) {
+                    return Some(Some(TAG));
+                }
+                let overlaps = |a: u32, b: u32| lo < b && a < hi;
+                (overlaps(cpu::FPU_TAG, cpu::FPU_TAG + 1) || overlaps(cpu::FPU_ST, ST_END))
+                    .then_some(None)
+            };
+        let mut replace = None;
+        match &inst.op {
+            Op::Copy(a) => {
+                if let (Some(d), Some(r)) = (inst.dst, get(*a, &rel, top)) {
+                    rel.insert(d, r);
+                }
+            }
+            Op::Bin(op, a, bv) => {
+                let (ra, rb) = (get(*a, &rel, top), get(*bv, &rel, top));
+                let r = match (op, ra, rb, c(*bv)) {
+                    (BinOp::I32Add, Some(TopRel::Top(k) | TopRel::Raw(k)), _, Some(n)) => {
+                        Some(TopRel::Raw(k + n))
+                    }
+                    (BinOp::I32Sub, Some(TopRel::Top(k) | TopRel::Raw(k)), _, Some(n)) => {
+                        Some(TopRel::Raw(k - n))
+                    }
+                    (BinOp::I32And, Some(TopRel::Top(k) | TopRel::Raw(k)), _, Some(7)) => {
+                        Some(TopRel::Top(k))
+                    }
+                    (BinOp::I32Shl, Some(TopRel::Top(k)), _, Some(3)) => Some(TopRel::Off(k)),
+                    (BinOp::I32Add | BinOp::I64Add, _, Some(TopRel::Off(k)), _) if *a == CPU => {
+                        Some(TopRel::Slot(k))
+                    }
+                    (BinOp::I32Add | BinOp::I64Add, Some(TopRel::Off(k)), _, _) if *bv == CPU => {
+                        Some(TopRel::Slot(k))
+                    }
+                    _ => None,
+                };
+                if let (Some(d), Some(r)) = (inst.dst, r) {
+                    rel.insert(d, r);
+                }
+            }
+            Op::Un(UnOp::I64ExtendI32U, a) => {
+                if let (Some(d), Some(r @ TopRel::Off(_))) = (inst.dst, get(*a, &rel, top)) {
+                    rel.insert(d, r);
+                }
+            }
+            Op::Load { addr, mem } => match slot_of(*addr, mem, &rel, top) {
+                Some(Some(s)) => {
+                    match known[s] {
+                        Some(v) => replace = Some(Op::Copy(v)),
+                        None => known[s] = inst.dst,
+                    }
+                    pending[s] = None;
+                }
+                Some(None) => {
+                    known = [None; 9];
+                    pending = [None; 9];
+                }
+                None => {}
+            },
+            Op::Store { addr, val, mem } => match slot_of(*addr, mem, &rel, top) {
+                Some(Some(s)) => {
+                    if let Some(p) = pending[s] {
+                        dead[p] = true;
+                    }
+                    pending[s] = Some(i);
+                    known[s] = Some(*val);
+                }
+                Some(None) => {
+                    known = [None; 9];
+                    pending = [None; 9];
+                }
+                None => {}
+            },
+            // Helpers may read or write the CPU struct.
+            Op::CallHelper(..) => {
+                known = [None; 9];
+                pending = [None; 9];
+            }
+            _ => {}
+        }
+        if inst.op.may_fault() || matches!(&inst.op, Op::Bin(op, ..) if op.can_trap()) {
+            pending = [None; 9];
+        }
+        if inst.dst == Some(FPU_TOP) {
+            top = match &inst.op {
+                Op::Copy(a) => get(*a, &rel, top).filter(|r| matches!(r, TopRel::Top(_))),
+                _ => None,
+            };
+        }
+        if let Some(op) = replace {
+            f.blocks[b].insts[i].op = op;
+        }
+    }
+    if dead.iter().any(|&d| d) {
+        let mut i = 0;
+        f.blocks[b].insts.retain(|_| {
+            i += 1;
+            !dead[i - 1]
+        });
+    }
 }
 
 /// Across blocks, a use of a state vreg that on every path holds a copy of

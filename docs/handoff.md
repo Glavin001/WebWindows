@@ -28,7 +28,7 @@ is already merged in, so the branch merges cleanly.
 |---|---|---|
 | Direct3D 9 | Wine's `visual.c`: 133/133 functions pass, as on native Wine | `tests/web/d3d9-visual.mjs` |
 | Direct3D 8 | Wine's `visual.c`: 60/60 | `… --module d3d8 --test visual` |
-| DirectDraw 7 | `ddraw7.c`: all 119 functions run; 808 failures against native's 45 | `… --module ddraw --test ddraw7` |
+| DirectDraw 7 | `ddraw7.c`: all 119 functions run; 803 failures against native's 45 | `… --module ddraw --test ddraw7` |
 | OpenGL 2.1 | WebGL 2 through gl4es; `gltri`, `glbench` and `gl2test` (17/17) pass | `tests/web/gui.mjs` |
 | Far Cry demo | menu, new game and the Fort level render and play, headless and in headed Chrome on Apple Metal | `tools/web/drive.mjs` |
 | UT2004 demo | menus, Instant Action, a DeathMatch | `drive.mjs` |
@@ -80,21 +80,25 @@ win32u, ntdll unix) ──emcc──► wasm ┘
 
 ## 3. Environment
 
-The container used so far had these, which are not in git:
+Builds run in the build container (`tools/docker/run.sh`, see
+[AGENTS.md](../AGENTS.md)): the paths below are its, kept in Docker volumes
+between runs. The container this work started in had them too, plus the
+extras marked so, which the image does not set up:
 
 | Path | What |
 |---|---|
 | `/opt/wine-src/wine-11.0` | Wine source. `tools/wine/build.sh` fetches it and applies `native/wined3d-wgpu/wined3d-wgpu.patch` (re-applied when the patch changes) |
 | `/opt/wine-build`, `/opt/wine-build64` | i386 and x86_64 PE build trees (`WINE_BUILD`). `/opt/wine-build/gl4es` is the pinned gl4es build (§5.3) |
-| `/opt/wine-native/build/wine` | native Wine with WoW64, for `--native` baselines. Needs `WINEPREFIX=/root/.wine-wow64` (made with `WINEDLLOVERRIDES="mscoree,mshtml="`) and an X server: `Xvfb :99 -screen 0 1280x1024x24 &`, `DISPLAY=:99` |
+| `/opt/wine-native/build/wine` | (not in the image) native Wine with WoW64, for `--native` baselines. Needs `WINEPREFIX=/root/.wine-wow64` (made with `WINEDLLOVERRIDES="mscoree,mshtml="`) and an X server: `Xvfb :99 -screen 0 1280x1024x24 &`, `DISPLAY=:99` |
 | `/opt/emsdk` | Emscripten, for `native/wine-unix/build.sh` (Wine's Unix side) |
-| `/opt/pw-browsers` | Playwright's Chromium. Don't run `playwright install` |
+| `/opt/pw-browsers` | (not in the image) Playwright's Chromium. Browser tests run on the host, with the host's Playwright |
 | `target/games/` | game files (not committed): `farcry-x/far-cry-demo`, `ut2004-x`, `q2`. Where to download them: [docs/games.md](games.md) |
 | `target/wine-bundle` | the browser bundle (`node runtime/node/wine-bundle.mjs`) |
 
-**Rebuild after changes:**
+**Rebuild after changes** (each in the container: `tools/docker/run.sh <command>`):
 
 ```sh
+tools/docker/build-all.sh                 # all of the below that changed
 sh tools/wine/build.sh <dll ...>          # e.g. wined3d d3d9 opengl32 d3d11 dxgi ddraw/tests
 node runtime/node/wine-bundle.mjs         # browser bundle (needed after any DLL change)
 cargo build --release -p wwt-cli          # the translator (Node runs use target/release/wwt)
@@ -325,7 +329,7 @@ the D3D9 ones.
 --timeout 120`, which uses `queue_test` numbering. Add `d3d10core` the same
 way.
 
-### 6.3 DirectDraw 7 failures (808 vs native's 45)
+### 6.3 DirectDraw 7 failures (803 vs native's 45)
 
 Per function, from `tests/web/baseline/ddraw_ddraw7.json` (native has 0 in
 each, apart from `test_palette_gdi`, 1):
@@ -382,6 +386,7 @@ is the measurement that counts.
 | Draw-level detail | `node runtime/node/wine.mjs --d3d-record f.gz …` then the replay example with `FROM=N`, `RS=STATE:VALUE`, `SHADERS=DIR` and `DUMP=full` |
 | Unsupported x86 | `target/release/wwt translate X.dll -o x.wasm` lists unsupported instructions. One `aas` in gl4es is data, not code |
 | Status | `WWT_STATUS=1` (Node; only prints when the host waits), the page's status line, `window.webwindows.status()` |
+| Slow frames | `tools/web/bench/farcry.mjs` for numbers; `drive.mjs` `profile MS` for where the guest and render workers' time goes, by DLL and function; the status line's `waits:` for time blocked on the render worker ([game-performance.md](game-performance.md)) |
 
 ## 8. Gotchas (each cost time once)
 

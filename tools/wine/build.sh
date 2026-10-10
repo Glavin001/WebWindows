@@ -47,17 +47,33 @@ for f in native/wined3d-wgpu/adapter_wgpu.c native/wined3d-wgpu/wined3d_nogl.c c
 done
 mkdir -p "$WINE_BUILD"
 cd "$WINE_BUILD"
+# The PE side's compiler flags. i386 floating point in SSE registers rather
+# than on the x87 stack: the translator keeps SSE values in WebAssembly
+# locals, while x87 registers live in memory behind a stack top it tracks at
+# run time (wined3d's matrices and DirectSound's mixer are float code). A
+# tree configured with other flags is configured again and rebuilt.
+# Links without a time stamp: the linker otherwise writes the link time into
+# every PE header (and so its checksum), and an unchanged DLL relinked in CI
+# would be a new file to the bundle's translation cache and to every deploy.
+crossflags="-g -O2"
+[ "$ARCH" = i386 ] && crossflags="$crossflags -msse2 -mfpmath=sse"
+crossldflags="-Wl,--no-insert-timestamp"
+if [ -f Makefile ] && [ "$(cat .wwt-crossflags 2>/dev/null)" != "$crossflags $crossldflags" ]; then
+  rm -f Makefile
+  find dlls programs -name '*.o' -path '*-windows/*' -delete 2>/dev/null || true
+fi
 if [ ! -f Makefile ]; then
   # An x86_64 build needs --enable-win64 for its Unix-side tools to be
   # 64-bit; only its PE side is used.
   win64=
   [ "$ARCH" = x86_64 ] && win64=--enable-win64
-  "$WINE_SRC/configure" $win64 --enable-archs=$ARCH --without-x --without-freetype --without-wayland \
+  CROSSCFLAGS="$crossflags" CROSSLDFLAGS="$crossldflags" "$WINE_SRC/configure" $win64 --enable-archs=$ARCH --without-x --without-freetype --without-wayland \
     --without-vulkan --without-gstreamer --without-pulse --without-alsa --without-oss --without-cups \
     --without-dbus --without-gnutls --without-sane --without-usb --without-v4l2 --without-pcap \
     --without-netapi --without-krb5 --without-gssapi --without-opencl --without-sdl --without-udev \
     --without-unwind --without-capi --without-gphoto --without-inotify --without-xinerama \
     --without-fontconfig --without-opengl --without-pcsclite --without-ffmpeg > configure.log
+  echo "$crossflags $crossldflags" > .wwt-crossflags
 fi
 target() {
   case $1 in
@@ -74,7 +90,7 @@ for d in $DLLS; do
     # (native/audio/winepulse.c).
     mkdir -p "dlls/winepulse.drv/$ARCH-windows"
     if [ "$ARCH" = x86_64 ]; then cc=x86_64-w64-mingw32-gcc; entry=DllMain; else cc=i686-w64-mingw32-gcc; entry=_DllMain@12; fi
-    $cc -O2 -shared -nostdlib -Wl,-e,$entry -o "dlls/winepulse.drv/$ARCH-windows/winepulse.drv" "$repo/native/audio/winepulse.c" -lkernel32
+    $cc -O2 -shared -nostdlib -Wl,-e,$entry $crossldflags -o "dlls/winepulse.drv/$ARCH-windows/winepulse.drv" "$repo/native/audio/winepulse.c" -lkernel32
     ls -la "dlls/winepulse.drv/$ARCH-windows/winepulse.drv"
     continue
   fi
@@ -86,7 +102,7 @@ for d in $DLLS; do
     mkdir -p dlls/opengl32/i386-windows
     gl_h=$(echo '#include <GL/gl.h>' | i686-w64-mingw32-gcc -E -H -x c - 2>&1 >/dev/null | grep -m1 'GL/gl.h$' | sed 's/^\.* //')
     node "$repo/native/opengl32/gen-stubs.mjs" "$gl_h" "$repo/native/opengl32/opengl32.c" > dlls/opengl32/stubs.c
-    i686-w64-mingw32-gcc -O2 -Wall -shared -nostartfiles -Wl,-e,_DllMain@12 -Wl,--kill-at \
+    i686-w64-mingw32-gcc -O2 -Wall -shared -nostartfiles -Wl,-e,_DllMain@12 -Wl,--kill-at $crossldflags \
       -I"$repo/native/opengl32" -o dlls/opengl32/i386-windows/opengl32.dll \
       "$repo/native/opengl32/opengl32.c" dlls/opengl32/stubs.c -ld3d9 -luser32 -lgdi32 -lkernel32 -lmsvcrt
     ls -la dlls/opengl32/i386-windows/opengl32.dll
@@ -130,7 +146,7 @@ for d in $DLLS; do
     node "$w/gen-def.mjs" "$WINE_SRC/dlls/opengl32/opengl32.spec" "$w/wgl.c" dlls/opengl32/webgl/gl4es.sym \
       > dlls/opengl32/webgl/opengl32.def
     i686-w64-mingw32-gcc -O2 -Wall -Wno-unused-function -Wno-attributes -shared -static-libgcc \
-      -Wl,--enable-stdcall-fixup -Wl,--kill-at -I"$w" -Idlls/opengl32/webgl -I"$gl4es/include" \
+      -Wl,--enable-stdcall-fixup -Wl,--kill-at $crossldflags -I"$w" -Idlls/opengl32/webgl -I"$gl4es/include" \
       -o dlls/opengl32/i386-windows/opengl32-webgl.dll "$w/wgl.c" "$w/gles.c" dlls/opengl32/webgl/gles_thunks.c \
       dlls/opengl32/webgl/opengl32.def "$gl4es/lib/libOPENGL32.a" -lgdi32 -luser32 -lkernel32
     ls -la dlls/opengl32/i386-windows/opengl32-webgl.dll

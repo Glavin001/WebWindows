@@ -935,22 +935,17 @@ function 0x404400:
     v937 = const 0xc
     v938 = I32Add eax, v937
     edi = v938
-    v940 = const 0x3
-    v941 = I32Shl v927, v940
-    v942 = I32Add cpu, v941
-    v943 = load8.native+0x60 [v942]
-    v944 = I64ReinterpretF64 v943
+    v944 = I64ReinterpretF64 v923
     v945 = const 0x3f
     v946 = I64ShrU v944, v945
     v947 = I32WrapI64 v946
-    v948 = F64Abs v943
+    v948 = F64Abs v923
     v949 = const 0x7ff0000000000000
     v950 = F64Eq v948, v949
-    v951 = F64Ne v943, v943
+    v951 = F64Ne v923, v923
     v952 = const 0x0
-    v953 = F64Eq v943, v952
-    v954 = load1.native+0x5c [cpu]
-    v955 = I32ShrU v954, v927
+    v953 = F64Eq v923, v952
+    v955 = I32ShrU v935, v927
     v956 = const 0x1
     v957 = I32And v955, v956
     v958 = I32Eqz v957
@@ -1009,14 +1004,9 @@ function 0x404400:
     v1010 = const 0x1
     v1011 = I32Shl v1010, v1004
     v1012 = I32Or v1009, v1011
-    store1.native+0x5c [cpu], v1012
     v1014 = const 0x8
     v1015 = I32Add eax, v1014
     edi = v1015
-    v1017 = const 0x3
-    v1018 = I32Shl v1004, v1017
-    v1019 = I32Add cpu, v1018
-    v1020 = load8.native+0x60 [v1019]
     v1021 = const 0x1
     v1022 = I32Sub v1004, v1021
     v1023 = const 0x7
@@ -1024,28 +1014,22 @@ function 0x404400:
     v1026 = const 0x3
     v1027 = I32Shl v1024, v1026
     v1028 = I32Add cpu, v1027
-    store8.native+0x60 [v1028], v1020
-    v1029 = load1.native+0x5c [cpu]
+    store8.native+0x60 [v1028], v1000
     v1030 = const 0x1
     v1031 = I32Shl v1030, v1024
-    v1032 = I32Or v1029, v1031
+    v1032 = I32Or v1012, v1031
     store1.native+0x5c [cpu], v1032
-    v1034 = const 0x3
-    v1035 = I32Shl v1024, v1034
-    v1036 = I32Add cpu, v1035
-    v1037 = load8.native+0x60 [v1036]
-    v1038 = I64ReinterpretF64 v1037
+    v1038 = I64ReinterpretF64 v1000
     v1039 = const 0x3f
     v1040 = I64ShrU v1038, v1039
     v1041 = I32WrapI64 v1040
-    v1042 = F64Abs v1037
+    v1042 = F64Abs v1000
     v1043 = const 0x7ff0000000000000
     v1044 = F64Eq v1042, v1043
-    v1045 = F64Ne v1037, v1037
+    v1045 = F64Ne v1000, v1000
     v1046 = const 0x0
-    v1047 = F64Eq v1037, v1046
-    v1048 = load1.native+0x5c [cpu]
-    v1049 = I32ShrU v1048, v1024
+    v1047 = F64Eq v1000, v1046
+    v1049 = I32ShrU v1032, v1024
     v1050 = const 0x1
     v1051 = I32And v1049, v1050
     v1052 = I32Eqz v1051
@@ -1139,12 +1123,8 @@ function 0x404400:
     v1136 = const 0xffffffbc
     v1137 = I32Add ebp, v1136
     eax = v1137
-    v1139 = const 0x3
-    v1140 = I32Shl v1123, v1139
-    v1141 = I32Add cpu, v1140
-    v1142 = load8.native+0x60 [v1141]
-    v1144 = helper.F64ToF80Lo(v1142)
-    v1145 = helper.F64ToF80Hi(v1142)
+    v1144 = helper.F64ToF80Lo(v1119)
+    v1145 = helper.F64ToF80Hi(v1119)
     store8.trusted [esp], v1144
     v1146 = const 0x8
     v1147 = I32Add esp, v1146
@@ -1188,12 +1168,8 @@ function 0x404400:
     v1179 = const 0xffffffbc
     v1180 = I32Add ebp, v1179
     eax = v1180
-    v1182 = const 0x3
-    v1183 = I32Shl v1166, v1182
-    v1184 = I32Add cpu, v1183
-    v1185 = load8.native+0x60 [v1184]
-    v1187 = helper.F64ToF80Lo(v1185)
-    v1188 = helper.F64ToF80Hi(v1185)
+    v1187 = helper.F64ToF80Lo(v1162)
+    v1188 = helper.F64ToF80Hi(v1162)
     store8.trusted [esp], v1187
     v1189 = const 0x8
     v1190 = I32Add esp, v1189
@@ -1241,12 +1217,8 @@ function 0x404400:
     v1226 = const 0xffffffbc
     v1227 = I32Add ebp, v1226
     eax = v1227
-    v1229 = const 0x3
-    v1230 = I32Shl v1213, v1229
-    v1231 = I32Add cpu, v1230
-    v1232 = load8.native+0x60 [v1231]
-    v1234 = helper.F64ToF80Lo(v1232)
-    v1235 = helper.F64ToF80Hi(v1232)
+    v1234 = helper.F64ToF80Lo(v1209)
+    v1235 = helper.F64ToF80Hi(v1209)
     store8.trusted [esp], v1234
     v1236 = const 0x8
     v1237 = I32Add esp, v1236
@@ -1290,12 +1262,8 @@ function 0x404400:
     v1269 = const 0xffffffbc
     v1270 = I32Add ebp, v1269
     eax = v1270
-    v1272 = const 0x3
-    v1273 = I32Shl v1256, v1272
-    v1274 = I32Add cpu, v1273
-    v1275 = load8.native+0x60 [v1274]
-    v1277 = helper.F64ToF80Lo(v1275)
-    v1278 = helper.F64ToF80Hi(v1275)
+    v1277 = helper.F64ToF80Lo(v1252)
+    v1278 = helper.F64ToF80Hi(v1252)
     store8.trusted [esp], v1277
     v1279 = const 0x8
     v1280 = I32Add esp, v1279
@@ -1343,12 +1311,8 @@ function 0x404400:
     v1316 = const 0xffffffbc
     v1317 = I32Add ebp, v1316
     eax = v1317
-    v1319 = const 0x3
-    v1320 = I32Shl v1303, v1319
-    v1321 = I32Add cpu, v1320
-    v1322 = load8.native+0x60 [v1321]
-    v1324 = helper.F64ToF80Lo(v1322)
-    v1325 = helper.F64ToF80Hi(v1322)
+    v1324 = helper.F64ToF80Lo(v1299)
+    v1325 = helper.F64ToF80Hi(v1299)
     store8.trusted [esp], v1324
     v1326 = const 0x8
     v1327 = I32Add esp, v1326
@@ -1392,12 +1356,8 @@ function 0x404400:
     v1359 = const 0xffffffbc
     v1360 = I32Add ebp, v1359
     eax = v1360
-    v1362 = const 0x3
-    v1363 = I32Shl v1346, v1362
-    v1364 = I32Add cpu, v1363
-    v1365 = load8.native+0x60 [v1364]
-    v1367 = helper.F64ToF80Lo(v1365)
-    v1368 = helper.F64ToF80Hi(v1365)
+    v1367 = helper.F64ToF80Lo(v1342)
+    v1368 = helper.F64ToF80Hi(v1342)
     store8.trusted [esp], v1367
     v1369 = const 0x8
     v1370 = I32Add esp, v1369
@@ -1745,13 +1705,11 @@ function 0x404400:
     v1680 = const 0x1
     v1681 = I32Shl v1680, v1679
     v1682 = I32Or v1675, v1681
-    store1.native+0x5c [cpu], v1682
-    v1683 = load1.native+0x5c [cpu]
     v1684 = const 0x1
     v1685 = I32Shl v1684, v927
     v1686 = const 0xff
     v1687 = I32Xor v1685, v1686
-    v1688 = I32And v1683, v1687
+    v1688 = I32And v1682, v1687
     store1.native+0x5c [cpu], v1688
     v1689 = const 0x1
     v1690 = I32Add v927, v1689
@@ -1777,14 +1735,10 @@ function 0x404400:
     v1708 = I32Shl v1707, v1701
     v1709 = I32Or v1706, v1708
     store1.native+0x5c [cpu], v1709
-    v1711 = const 0x3
-    v1712 = I32Shl v1701, v1711
-    v1713 = I32Add cpu, v1712
-    v1714 = load8.native+0x60 [v1713]
     v1716 = const 0xffffff88
     v1717 = I32Add ebp, v1716
-    v1718 = helper.F64ToF80Lo(v1714)
-    v1719 = helper.F64ToF80Hi(v1714)
+    v1718 = helper.F64ToF80Lo(v1697)
+    v1719 = helper.F64ToF80Hi(v1697)
     store8.trusted [v1717], v1718
     store2.trusted+0x8 [v1717], v1719
     v1722 = load1.native+0x5c [cpu]
@@ -1829,13 +1783,11 @@ function 0x404400:
     v1758 = const 0x1
     v1759 = I32Shl v1758, v1757
     v1760 = I32Or v1753, v1759
-    store1.native+0x5c [cpu], v1760
-    v1761 = load1.native+0x5c [cpu]
     v1762 = const 0x1
     v1763 = I32Shl v1762, v1024
     v1764 = const 0xff
     v1765 = I32Xor v1763, v1764
-    v1766 = I32And v1761, v1765
+    v1766 = I32And v1760, v1765
     store1.native+0x5c [cpu], v1766
     v1767 = const 0x1
     v1768 = I32Add v1024, v1767
@@ -1849,19 +1801,16 @@ function 0x404400:
     v1778 = I32Shl v1770, v1777
     v1779 = I32Add cpu, v1778
     store8.native+0x60 [v1779], v1775
-    v1780 = load1.native+0x5c [cpu]
     v1783 = const 0x7
     v1784 = I32And v1770, v1783
     v1785 = const 0x1
     v1786 = I32Shl v1785, v1784
-    v1787 = I32Or v1780, v1786
-    store1.native+0x5c [cpu], v1787
-    v1788 = load1.native+0x5c [cpu]
+    v1787 = I32Or v1766, v1786
     v1789 = const 0x1
     v1790 = I32Shl v1789, v1770
     v1791 = const 0xff
     v1792 = I32Xor v1790, v1791
-    v1793 = I32And v1788, v1792
+    v1793 = I32And v1787, v1792
     store1.native+0x5c [cpu], v1793
     v1794 = const 0x1
     v1795 = I32Add v1770, v1794
@@ -2351,27 +2300,20 @@ function 0x404400:
     v2234 = const 0xffff
     v2235 = I32And v2231, v2234
     eax = I32Or v2233, v2235
-    v2237 = const 0x3
-    v2238 = I32Shl v1831, v2237
-    v2239 = I32Add cpu, v2238
-    v2240 = load8.native+0x60 [v2239]
     v2242 = const 0x3
     v2243 = I32Shl v1831, v2242
     v2244 = I32Add cpu, v2243
-    store8.native+0x60 [v2244], v2240
-    v2245 = load1.native+0x5c [cpu]
+    store8.native+0x60 [v2244], v2197
     v2248 = const 0x7
     v2249 = I32And v1831, v2248
     v2250 = const 0x1
     v2251 = I32Shl v2250, v2249
-    v2252 = I32Or v2245, v2251
-    store1.native+0x5c [cpu], v2252
-    v2253 = load1.native+0x5c [cpu]
+    v2252 = I32Or v2208, v2251
     v2254 = const 0x1
     v2255 = I32Shl v2254, v1831
     v2256 = const 0xff
     v2257 = I32Xor v2255, v2256
-    v2258 = I32And v2253, v2257
+    v2258 = I32And v2252, v2257
     store1.native+0x5c [cpu], v2258
     v2259 = const 0x1
     v2260 = I32Add v1831, v2259
@@ -2599,13 +2541,11 @@ function 0x404400:
     v2448 = const 0x1
     v2449 = I32Shl v2448, v2447
     v2450 = I32Or v2443, v2449
-    store1.native+0x5c [cpu], v2450
-    v2451 = load1.native+0x5c [cpu]
     v2452 = const 0x1
     v2453 = I32Shl v2452, v1731
     v2454 = const 0xff
     v2455 = I32Xor v2453, v2454
-    v2456 = I32And v2451, v2455
+    v2456 = I32And v2450, v2455
     store1.native+0x5c [cpu], v2456
     v2457 = const 0x1
     v2458 = I32Add v1731, v2457
@@ -2684,13 +2624,11 @@ function 0x404400:
     v2527 = const 0x1
     v2528 = I32Shl v2527, v2526
     v2529 = I32Or v2522, v2528
-    store1.native+0x5c [cpu], v2529
-    v2530 = load1.native+0x5c [cpu]
     v2531 = const 0x1
     v2532 = I32Shl v2531, v2262
     v2533 = const 0xff
     v2534 = I32Xor v2532, v2533
-    v2535 = I32And v2530, v2534
+    v2535 = I32And v2529, v2534
     store1.native+0x5c [cpu], v2535
     v2536 = const 0x1
     v2537 = I32Add v2262, v2536

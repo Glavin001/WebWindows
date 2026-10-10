@@ -84,10 +84,16 @@ const PRELINK_BASE = mem64 ? 0x1_9000_0000 : 0x60000000;
 const PROGRAMS = ['winemine', 'notepad'];
 const NLS = ['locale', 'l_intl', 'sortdefault', 'normnfc', 'normnfd', 'normnfkc', 'normnfkd', 'c_1252', 'c_437', 'c_850', 'c_20127'];
 
-const wwt = ['target/release/wwt', 'target/debug/wwt']
-  .map((p) => join(root, p))
-  .filter((p) => existsSync(p))
-  .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
+// WWT=path: another translator build (an experiment's, in its own target dir).
+const wwt =
+  process.env.WWT ??
+  ['target/release/wwt', 'target/debug/wwt']
+    .map((p) => join(root, p))
+    .filter((p) => existsSync(p))
+    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
+// The translator as part of each translation's key: by content, since CI
+// builds the same translator again on every run.
+const wwtHash = wwt && existsSync(wwt) ? createHash('sha256').update(readFileSync(wwt)).digest('hex') : '';
 
 /** The image without its debug sections (binutils' strip, when installed;
  * loaded sections keep their addresses). */
@@ -153,7 +159,7 @@ for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS, ...NET_DLL
   if (withStrings && !x64 && NATIVE_STRINGS_DLLS.includes(name)) flags.push(NATIVE_STRINGS_FLAG);
   // Translated again only when the DLL, the flags or the translator changed
   // (the key file next to the translation records them).
-  const key = createHash('sha256').update(bytes).update(JSON.stringify(flags)).update(String(statSync(wwt).mtimeMs)).digest('hex');
+  const key = createHash('sha256').update(bytes).update(JSON.stringify(flags)).update(wwtHash).digest('hex');
   const keyFile = join(out, `${name}.wasm.key`);
   if (!existsSync(join(out, `${name}.wasm`)) || !existsSync(keyFile) || readFileSync(keyFile, 'utf8') !== key) {
     execFileSync(wwt, ['translate', ...flags, join(out, name), '-o', join(out, `${name}.wasm`)], {

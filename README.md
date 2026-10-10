@@ -28,6 +28,11 @@ browser page next to their 32-bit builds. See
 
 ## Quick start
 
+On a Mac (or anywhere with Docker), build in the container and run the
+page on the host: `tools/docker/run.sh tools/docker/build-all.sh`, then
+`node runtime/web/serve.mjs 8080`. [AGENTS.md](AGENTS.md) has what runs
+where. Natively on Linux:
+
 Requirements: Rust (stable, with the `wasm32-unknown-unknown` target),
 Node 22. To build test programs and record instruction fixtures you also need
 `gcc-multilib` and `gcc-mingw-w64-i686` (Debian/Ubuntu), plus

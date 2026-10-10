@@ -17,7 +17,7 @@ import { AUDIO_UNIXLIB } from './audio.mjs';
 import { ntRaiseException, restoreContext } from './exceptions.mjs';
 
 import {
-  MEM_COMMIT, MEM_RESERVE, MEM_RELEASE, MEM_DECOMMIT, MEM_TOP_DOWN, MEM_MAPPED, MEM_IMAGE,
+  MEM_COMMIT, MEM_RESERVE, MEM_RELEASE, MEM_DECOMMIT, MEM_TOP_DOWN, MEM_MAPPED, MEM_IMAGE, MEM_PRIVATE,
   PAGE_READWRITE, PAGE_READONLY, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_WRITECOPY,
 } from './vm.mjs';
 
@@ -41,6 +41,7 @@ export const STATUS = {
   CONFLICTING_ADDRESSES: 0xc0000018,
   NOT_MAPPED_VIEW: 0xc0000019,
   UNABLE_TO_FREE_VM: 0xc000001a,
+  FREE_VM_NOT_AT_BASE: 0xc000009f,
   ACCESS_DENIED: 0xc0000022,
   ACCESS_VIOLATION: 0xc0000005,
   BUFFER_TOO_SMALL: 0xc0000023,
@@ -248,16 +249,41 @@ export const SYSCALLS = {
   },
   NtFreeVirtualMemory(a) {
     const [, pbase, psize, type] = [a(0), a(1), a(2), a(3)];
-    const base = this.ptr(pbase);
-    const size = this.ptr(psize);
-    if (type & MEM_RELEASE) {
-      const r = this.vm.regionAt(base);
-      if (!r || !this.vm.release(r.base)) return STATUS.MEMORY_NOT_ALLOCATED;
-      this.wptr(pbase, r.base);
-      this.wptr(psize, r.size);
-    } else if (type & MEM_DECOMMIT) {
-      this.vm.decommit(base, size || 0x1000);
+    // As Wine's (dlls/ntdll/unix/virtual.c): only VirtualAlloc'ed memory,
+    // and with no size only from the region's own base. Releasing whatever
+    // region held the address let a program free a heap from a pointer into
+    // it (kernel32's fiber test passes one to VirtualFree, expecting
+    // STATUS_FREE_VM_NOT_AT_BASE): the next thread's TEB then went where the
+    // process heap still was.
+    const addr = this.ptr(pbase);
+    const base = alignDown(addr, 0x1000);
+    let size = this.ptr(psize);
+    if (size) size = alignDown(addr + size + 0xfff, 0x1000) - base;
+    if (!base) return STATUS.INVALID_PARAMETER;
+    const r = this.vm.regionAt(base);
+    if (!r) return STATUS.MEMORY_NOT_ALLOCATED;
+    if (r.type !== MEM_PRIVATE) {
+      return STATUS.INVALID_PARAMETER;
     }
+    if (!size && base !== r.base) return STATUS.FREE_VM_NOT_AT_BASE;
+    if (r.base + r.size - base < size) return STATUS.UNABLE_TO_FREE_VM;
+    if (type === MEM_RELEASE) {
+      if (base === r.base && (!size || size === r.size)) {
+        this.vm.release(r.base);
+        size = r.size;
+      } else {
+        // Part of a region: its pages go, the rest stays reserved (the
+        // virtual memory map releases whole regions only).
+        this.vm.decommit(base, size);
+      }
+    } else if (type === MEM_DECOMMIT) {
+      if (!size) size = r.base + r.size - base;
+      this.vm.decommit(base, size);
+    } else {
+      return STATUS.INVALID_PARAMETER;
+    }
+    this.wptr(pbase, base);
+    this.wptr(psize, size);
     return STATUS.SUCCESS;
   },
   NtProtectVirtualMemory(a) {
@@ -478,8 +504,27 @@ export const SYSCALLS = {
         return STATUS.INVALID_INFO_CLASS;
     }
   },
-  NtSetInformationProcess() {
-    return STATUS.SUCCESS;
+  NtSetInformationProcess(a) {
+    const [, cls, info, len] = [a(0), a(1), a(2), a(3)];
+    switch (cls) {
+      case 0x29: {
+        // ProcessThreadStackAllocation: reserves a stack for
+        // RtlCreateUserStack (fibers, and threads ntdll creates itself).
+        // PROCESS_STACK_ALLOCATION_INFORMATION { SIZE_T ReserveSize;
+        // SIZE_T ZeroBits; void *StackBase }, or the _EX form with four
+        // ULONGs before it.
+        const ps = this.ps;
+        let s = info;
+        if (len === 16 + 3 * ps) s += 16;
+        else if (len !== 3 * ps) return STATUS.INFO_LENGTH_MISMATCH;
+        const base = this.vm.reserve(0, this.ptr(s), { prot: PAGE_READWRITE, name: 'stack' });
+        if (!base) return STATUS.NO_MEMORY;
+        this.wptr(s + 2 * ps, base);
+        return STATUS.SUCCESS;
+      }
+      default:
+        return STATUS.SUCCESS;
+    }
   },
   NtSetInformationThread() {
     return STATUS.SUCCESS;

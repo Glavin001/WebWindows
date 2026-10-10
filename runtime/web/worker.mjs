@@ -186,8 +186,10 @@ async function runOnWine({ exeName, exePath, exe, folder, times = {}, argv, ft, 
   files.set(exeDos, exe);
   const translateTimed = (path, bytes) => {
     const t = performance.now();
-    // The program alone with bounds traps (Wine's DLLs come translated in the bundle).
-    const w = ft.translatePe(bytes, { mem64, guestLimit: WINE_GUEST_LIMIT, memTraps: memTraps && path === exeDos });
+    // With bounds traps where the engine maps them: the program and its own
+    // DLLs (a game's engine), and Wine's DLLs moved from their base. The
+    // bundle's are translated ahead of time, faithfully, for every browser.
+    const w = ft.translatePe(bytes, { mem64, guestLimit: WINE_GUEST_LIMIT, memTraps });
     log(`translated ${path} in ${(performance.now() - t).toFixed(0)} ms`);
     return w;
   };
@@ -203,12 +205,22 @@ async function runOnWine({ exeName, exePath, exe, folder, times = {}, argv, ft, 
   }
   // By file, too: an assembly's DLL is also installed in C:\windows\winsxs.
   const compiledFor = new Map([...compiled].map(([path, mod]) => [files.get(path), mod]));
-  const translate = (path, bytes, { rebased }) => {
+  const dllCache = await openDllCache(dir, files, `${wkey.replace(/^[0-9a-f]+-/, '')}-dll`, log);
+  const translate = (path, bytes, { rebased, base, original = bytes }) => {
     // The bundle's modules (and the cached .exe) were translated at the
     // image's own base.
     if (!rebased && compiledFor.has(bytes)) return compiledFor.get(bytes);
     if (!rebased && path === exeDos) return exeWasm;
-    return translateTimed(path, bytes);
+    // The folder's DLLs, also when moved (a game's DLLs share bases; where
+    // each lands is the same from one launch to the next).
+    const entry = dllCache.get(original);
+    if (entry?.module && entry.base === base) {
+      log(`loaded cached translation of ${path}${rebased ? ` (at 0x${base.toString(16)})` : ''}`);
+      return entry.module;
+    }
+    const w = translateTimed(path, bytes);
+    entry?.write?.(w, base);
+    return w;
   };
   const [layout, win32uNames, dataFiles, ntCalls] = unixFiles ?? [];
   const machine = new Machine({
@@ -322,13 +334,101 @@ async function runOnWine({ exeName, exePath, exe, folder, times = {}, argv, ft, 
     changed.add(path);
     if (performance.now() - sentAt > 2000) sendFiles();
   };
-  host.boot(`${sys32}\\ntdll.dll`, exeDos);
-  await host.startClock();
-  log(`Wine process ready in ${(performance.now() - t0).toFixed(0)} ms; running`);
-  const tr = performance.now();
-  const r = host.run();
+  let r;
+  let tr;
+  try {
+    host.boot(`${sys32}\\ntdll.dll`, exeDos);
+    await host.startClock();
+    log(`Wine process ready in ${(performance.now() - t0).toFixed(0)} ms; running`);
+    tr = performance.now();
+    r = host.run();
+  } finally {
+    dllCache.close();
+  }
   sendFiles();
   return { ...r, runMs: performance.now() - tr };
+}
+
+/**
+ * Translations of the DLLs in the program's folder (a game's engine), cached
+ * by content like the .exe's: they take most of a game's start (Far Cry's 27
+ * DLLs, 50 s). The program loads them while it runs, synchronously, without
+ * returning to the worker's event loop, so everything asynchronous happens
+ * here before it starts: each cached translation is read and compiled, and
+ * every DLL gets a synchronous file handle that a new translation is written
+ * through when the program loads it. A cache file is the base the DLL was
+ * translated at (4 bytes, little-endian) and the module; a DLL that lands
+ * elsewhere next time is translated again and the file replaced.
+ * @returns {{ get(bytes): { module?: WebAssembly.Module, base?: number, write?(wasm, base): void } | undefined, close(): void }}
+ */
+async function openDllCache(dir, files, suffix, log) {
+  const entries = new Map();
+  const handles = [];
+  // The origin private file system can leave a call unsettled (a file a
+  // previous page still holds): each step gives up after a while, and that
+  // DLL is translated without the cache this launch.
+  const timed = (promise, ms, what) =>
+    Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what} did not finish in ${ms / 1000} s`)), ms))]);
+  if (dir) {
+    const t = performance.now();
+    let hits = 0;
+    await Promise.all(
+      [...files]
+        .filter(([path]) => path.startsWith('c:\\app\\') && path.endsWith('.dll'))
+        .map(async ([path, bytes]) => {
+          const name = `${await sha256(bytes)}-${suffix}.wasm`;
+          const entry = {};
+          const cached = await timed(cacheRead(dir, name), 10000, `reading the cached ${path}`).catch((e) => (log(`DLL cache: ${e.message}`), null));
+          if (cached && cached.length > 4) {
+            try {
+              entry.module = await timed(WebAssembly.compile(cached.subarray(4)), 120000, `compiling the cached ${path}`);
+              entry.base = new DataView(cached.buffer, cached.byteOffset).getUint32(0, true);
+              hits++;
+            } catch (e) {
+              // A write cut short: translate it again.
+              if (/did not finish/.test(e.message)) log(`DLL cache: ${e.message}`);
+            }
+          }
+          try {
+            const opening = dir.getFileHandle(name, { create: true }).then((h) => h.createSyncAccessHandle());
+            // One that opens after giving up on it is closed, or it would
+            // keep the file locked.
+            const handle = await timed(opening, 10000, `opening the cache file of ${path}`).catch((e) => {
+              opening.then((h) => h.close(), () => {});
+              throw e;
+            });
+            handles.push(handle);
+            entry.write = (w, base) => {
+              try {
+                const head = new Uint8Array(4);
+                new DataView(head.buffer).setUint32(0, base, true);
+                handle.truncate(0);
+                handle.write(head, { at: 0 });
+                handle.write(w, { at: 4 });
+                handle.flush();
+              } catch (e) {
+                log(`could not cache the translation of ${path}: ${e.message}`);
+              }
+            };
+          } catch (e) {
+            // Another tab has it open: this launch doesn't write it.
+            if (/did not finish/.test(e.message)) log(`DLL cache: ${e.message}`);
+          }
+          entries.set(bytes, entry);
+        }),
+    );
+    if (entries.size) log(`DLL cache: ${hits} of ${entries.size} of the folder's DLLs translated already (${(performance.now() - t).toFixed(0)} ms)`);
+  }
+  return {
+    get: (bytes) => entries.get(bytes),
+    close() {
+      for (const h of handles.splice(0)) {
+        try {
+          h.close();
+        } catch {}
+      }
+    },
+  };
 }
 
 onmessage = async (e) => {
@@ -342,10 +442,14 @@ onmessage = async (e) => {
   const enc = new TextEncoder();
   try {
     const t0 = performance.now();
-    const ft = await FastTranslator.load(await (await fetch(translatorUrl)).arrayBuffer());
+    const translatorBytes = await (await fetch(translatorUrl)).arrayBuffer();
+    const ft = await FastTranslator.load(translatorBytes);
     const abi = ft.abi();
     const exe = new Uint8Array(exeBytes);
-    const key = `${await sha256(exe)}-abi${abi.version}-g${guestLimitMB}${memTraps ? '-traps' : ''}`;
+    // Cached translations belong to the translator that made them, not only
+    // to its ABI: a fix in code generation keeps the ABI.
+    const translatorId = (await sha256(new Uint8Array(translatorBytes))).slice(0, 12);
+    const key = `${await sha256(exe)}-abi${abi.version}-t${translatorId}-g${guestLimitMB}${memTraps ? '-traps' : ''}`;
     const dir = noCache ? null : await cacheDir();
     if (wine) {
       const r = await runOnWine({ exeName, exePath, exe, folder: files, times, argv, ft, abi, dir, key, memTraps, bundleUrl, bundle64Url, bundle64m32Url, memory64, display: display && { ...display, audio }, debug, unixTrace, d3dCanvas, d3dOffscreen, d3dPort });

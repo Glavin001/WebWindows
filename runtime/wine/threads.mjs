@@ -73,6 +73,8 @@ export class Scheduler {
     this.stopAddr = h.m.stopAddress;
     this.keyed = new Map(); // keyed events: key -> releases not yet waited for
     this.realWait = null; // blocks for real (input or time); set by the host
+    /** Milliseconds spent idle, by what the wait was for (idleReason). */
+    this.idleMs = new Map();
     this.next = 0;
     this.tickAt = 0; // see now()
     this.tickBase = 0;
@@ -247,9 +249,44 @@ export class Scheduler {
       this.dumpAt = 0;
       this.maybeDump();
     }
+    const reason = this.polling ? `polling (asked ${ms} ms): ${this.idleReason(true)}` : this.idleReason();
+    const t0 = performance.now();
     const r = this.realWait(ms);
+    this.idleMs.set(reason, (this.idleMs.get(reason) ?? 0) + (performance.now() - t0));
     if (r > 0) this.h.unix?.M._wasm_process_input();
     return r;
+  }
+
+  /**
+   * What an idle wait is waiting for, as a key for idleMs (status samples
+   * report the biggest, in ms per second): the blocked thread whose deadline
+   * ends it, its call and where it was called from; the thread waiting when
+   * the wait is nested in one; or nothing with a deadline (input, events,
+   * other threads).
+   */
+  idleReason(current = false) {
+    let first = null;
+    let d = Infinity;
+    for (const t of current ? [] : this.threads) {
+      if (t.state !== 'blocked') continue;
+      const at = Math.min(t.pending.deadline, t.pending.wakeAt?.() ?? Infinity);
+      if (at < d) (d = at), (first = t);
+    }
+    const t = first ?? this.current;
+    if (!t) return 'no deadline';
+    let where = '';
+    try {
+      where = this.h.backtrace(t, 3).join('<');
+    } catch {}
+    // And what the process's first thread (a game's main loop) is doing.
+    const main = this.threads[0];
+    let mainWhere = '';
+    if (main && main !== t) {
+      try {
+        mainWhere = `; main ${hex(main.tid)} ${main.state} in ${main.pending?.name ?? main.inCall ?? '-'} ${this.h.backtrace(main, 3).join('<')}`;
+      } catch {}
+    }
+    return `${first ? '' : 'nested, '}${hex(t.tid)} ${t.pending?.name ?? t.inCall ?? '?'} ${where}${mainWhere}`;
   }
 
   /** The process: runs threads until it exits (ProcessExit propagates). */

@@ -2526,6 +2526,68 @@ static bool wgpu_blit_depth(struct wined3d_context *context, enum wined3d_blit_o
     return true;
 }
 
+/* Colour blits between GPU textures run on the GPU: the core draws the
+ * source rectangle into the destination's, scaled with the filter. Without
+ * this the CPU blitter reads both textures back (a fence wait each, the
+ * render worker's whole queue ahead of it) and uploads the result: games
+ * that copy the back buffer for screen effects every frame (Far Cry's
+ * glare, motion blur and heat haze) did that four times a frame. Colour
+ * keys, mirrored rectangles, volumes, and destinations that are not render
+ * targets (compressed, palettized and system memory surfaces) stay on the
+ * CPU. */
+static bool wgpu_blit_colour(struct wined3d_context *context, enum wined3d_blit_op op,
+        struct wined3d_texture *src_texture, unsigned int src_sub_resource_idx, const RECT *src_rect,
+        struct wined3d_texture *dst_texture, unsigned int dst_sub_resource_idx, DWORD dst_location,
+        const RECT *dst_rect, const struct wined3d_color_key *colour_key, enum wined3d_texture_filter_type filter)
+{
+    const struct wined3d_format *src_format = src_texture->resource.format, *dst_format = dst_texture->resource.format;
+    struct wined3d_device_wgpu *device = wined3d_device_wgpu(context->device);
+    unsigned int dst_level = dst_sub_resource_idx % dst_texture->level_count;
+    struct d3dgpu_cmd_stretch_rect *cmd;
+    bool whole;
+
+    if ((op != WINED3D_BLIT_OP_COLOR_BLIT && op != WINED3D_BLIT_OP_RAW_BLIT) || colour_key
+            || dst_location != WINED3D_LOCATION_TEXTURE_RGB
+            || src_format->depth_size || src_format->stencil_size || dst_format->depth_size || dst_format->stencil_size
+            || src_texture->resource.type != WINED3D_RTYPE_TEXTURE_2D || dst_texture->resource.type != WINED3D_RTYPE_TEXTURE_2D
+            || !(src_texture->resource.access & WINED3D_RESOURCE_ACCESS_GPU)
+            || !(dst_texture->resource.access & WINED3D_RESOURCE_ACCESS_GPU)
+            || !(src_texture->resource.format_caps & WINED3D_FORMAT_CAP_TEXTURE)
+            || !(dst_texture->resource.format_caps & WINED3D_FORMAT_CAP_RENDERTARGET)
+            || src_rect->right <= src_rect->left || src_rect->bottom <= src_rect->top
+            || dst_rect->right <= dst_rect->left || dst_rect->bottom <= dst_rect->top)
+        return false;
+    /* A blit to part of the destination keeps the rest of it, so that must
+     * be on the GPU first; one to all of it only needs the texture there. */
+    whole = !dst_rect->left && !dst_rect->top
+            && dst_rect->right == wined3d_texture_get_level_width(dst_texture, dst_level)
+            && dst_rect->bottom == wined3d_texture_get_level_height(dst_texture, dst_level);
+    if (!wined3d_texture_load_location(src_texture, src_sub_resource_idx, context, WINED3D_LOCATION_TEXTURE_RGB)
+            || !(whole ? wined3d_texture_prepare_location(dst_texture, dst_sub_resource_idx, context, WINED3D_LOCATION_TEXTURE_RGB)
+                    : wined3d_texture_load_location(dst_texture, dst_sub_resource_idx, context, WINED3D_LOCATION_TEXTURE_RGB))
+            || !wined3d_texture_wgpu(src_texture)->id || !wined3d_texture_wgpu(dst_texture)->id)
+        return false;
+    wgpu_activate(device);
+    if (!(cmd = wgpu_cmd(device, D3DGPU_OP_STRETCH_RECT, sizeof(*cmd))))
+        return false;
+    cmd->src = wined3d_texture_wgpu(src_texture)->id;
+    cmd->src_face = src_sub_resource_idx / src_texture->level_count;
+    cmd->src_level = src_sub_resource_idx % src_texture->level_count;
+    cmd->src_rect.x1 = src_rect->left;
+    cmd->src_rect.y1 = src_rect->top;
+    cmd->src_rect.x2 = src_rect->right;
+    cmd->src_rect.y2 = src_rect->bottom;
+    cmd->dst = wined3d_texture_wgpu(dst_texture)->id;
+    cmd->dst_face = dst_sub_resource_idx / dst_texture->level_count;
+    cmd->dst_level = dst_level;
+    cmd->dst_rect.x1 = dst_rect->left;
+    cmd->dst_rect.y1 = dst_rect->top;
+    cmd->dst_rect.x2 = dst_rect->right;
+    cmd->dst_rect.y2 = dst_rect->bottom;
+    cmd->filter = filter;
+    return true;
+}
+
 static DWORD wgpu_blitter_blit(struct wined3d_blitter *blitter, enum wined3d_blit_op op,
         struct wined3d_context *context, struct wined3d_texture *src_texture, unsigned int src_sub_resource_idx,
         DWORD src_location, const RECT *src_rect, struct wined3d_texture *dst_texture,
@@ -2538,8 +2600,11 @@ static DWORD wgpu_blitter_blit(struct wined3d_blitter *blitter, enum wined3d_bli
     if (wgpu_blit_depth(context, op, src_texture, src_sub_resource_idx, src_rect,
             dst_texture, dst_sub_resource_idx, dst_rect, filter))
         return WINED3D_LOCATION_TEXTURE_RGB;
-    /* Colour blits run on the CPU for now: the next blitter reads both
-     * sub-resources back to system memory. */
+    if (wgpu_blit_colour(context, op, src_texture, src_sub_resource_idx, src_rect,
+            dst_texture, dst_sub_resource_idx, dst_location, dst_rect, colour_key, filter))
+        return WINED3D_LOCATION_TEXTURE_RGB;
+    /* Other blits run on the CPU: the next blitter reads both sub-resources
+     * back to system memory. */
     if (!(next = blitter->next))
     {
         ERR("No blitter to handle blit op %#x.\n", op);

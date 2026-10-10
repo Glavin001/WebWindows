@@ -27,10 +27,14 @@ let capture = 'idle'; // 'requested', 'reading'
 const log = (text) => (port ?? self).postMessage({ type: 'log', text });
 // {type: 'stats'} from the page: once a second, how busy this worker was.
 let stats = null;
+let vsync = true;
 // Frame timing for the page's overlay, {type: 'perf'} twice a second:
 // presented frames per second, average and worst time between them, the
 // share of the time spent executing batches, and draws per frame.
 let perf = { since: performance.now(), frames: 0, last: 0, worst: 0, execute: 0, draws: 0 };
+// Frames presented so far: with the time of the last one (this worker's
+// clock) and the core's draw count, tools time an exact number of frames.
+let presented = 0;
 function reportPerf(now) {
   const dt = now - perf.since;
   if (dt < 500) return;
@@ -46,6 +50,9 @@ function reportPerf(now) {
     worstMs: perf.worst,
     busy: perf.execute / dt,
     drawsPerFrame: f ? (draws - perf.draws) / f : 0,
+    presented,
+    totalDraws: draws,
+    lastPresentAt: perf.last,
   });
   perf = { since: now, frames: 0, last: perf.last, worst: 0, execute: 0, draws };
 }
@@ -85,6 +92,9 @@ function onPortMessage(e) {
     return;
   }
   if (e.data?.type === 'stats') stats = { since: performance.now(), execute: 0, gpuWait: 0, frames: 0, batches: 0 };
+  // {type: 'vsync', on}: whether a vsynced Present waits for the display
+  // (the page's ?d3dvsync=0 lets a game run past the refresh rate).
+  if (e.data?.type === 'vsync') vsync = !!e.data.on;
   if (e.data?.type !== 'snapshot' || !renderer || capture !== 'idle') return;
   capture = 'requested';
   renderer.capture_frames();
@@ -149,7 +159,7 @@ async function loop() {
     if (present >= 0 && capture === 'requested') snapshot();
     if (present >= 0) {
       renderer.track_gpu();
-      await (present & PRESENT_VSYNC ? nextFrame() : nextTask());
+      await (present & PRESENT_VSYNC && vsync ? nextFrame() : nextTask());
       while (renderer.gpu_in_flight() >= MAX_FRAME_LATENCY) await new Promise((r) => setTimeout(r, 1));
     }
     if (port) {
@@ -159,6 +169,7 @@ async function loop() {
         if (perf.last) perf.worst = Math.max(perf.worst, now - perf.last);
         perf.last = now;
         perf.frames++;
+        presented++;
       }
       reportPerf(now);
     }
