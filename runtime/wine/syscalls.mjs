@@ -263,7 +263,6 @@ export const SYSCALLS = {
     const r = this.vm.regionAt(base);
     if (!r) return STATUS.MEMORY_NOT_ALLOCATED;
     if (r.type !== MEM_PRIVATE) {
-      globalThis.process?.getBuiltinModule?.('fs')?.writeSync(2, `DEBUG free ${addr.toString(16)} size ${size.toString(16)} type ${type.toString(16)}: region ${r.base.toString(16)}+${r.size.toString(16)} type ${r.type.toString(16)} ${r.name} from ${this.backtrace(this.threads.current, 6).join(' < ')}\n`);
       return STATUS.INVALID_PARAMETER;
     }
     if (!size && base !== r.base) return STATUS.FREE_VM_NOT_AT_BASE;
@@ -505,8 +504,27 @@ export const SYSCALLS = {
         return STATUS.INVALID_INFO_CLASS;
     }
   },
-  NtSetInformationProcess() {
-    return STATUS.SUCCESS;
+  NtSetInformationProcess(a) {
+    const [, cls, info, len] = [a(0), a(1), a(2), a(3)];
+    switch (cls) {
+      case 0x29: {
+        // ProcessThreadStackAllocation: reserves a stack for
+        // RtlCreateUserStack (fibers, and threads ntdll creates itself).
+        // PROCESS_STACK_ALLOCATION_INFORMATION { SIZE_T ReserveSize;
+        // SIZE_T ZeroBits; void *StackBase }, or the _EX form with four
+        // ULONGs before it.
+        const ps = this.ps;
+        let s = info;
+        if (len === 16 + 3 * ps) s += 16;
+        else if (len !== 3 * ps) return STATUS.INFO_LENGTH_MISMATCH;
+        const base = this.vm.reserve(0, this.ptr(s), { prot: PAGE_READWRITE, name: 'stack' });
+        if (!base) return STATUS.NO_MEMORY;
+        this.wptr(s + 2 * ps, base);
+        return STATUS.SUCCESS;
+      }
+      default:
+        return STATUS.SUCCESS;
+    }
   },
   NtSetInformationThread() {
     return STATUS.SUCCESS;

@@ -1,0 +1,13 @@
+fiber 0: stack is private memory: 1
+fiber 1: stack is private memory: 1
+fiber 2: stack is private memory: 1
+fiber stacks are not the thread's: 1
+each fiber has its own stack: 1
+DeleteFiber frees the stacks: 1
+ntdll is still an image: 1
+VirtualFree of an image fails: 1
+and leaves it mapped: 1
+VirtualFree from inside an allocation fails: 1
+and leaves it allocated: 1
+VirtualFree from its base: 1
+frees it: 1
