@@ -47,17 +47,29 @@ for f in native/wined3d-wgpu/adapter_wgpu.c native/wined3d-wgpu/wined3d_nogl.c c
 done
 mkdir -p "$WINE_BUILD"
 cd "$WINE_BUILD"
+# The PE side's compiler flags. i386 floating point in SSE registers rather
+# than on the x87 stack: the translator keeps SSE values in WebAssembly
+# locals, while x87 registers live in memory behind a stack top it tracks at
+# run time (wined3d's matrices and DirectSound's mixer are float code). A
+# tree configured with other flags is configured again and rebuilt.
+crossflags="-g -O2"
+[ "$ARCH" = i386 ] && crossflags="$crossflags -msse2 -mfpmath=sse"
+if [ -f Makefile ] && [ "$(cat .wwt-crossflags 2>/dev/null)" != "$crossflags" ]; then
+  rm -f Makefile
+  find dlls programs -name '*.o' -path '*-windows/*' -delete 2>/dev/null || true
+fi
 if [ ! -f Makefile ]; then
   # An x86_64 build needs --enable-win64 for its Unix-side tools to be
   # 64-bit; only its PE side is used.
   win64=
   [ "$ARCH" = x86_64 ] && win64=--enable-win64
-  "$WINE_SRC/configure" $win64 --enable-archs=$ARCH --without-x --without-freetype --without-wayland \
+  CROSSCFLAGS="$crossflags" "$WINE_SRC/configure" $win64 --enable-archs=$ARCH --without-x --without-freetype --without-wayland \
     --without-vulkan --without-gstreamer --without-pulse --without-alsa --without-oss --without-cups \
     --without-dbus --without-gnutls --without-sane --without-usb --without-v4l2 --without-pcap \
     --without-netapi --without-krb5 --without-gssapi --without-opencl --without-sdl --without-udev \
     --without-unwind --without-capi --without-gphoto --without-inotify --without-xinerama \
     --without-fontconfig --without-opengl --without-pcsclite --without-ffmpeg > configure.log
+  echo "$crossflags" > .wwt-crossflags
 fi
 target() {
   case $1 in
