@@ -29,7 +29,7 @@ mkdirSync(apps, { recursive: true });
 
 const cc = (sources, flags, exe, cwd, libs = []) => {
   const file = join(apps, exe);
-  execFileSync('i686-w64-mingw32-gcc', ['-O2', ...flags, ...sources, '-o', file, ...libs], { cwd, stdio: ['ignore', 'ignore', 'inherit'] });
+  execFileSync('i686-w64-mingw32-gcc', ['-O2', ...flags, ...sources, '-o', file, ...libs, '-Wl,--no-insert-timestamp'], { cwd, stdio: ['ignore', 'ignore', 'inherit'] });
   console.log(`built apps/${exe}`);
 };
 
