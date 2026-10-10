@@ -362,6 +362,11 @@ async function runOnWine({ exeName, exePath, exe, folder, times = {}, argv, ft, 
 async function openDllCache(dir, files, suffix, log) {
   const entries = new Map();
   const handles = [];
+  // The origin private file system can leave a call unsettled (a file a
+  // previous page still holds): each step gives up after a while, and that
+  // DLL is translated without the cache this launch.
+  const timed = (promise, ms, what) =>
+    Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what} did not finish in ${ms / 1000} s`)), ms))]);
   if (dir) {
     const t = performance.now();
     let hits = 0;
@@ -371,18 +376,25 @@ async function openDllCache(dir, files, suffix, log) {
         .map(async ([path, bytes]) => {
           const name = `${await sha256(bytes)}-${suffix}.wasm`;
           const entry = {};
-          const cached = await cacheRead(dir, name);
+          const cached = await timed(cacheRead(dir, name), 10000, `reading the cached ${path}`).catch((e) => (log(`DLL cache: ${e.message}`), null));
           if (cached && cached.length > 4) {
             try {
-              entry.module = await WebAssembly.compile(cached.subarray(4));
+              entry.module = await timed(WebAssembly.compile(cached.subarray(4)), 120000, `compiling the cached ${path}`);
               entry.base = new DataView(cached.buffer, cached.byteOffset).getUint32(0, true);
               hits++;
-            } catch {
+            } catch (e) {
               // A write cut short: translate it again.
+              if (/did not finish/.test(e.message)) log(`DLL cache: ${e.message}`);
             }
           }
           try {
-            const handle = await (await dir.getFileHandle(name, { create: true })).createSyncAccessHandle();
+            const opening = dir.getFileHandle(name, { create: true }).then((h) => h.createSyncAccessHandle());
+            // One that opens after giving up on it is closed, or it would
+            // keep the file locked.
+            const handle = await timed(opening, 10000, `opening the cache file of ${path}`).catch((e) => {
+              opening.then((h) => h.close(), () => {});
+              throw e;
+            });
             handles.push(handle);
             entry.write = (w, base) => {
               try {
@@ -396,8 +408,9 @@ async function openDllCache(dir, files, suffix, log) {
                 log(`could not cache the translation of ${path}: ${e.message}`);
               }
             };
-          } catch {
+          } catch (e) {
             // Another tab has it open: this launch doesn't write it.
+            if (/did not finish/.test(e.message)) log(`DLL cache: ${e.message}`);
           }
           entries.set(bytes, entry);
         }),
