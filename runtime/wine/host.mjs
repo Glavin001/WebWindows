@@ -464,6 +464,7 @@ export class WineHost {
 
   /** Maps an image file at its preferred base and loads its translation. */
   mapImageFile(dosPath, bytes) {
+    const original = bytes;
     let info = parsePe(bytes);
     let base = info.imageBase;
     const reserve = (at) => this.vm.reserve(at, info.sizeOfImage, { type: MEM_IMAGE, prot: 0x80, name: dosPath });
@@ -486,7 +487,9 @@ export class WineHost {
     // The translation: module bytes, or an already compiled module (Wine's
     // DLLs are translated ahead of time, at their preferred base, and
     // compiled by the host).
-    const wasm = this.translate(dosPath, bytes, { base, rebased });
+    // `original` is the file's own bytes (the same array each time it maps),
+    // for hosts that cache translations by file.
+    const wasm = this.translate(dosPath, bytes, { base, rebased, original });
     const name = dosPath.split('\\').pop();
     const rec = wasm instanceof WebAssembly.Module ? this.m.loadCompiledSync(wasm, name) : this.m.loadModuleSync(wasm, name);
     mapImage(this.m, bytes, rec.meta.image);
