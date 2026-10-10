@@ -755,15 +755,18 @@ impl PeFile {
 
     /// Bytes of the image as laid out at the preferred base, for analysis.
     pub fn image(&self) -> Result<Image> {
+        let bytes = self.load_image(self.image_base)?;
+        let ciphertext = ciphertext_pages(&bytes, &self.sections);
         Ok(Image {
             base: self.image_base,
-            bytes: self.load_image(self.image_base)?,
+            bytes,
             sections: self.sections.clone(),
             functions: self
                 .pdata_ranges
                 .iter()
                 .map(|&(b, e)| (self.image_base + b as u64, self.image_base + e as u64))
                 .collect(),
+            ciphertext,
         })
     }
 }
@@ -776,6 +779,53 @@ pub struct Image {
     pub sections: Vec<Section>,
     /// x86-64: the `.pdata` function ranges (absolute, sorted).
     pub functions: Vec<(u64, u64)>,
+    /// Pages (4 KB, from the image base) of executable sections whose bytes
+    /// look encrypted or compressed rather than like machine code (see
+    /// `ciphertext_pages`): not code until the program unpacks them.
+    pub ciphertext: Vec<bool>,
+}
+
+/// Shannon entropy above which a page is taken for ciphertext: compiled x86
+/// code measures about 5.5 to 6.8 bits a byte, encrypted or compressed bytes
+/// close to 8.
+const CIPHERTEXT_BITS: f64 = 7.5;
+
+/// Which 4 KB pages of `bytes` (the mapped image) in executable sections
+/// look like ciphertext. Protected and packed programs (SecuROM, UPX-style
+/// packers) ship their code encrypted or compressed and unpack it when they
+/// run: decoding those bytes ahead of time yields nonsense (`daa`, `arpl`,
+/// `bound`, and functions of a million instructions), while the code they
+/// become is translated when it runs, like any code written at run time.
+fn ciphertext_pages(bytes: &[u8], sections: &[Section]) -> Vec<bool> {
+    let pages = bytes.len().div_ceil(0x1000);
+    let mut out = vec![false; pages];
+    for s in sections.iter().filter(|s| s.is_executable()) {
+        let start = s.virtual_address as usize;
+        let end = (start + s.virtual_size.max(s.raw_size) as usize).min(bytes.len());
+        let mut p = start & !0xfff;
+        while p < end {
+            let page = &bytes[p.max(start)..(p + 0x1000).min(end)];
+            // A short tail page says too little to judge.
+            if page.len() >= 1024 {
+                let mut counts = [0u32; 256];
+                for &b in page {
+                    counts[b as usize] += 1;
+                }
+                let n = page.len() as f64;
+                let bits: f64 = counts
+                    .iter()
+                    .filter(|&&c| c > 0)
+                    .map(|&c| {
+                        let q = c as f64 / n;
+                        -q * q.log2()
+                    })
+                    .sum();
+                out[p / 0x1000] = bits > CIPHERTEXT_BITS;
+            }
+            p += 0x1000;
+        }
+    }
+    out
 }
 
 impl Image {
@@ -787,9 +837,11 @@ impl Image {
             return false;
         }
         let rva = (va - self.base) as u32;
-        self.sections
-            .iter()
-            .any(|s| s.is_executable() && s.contains_rva(rva))
+        !self.ciphertext.get(rva as usize / 0x1000).copied().unwrap_or(false)
+            && self
+                .sections
+                .iter()
+                .any(|s| s.is_executable() && s.contains_rva(rva))
     }
     /// The `.pdata` range holding `va` (x86-64).
     pub fn function_range(&self, va: u64) -> Option<(u64, u64)> {

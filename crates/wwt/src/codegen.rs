@@ -27,6 +27,45 @@ use crate::ir::*;
 use crate::opt::{self, Analysis, StateMask, ALL_STATE, FAULT_SYNC};
 use crate::reducible;
 
+/// How many of the most recent facts about one vreg `check_covered` looks
+/// at.
+const MAX_FACTS: usize = 64;
+
+/// Values by vreg in the order they were added, which can be undone back to
+/// an earlier length: facts and aliases scoped to the dominator subtree
+/// being emitted (`FnGen::do_tree`).
+#[derive(Default)]
+struct Scoped<T> {
+    map: HashMap<V, Vec<T>>,
+    log: Vec<V>,
+}
+
+impl<T> Scoped<T> {
+    fn push(&mut self, v: V, x: T) {
+        self.map.entry(v).or_default().push(x);
+        self.log.push(v);
+    }
+
+    /// The values about `v`, oldest first.
+    fn get(&self, v: V) -> &[T] {
+        self.map.get(&v).map_or(&[], |x| &x[..])
+    }
+
+    fn len(&self) -> usize {
+        self.log.len()
+    }
+
+    /// Removes the values added after the first `len`.
+    fn truncate(&mut self, len: usize) {
+        while self.log.len() > len {
+            let v = self.log.pop().unwrap();
+            if let Some(x) = self.map.get_mut(&v) {
+                x.pop();
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CodegenConfig {
     pub mem_checks: bool,
@@ -725,8 +764,11 @@ struct FnGen<'g, 'a> {
     /// any vreg and lasts until the end of the block or the vreg's next
     /// definition; `facts_tree` holds single-definition temporaries and is
     /// scoped to the dominator subtree being emitted.
-    facts_local: Vec<(V, u32, u32)>,
-    facts_tree: Vec<(V, u32, u32)>,
+    /// Both are keyed by the vreg, so a lookup costs the facts about that
+    /// vreg only (obfuscated code makes functions of tens of thousands of
+    /// accesses, which a list scanned per access made quadratic).
+    facts_local: HashMap<V, Vec<(u32, u32)>>,
+    facts_tree: Scoped<(u32, u32)>,
     /// Vregs with one definition, in a block that dominates their uses.
     def_block: Vec<u32>,
     structured: bool,
@@ -734,10 +776,13 @@ struct FnGen<'g, 'a> {
     /// Within the current block, temporaries known to equal `root + off +
     /// x` for some x in [0, r] (r = 0: exactly `root + off`), as
     /// (temporary, root, off, r).
-    alias: Vec<(V, V, u32, u32)>,
+    alias: HashMap<V, (V, u32, u32)>,
+    /// The temporaries in `alias` by their root, to forget them when the
+    /// root is redefined.
+    alias_by_root: HashMap<V, Vec<V>>,
     /// The same, between single-definition temporaries, scoped like
     /// `facts_tree`.
-    alias_tree: Vec<(V, V, u32, u32)>,
+    alias_tree: Scoped<(V, u32, u32)>,
     /// Constant value of single-definition temporaries defined by a constant.
     const_of: Vec<Option<u32>>,
     /// Upper bound of single-definition temporaries' values, where known
@@ -783,13 +828,14 @@ impl<'g, 'a> FnGen<'g, 'a> {
             preempt: vec![],
             irreducible: false,
             emitted: vec![false; n],
-            facts_local: vec![],
-            facts_tree: vec![],
+            facts_local: HashMap::new(),
+            facts_tree: Scoped::default(),
             def_block: vec![],
             structured: true,
             cur_block: 0,
-            alias: vec![],
-            alias_tree: vec![],
+            alias: HashMap::new(),
+            alias_by_root: HashMap::new(),
+            alias_tree: Scoped::default(),
             const_of: vec![],
             max_of: vec![],
         };
@@ -1802,6 +1848,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let trace = opt::dirty_trace(blk, self.a.dirty_in[b as usize]);
         self.facts_local.clear();
         self.alias.clear();
+        self.alias_by_root.clear();
         self.cur_block = b;
         let deferred = self.stackify(blk);
         for (k, inst) in blk.insts.iter().enumerate() {
@@ -1813,8 +1860,17 @@ impl<'g, 'a> FnGen<'g, 'a> {
             }
             if let Some(d) = inst.dst {
                 // Facts and aliases about the old value of `d` are void.
-                self.facts_local.retain(|&(v, _, _)| v != d);
-                self.alias.retain(|&(t, r, _, _)| t != d && r != d);
+                self.facts_local.remove(&d);
+                if let Some((root, _, _)) = self.alias.remove(&d) {
+                    if let Some(ts) = self.alias_by_root.get_mut(&root) {
+                        ts.retain(|&t| t != d);
+                    }
+                }
+                for t in self.alias_by_root.remove(&d).unwrap_or_default() {
+                    if self.alias.get(&t).is_some_and(|&(root, _, _)| root == d) {
+                        self.alias.remove(&t);
+                    }
+                }
                 if let Op::Bin(BinOp::I32Add, x, y) = inst.op {
                     let c = (self.const_of[y as usize], self.const_of[x as usize]);
                     let (mx, my) = (self.max_of[x as usize], self.max_of[y as usize]);
@@ -1836,9 +1892,10 @@ impl<'g, 'a> FnGen<'g, 'a> {
                     if root != d && r <= MAX_INDEX {
                         let temp = |v: V| self.def_block[v as usize] != u32::MAX;
                         if self.structured && temp(d) && temp(root) {
-                            self.alias_tree.push((d, root, off, r));
+                            self.alias_tree.push(d, (root, off, r));
                         } else {
-                            self.alias.push((d, root, off, r));
+                            self.alias.insert(d, (root, off, r));
+                            self.alias_by_root.entry(root).or_default().push(d);
                         }
                     }
                 }
@@ -1909,13 +1966,8 @@ impl<'g, 'a> FnGen<'g, 'a> {
     /// `v + off` as `root + off' + x` for some x in [0, r], following this
     /// block's aliases.
     fn resolve(&self, v: V, off: u32) -> (V, u32, u32) {
-        match self
-            .alias
-            .iter()
-            .chain(self.alias_tree.iter())
-            .find(|&&(t, _, _, _)| t == v)
-        {
-            Some(&(_, root, o, r)) => (root, o.wrapping_add(off), r),
+        match self.alias.get(&v).or_else(|| self.alias_tree.get(v).first()) {
+            Some(&(root, o, r)) => (root, o.wrapping_add(off), r),
             None => (v, off, 0),
         }
     }
@@ -1927,10 +1979,15 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let (v, lo2, r) = self.resolve(v, off);
         let hi2 = lo2.wrapping_add(r);
         let near = |a: u32, b: u32| (a.wrapping_sub(b) as i32).unsigned_abs() <= CHECK_WINDOW;
-        self.facts_local
+        // The most recent facts about `v` only: older ones are rarely the
+        // nearest, and forgetting one costs a check, never correctness.
+        let local = self.facts_local.get(&v).map_or(&[][..], |f| &f[..]);
+        local
             .iter()
-            .chain(self.facts_tree.iter())
-            .any(|&(fv, lo, hi)| fv == v && near(hi2, lo) && near(hi, lo2))
+            .rev()
+            .take(MAX_FACTS)
+            .chain(self.facts_tree.get(v).iter().rev().take(MAX_FACTS))
+            .any(|&(lo, hi)| near(hi2, lo) && near(hi, lo2))
     }
 
     /// Records that the address `v + off` passed a check.
@@ -1939,9 +1996,9 @@ impl<'g, 'a> FnGen<'g, 'a> {
         let hi = lo.wrapping_add(r);
         let d = self.def_block.get(v as usize).copied().unwrap_or(u32::MAX);
         if self.structured && d != u32::MAX && self.dominates(d, self.cur_block) {
-            self.facts_tree.push((v, lo, hi));
+            self.facts_tree.push(v, (lo, hi));
         } else {
-            self.facts_local.push((v, lo, hi));
+            self.facts_local.entry(v).or_default().push((lo, hi));
         }
     }
 

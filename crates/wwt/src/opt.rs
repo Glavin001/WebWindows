@@ -318,6 +318,10 @@ pub fn simplify(f: &mut Function) {
         // Block-local facts.
         let mut lconst: HashMap<V, u64> = HashMap::new();
         let mut lcopy: HashMap<V, V> = HashMap::new();
+        // lcopy's entries by source, to forget the copies of a state vreg
+        // when it is written without scanning them all (obfuscated code has
+        // blocks of thousands of instructions).
+        let mut lcopy_of: HashMap<V, Vec<V>> = HashMap::new();
         // State vregs currently holding an extension of a temporary.
         let mut lext: HashMap<V, V> = HashMap::new();
         let mut insts = std::mem::take(&mut f.blocks[bi].insts);
@@ -389,7 +393,11 @@ pub fn simplify(f: &mut Function) {
                     }
                 }
                 if d < NUM_STATE {
-                    lcopy.retain(|_, s| *s != d);
+                    for c in lcopy_of.remove(&d).unwrap_or_default() {
+                        if lcopy.get(&c) == Some(&d) {
+                            lcopy.remove(&c);
+                        }
+                    }
                 }
                 match inst.op {
                     Op::Const(c) => {
@@ -399,11 +407,13 @@ pub fn simplify(f: &mut Function) {
                         if let Some(src) = copy_src {
                             if d < NUM_STATE && src >= NUM_STATE {
                                 lcopy.insert(d, src);
+                                lcopy_of.entry(src).or_default().push(d);
                             }
                         }
                     }
                     Op::Copy(s) if s != d => {
                         lcopy.insert(d, s);
+                        lcopy_of.entry(s).or_default().push(d);
                         if let Some(c) = cst(s, &lconst) {
                             lconst.insert(d, c);
                         }
@@ -434,8 +444,16 @@ pub fn simplify(f: &mut Function) {
             }
         }
         f.blocks[bi].term = term;
-        for k in no_ops.into_iter().rev() {
-            insts.remove(k);
+        if !no_ops.is_empty() {
+            let mut drop = vec![false; insts.len()];
+            for k in no_ops {
+                drop[k] = true;
+            }
+            let mut k = 0;
+            insts.retain(|_| {
+                k += 1;
+                !drop[k - 1]
+            });
         }
         f.blocks[bi].insts = insts;
     }
