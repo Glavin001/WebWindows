@@ -11,6 +11,10 @@
 // enumerator, which winmm and DirectSound need.
 
 import { parsePe } from './host.mjs';
+import { infRegistryWrites } from './inf.mjs';
+
+/** HKEY_CURRENT_USER: wineserver's local user (S-1-5-21-0-0-0-1000). */
+const USER_KEY = '\\Registry\\User\\S-1-5-21-0-0-0-1000';
 
 const ROOTS = {
   HKCR: '\\Registry\\Machine\\Software\\Classes',
@@ -188,10 +192,12 @@ export function installRegistrations(h, files) {
   // Creates a key and the keys above it (the registry starts empty);
   // returns an open handle, or 0.
   const made = new Set();
-  const createKey = (key) => {
+  // `link`: the key is a symbolic link (REG_LINK), created as one.
+  const createKey = (key, link = false) => {
     const parts = key.split('\\');
     let handle = 0;
-    for (let n = key.startsWith('\\Registry\\Machine') ? 3 : parts.length; n <= parts.length; n++) {
+    const first = key.startsWith('\\Registry\\Machine') ? 3 : key.startsWith('\\Registry\\User\\') ? 4 : parts.length;
+    for (let n = first; n <= parts.length; n++) {
       const sub = parts.slice(0, n).join('\\');
       if (n < parts.length && made.has(sub.toLowerCase())) continue;
       // OBJECT_ATTRIBUTES {Length, RootDirectory, ObjectName, Attributes, sd, qos}
@@ -200,7 +206,9 @@ export function installRegistrations(h, files) {
       h.w32(oa, O.__size);
       h.wptr(oa + O.ObjectName, ustr(sub, mem + 128));
       h.w32(oa + O.Attributes, 0x40); // OBJ_CASE_INSENSITIVE
-      const st = call('NtCreateKey', mem, 0xf003f, oa, 0, 0, 0, 0);
+      // REG_OPTION_OPEN_LINK | REG_OPTION_CREATE_LINK for the link itself.
+      const options = link && n === parts.length ? 0xa : 0;
+      const st = call('NtCreateKey', mem, 0xf003f, oa, 0, 0, options, 0);
       if (st) {
         h.log(`registry: creating ${sub} failed: ${st.toString(16)}`);
         return 0;
@@ -227,6 +235,29 @@ export function installRegistrations(h, files) {
       count++;
     }
   };
+  // wine.inf first, as wineboot installs it before registering the DLLs:
+  // the keys and values every prefix starts with (the Windows version in
+  // HKLM\Software\Microsoft\Windows NT\CurrentVersion among them).
+  const inf = files.get('c:\\windows\\inf\\wine.inf');
+  if (inf) {
+    const writes = infRegistryWrites(new TextDecoder().decode(inf), h.x64 ? 'DefaultInstall.ntamd64' : 'DefaultInstall.ntx86', { userKey: USER_KEY });
+    for (const w of writes) {
+      const handle = createKey(w.key, w.type === 6);
+      if (!handle) continue;
+      if (w.data) {
+        const name = ustr(w.name, mem + 128);
+        // NOCLOBBER: keep a value that is there already
+        // (KeyValueBasicInformation: success or buffer overflow if it is).
+        const st = w.noclobber ? call('NtQueryValueKey', handle, name, 0, mem + 0x8000, 0, mem + 8) : 0xc0000034;
+        if (st !== 0 && st !== 0x80000005 && st !== 0xc0000023) {
+          h.m.u8.set(w.data, mem + 0x8000);
+          call('NtSetValueKey', handle, name, 0, w.type, mem + 0x8000, w.data.length);
+        }
+      }
+      call('NtClose', handle);
+      count++;
+    }
+  }
   for (const [path, bytes] of files) {
     if (!/^c:\\windows\\system32\\[^\\]+\.(dll|drv|ocx|exe)$/i.test(path)) continue;
     let scripts;

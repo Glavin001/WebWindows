@@ -191,6 +191,10 @@ for (const n of NLS) {
   copyFileSync(join(wineSrc, 'nls', `${n}.nls`), join(out, `${n}.nls`));
   manifest.nls.push(`${n}.nls`);
 }
+// wine.inf, C:\windows\inf\wine.inf in a prefix: the host installs the
+// registry entries wineboot installs from it (runtime/wine/inf.mjs).
+copyFileSync(join(wineSrc, 'loader', 'wine.inf.in'), join(out, 'wine.inf'));
+manifest.inf = 'wine.inf';
 // The API set map (api-ms-win-crt-* and the like to their DLLs), read as a
 // file at boot, not loaded as code.
 manifest.system32 = [];

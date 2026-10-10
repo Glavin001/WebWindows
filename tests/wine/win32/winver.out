@@ -1,0 +1,5 @@
+open: 0
+CurrentVersion: 0, type 1, has a dot: 1
+CurrentBuildNumber: 0, type 1
+ProductName: 0, type 1, starts with Windows: 1
+GetVersionEx: NT 1, at least 6.2: 1

@@ -324,6 +324,8 @@ for (const f of readdirSync(join(wineSrc, 'nls'))) {
   if (f.endsWith('.nls')) files.set(`${sys32}\\${f.toLowerCase()}`, readFileSync(join(wineSrc, 'nls', f)));
 }
 files.set('c:\\windows\\globalization\\sorting\\sortdefault.nls', files.get(`${sys32}\\sortdefault.nls`));
+// wine.inf, whose registry entries the host installs as wineboot does.
+files.set('c:\\windows\\inf\\wine.inf', readFileSync(join(wineSrc, 'loader', 'wine.inf.in')));
 // The program: at C:\, or with --dir in C:\app, next to the folder's files
 // (--folder: the program's own directory, left as it is).
 const appFiles = new Map(); // DOS path -> [host path, original bytes]

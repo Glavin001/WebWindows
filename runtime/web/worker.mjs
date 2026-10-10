@@ -170,6 +170,7 @@ async function runOnWine({ exeName, exePath, exe, folder, times = {}, argv, ft, 
     ...[...manifest.nls, ...(manifest.system32 ?? [])].map(async (n) => {
       files.set(`${sys32}\\${n}`, new Uint8Array(await (await fetch(new URL(n, base))).arrayBuffer()));
     }),
+    ...(manifest.inf ? [bytesOf(manifest.inf).then((b) => files.set('c:\\windows\\inf\\wine.inf', b))] : []),
   ]);
   files.set('c:\\windows\\globalization\\sorting\\sortdefault.nls', files.get(`${sys32}\\sortdefault.nls`));
   log(`loaded Wine ${manifest.wine} (${compiled.size} DLLs) in ${(performance.now() - t0).toFixed(0)} ms`);
