@@ -46,7 +46,20 @@ mailslots, change notifications), which arrives with M4.
   the translator. Far-pointer operands are now unsupported instructions
   (a regression test covers them).
 * **Stale translations.** The Node Wine runner cached translations by image
-  content only; the key now includes the translator build.
+  content only; the key now includes the translator build. The page's cache
+  keyed by the translator's ABI version only; its key now includes a hash of
+  the translator module too.
+* **A game's own DLLs were translated on every launch.** The page cached the
+  `.exe` only; Far Cry's is a 27 KB stub, and its 27 DLLs took 50 s to
+  translate each time (64 s to the menu, warm or cold). They are now cached
+  by content in the origin private file system, with the base each was
+  translated at (games' DLLs share bases, and the loader moves them to the
+  same place each launch). The program loads DLLs synchronously, without
+  returning to the worker's event loop, so cached translations are read and
+  compiled before it starts and new ones are written through synchronous
+  file handles opened beforehand. Far Cry reaches its menu in 13 s on the
+  second launch (screen up in 3 s, from 37 s). `tests/web/picker.mjs` covers
+  it with a program and two DLLs at one base.
 
 ## Not yet measured
 
