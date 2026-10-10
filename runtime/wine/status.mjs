@@ -101,6 +101,18 @@ export class StatusSampler {
       };
       prev.flushes = flushes;
     }
+    // Idle time (every thread waiting) by what it waited for, in ms per
+    // second, the biggest first (Scheduler.idleReason).
+    const idle = h.threads.idleMs;
+    if (idle) {
+      const p = (prev.idle ??= new Map());
+      s.idle = [...idle]
+        .map(([k, ms]) => [k, Math.round((ms - (p.get(k) ?? 0)) / dt)])
+        .filter(([, v]) => v > 0)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5);
+      prev.idle = new Map(idle);
+    }
     // The loaded images, when they changed: [base, size, path] (profilers
     // name translated code by its x86 address; tools/web/cdp-profile.mjs).
     if (h.images && h.images.size !== prev.images) {
@@ -187,5 +199,6 @@ export function formatStatus(s) {
     ? ` d3d ${s.d3d.batchesPerSec}/s${s.d3d.submitWaitMsPerSec !== undefined ? ` (waits: slot ${s.d3d.submitWaitMsPerSec} ms/s, fence ${s.d3d.fenceWaitsPerSec}x ${s.d3d.fenceWaitMsPerSec} ms/s)` : ''}`
     : '';
   const inp = s.input ? ` input ${s.input.taken}/${s.input.queued}` : '';
-  return `[${s.t}s]${scr}${d3d} sys ${s.syscalls.perSec}/s (${s.syscalls.top.map(([n]) => n).slice(0, 2).join(',')})${inp} | ${where}`;
+  const idle = s.idle?.length ? ` idle ${s.idle.reduce((n, [, v]) => n + v, 0)} ms/s (${s.idle[0][1]}: ${s.idle[0][0]})` : '';
+  return `[${s.t}s]${scr}${d3d}${idle} sys ${s.syscalls.perSec}/s (${s.syscalls.top.map(([n]) => n).slice(0, 2).join(',')})${inp} | ${where}`;
 }
