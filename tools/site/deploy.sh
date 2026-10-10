@@ -6,7 +6,8 @@
 #
 # Needs what tools/site/build.sh needs, and VERCEL_TOKEN, VERCEL_ORG_ID and
 # VERCEL_PROJECT_ID in the environment (CI sets them). The deployment's URL
-# is the last line of the output.
+# is the last line of the output. Exits 75 when Vercel refuses the upload for
+# the plan's daily limit.
 set -eu
 root=$(cd "$(dirname "$0")/../.." && pwd)
 target=${1:-preview}
@@ -32,4 +33,14 @@ JSON
 prod=
 [ "$target" = production ] && prod=--prod
 cd "$root"
-npx --yes vercel@62 deploy --prebuilt $prod --token "$VERCEL_TOKEN" --yes
+log=$(mktemp)
+if npx --yes vercel@62 deploy --prebuilt $prod --token "$VERCEL_TOKEN" --yes 2> "$log"; then
+  cat "$log" >&2
+  exit 0
+fi
+cat "$log" >&2
+# Vercel's free plan takes 5000 file uploads a day and refuses the rest with
+# this code until the next day: no fault of the site. Exit 75 (EX_TEMPFAIL)
+# so CI can say so instead of failing; any other error fails.
+if grep -q 'api-upload-free' "$log"; then exit 75; fi
+exit 1

@@ -443,7 +443,18 @@ jobs:
           VERCEL_PROJECT_ID: prj_4EvacVdNNW0IJFbS2MH3tuqOglvq
           TARGET: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && 'production' || 'preview' }}
         run: |
+          set +e
           sh tools/site/deploy.sh "$TARGET" | tee vercel.log
+          status=${PIPESTATUS[0]}
+          set -e
+          # Vercel's daily upload limit (free plan): no deployment this time,
+          # said as a warning and in the summary rather than as a failure.
+          if [ "$status" = 75 ]; then
+            echo "::warning title=No deployment::Vercel's daily upload limit is used up; this commit has no $TARGET deployment (the limit resets within 24 hours)."
+            echo "No $TARGET deployment of ${GITHUB_SHA::7}: Vercel's daily upload limit is used up (it resets within 24 hours)." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          [ "$status" = 0 ] || exit "$status"
           url=$(tail -n 1 vercel.log)/runtime/web/
           echo "url=$url" >> "$GITHUB_OUTPUT"
           echo "Site ($TARGET) of ${GITHUB_SHA::7}: $url" >> "$GITHUB_STEP_SUMMARY"
@@ -452,7 +463,7 @@ jobs:
       # preview's link and one-click links to the test programs
       # (tools/site/links.mjs).
       - name: Links to the preview on the pull request
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && steps.vercel.outputs.url != ''
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
