@@ -76,6 +76,22 @@ EDITS_X86_64 = [
 ]
 
 EDITS = [
+    # The system time from Emscripten's clock_gettime(CLOCK_REALTIME) is
+    # Date.now() in nanoseconds, a double about 1.7e18, past 2^53: it comes
+    # out up to a tick (100 ns) off. win32u turns a wait's timeout into an
+    # absolute time from it, and wineserver compares that with its own
+    # clock, gettimeofday (exact): a poll (a timeout of "now") that came out
+    # a tick ahead waited for a timer, a millisecond as the server rounds it.
+    # DirectInput polls every time a game reads a device. Integer
+    # milliseconds times 10000 are exact.
+    ('dlls/ntdll/unix/sync.c',
+     'NTSTATUS WINAPI NtQuerySystemTime( LARGE_INTEGER *time )\n{\n',
+     'NTSTATUS WINAPI NtQuerySystemTime( LARGE_INTEGER *time )\n{\n'
+     '#ifdef __EMSCRIPTEN__\n'
+     '    extern double emscripten_date_now(void);\n'
+     '    time->QuadPart = ticks_from_time_t( 0 ) + (LONGLONG)emscripten_date_now() * 10000;\n'
+     '    return STATUS_SUCCESS;\n'
+     '#endif\n', 1),
     # Session objects are packed one after another, and each one's sequence
     # counter is a 64-bit value updated atomically: an object of a size that
     # is not a multiple of 8 (a window class with extra bytes) left the next

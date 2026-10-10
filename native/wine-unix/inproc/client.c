@@ -296,11 +296,12 @@ unsigned int CDECL wine_server_call( void *req_ptr )
 static int wait_select_reply( void *cookie )
 {
     struct wake_up_reply reply;
+    int ms = -1, timers_ran = 0;
 
     for (;;)
     {
         int wait_fd = ntdll_get_thread_data()->wait_fd[0];
-        int ret = read( wait_fd, &reply, sizeof(reply) );
+        int ret = read( wait_fd, &reply, sizeof(reply) ), woke;
         if (ret == sizeof(reply))
         {
             if (!reply.cookie) return STATUS_THREAD_IS_TERMINATING;
@@ -308,8 +309,18 @@ static int wait_select_reply( void *cookie )
             continue;  /* a stale wakeup for an earlier wait */
         }
         if (ret >= 0 || errno != EAGAIN) return STATUS_INTERNAL_ERROR;
-        int ms = wasm_server_run(), woke;
-        if (read( wait_fd, &reply, 0 ) < 0 && errno != EAGAIN) return STATUS_INTERNAL_ERROR;
+        /* Run the server's timers, then look again before blocking: one of
+         * them may be this wait's own timeout. A poll (a timeout of "now",
+         * as DirectInput's check for events every time a game reads a
+         * device) is woken that way, and blocking until the next timer
+         * after it cost a millisecond each time. */
+        if (!timers_ran)
+        {
+            ms = wasm_server_run();
+            timers_ran = 1;
+            continue;
+        }
+        timers_ran = 0;
         woke = host_wait( ms );
         if (woke > 0) wasm_process_input();  /* the page queued keyboard or mouse input */
         else if (woke < 0 && ms < 0)
