@@ -112,6 +112,10 @@ target/debug/wwt wat program.exe           # generated WebAssembly as text
 target/debug/wwt pack program.exe -o out/  # static web app directory
 ```
 
+Picking up the graphics work (Direct3D, DirectDraw, OpenGL, the games)?
+Start with [docs/handoff.md](docs/handoff.md): state, setup, commands,
+open problems and gotchas.
+
 ## How it fits together
 
 ```
