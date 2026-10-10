@@ -205,6 +205,7 @@ requestAnimationFrame(paint);
 // else how often the screen changed, and the system calls and threads from
 // the latest status sample. The "stats" box (?stats=0) hides it.
 let d3dPerf = null; // the latest {type: 'perf'}, with when it came
+const d3dPerfHistory = []; // the last 10 minutes of them, for benchmarks (drive.mjs fps)
 const perfBox = $('perf');
 const showPerf = $('showperf');
 showPerf.onchange = () => {
@@ -343,7 +344,11 @@ function newD3DCanvas() {
   d3dPort = channel.port1;
   const snapshots = [];
   d3dPort.onmessage = (e) => {
-    if (e.data.type === 'perf') d3dPerf = { ...e.data, at: performance.now() };
+    if (e.data.type === 'perf') {
+      d3dPerf = { ...e.data, at: performance.now() };
+      d3dPerfHistory.push(d3dPerf);
+      if (d3dPerfHistory.length > 1200) d3dPerfHistory.shift();
+    }
     else if (e.data.type === 'debug') d3dDebugReplies.shift()?.(e.data);
     else if (e.data.type === 'log') logEl.textContent += `d3d: ${e.data.text}\n`;
     else if (e.data.type === 'frame') snapshots.shift()?.(e.data);
@@ -434,7 +439,12 @@ const readRecord = (key) => {
 // here (the last 60, the last 30 also in the run record) and logged on the
 // console as "webwindows:status <json>" for tools that watch it.
 const statusHistory = [];
+let loadedImages = []; // [base, size, path] of the program's images, from the samples
 function onStatus(s) {
+  if (s.images) {
+    loadedImages = s.images;
+    s = { ...s, images: s.images.length };
+  }
   // Paths the program looked for and did not find, and the directory
   // listings it took with how many entries each found, in the order it
   // asked (each sample carries the new ones; see runtime/wine/host.mjs).
@@ -549,6 +559,12 @@ window.webwindows = {
   gpuSelfTest: () => gpuSelfTest(),
   /** The chosen folder: { files, bytes, depth } and every relative path. */
   folder: () => ({ ...folderSummary, paths: [...folder.keys()] }),
+  /** The images the program has loaded, [base, size, path], for profiles. */
+  images: () => loadedImages,
+  /** The render worker's latest frame statistics ({fps, frameMs, worstMs, busy, drawsPerFrame}). */
+  d3dPerf: () => d3dPerf,
+  /** Those statistics, twice a second, for the last 10 minutes (each with `at`, performance.now()). */
+  d3dPerfHistory: () => d3dPerfHistory.slice(),
   /** The latest status sample, and the last 60. */
   status: () => statusHistory.at(-1) ?? null,
   statusHistory: () => statusHistory.slice(),
