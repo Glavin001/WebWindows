@@ -15,9 +15,9 @@
 
 use std::collections::HashMap;
 
+use crate::abi::cpu;
 use crate::abi::flags as fl;
 use crate::flags::{self, E};
-use crate::abi::cpu;
 use crate::ir::*;
 
 // ---- Flag lowering ---------------------------------------------------------
@@ -1129,26 +1129,37 @@ fn forward_x87_block(f: &mut Function, b: usize, consts: &[Option<i32>]) {
     let c = |v: V| consts.get(v as usize).copied().flatten();
     for i in 0..f.blocks[b].insts.len() {
         let inst = &f.blocks[b].insts[i];
-        let get = |v: V, rel: &HashMap<V, TopRel>, top: Option<TopRel>| if v == FPU_TOP { top } else { rel.get(&v).copied() };
+        let get = |v: V, rel: &HashMap<V, TopRel>, top: Option<TopRel>| {
+            if v == FPU_TOP {
+                top
+            } else {
+                rel.get(&v).copied()
+            }
+        };
         // The slot a native access touches: Some(Some(s)) a known slot,
         // Some(None) somewhere in the x87 area, None elsewhere.
-        let slot_of = |addr: V, mem: &Mem, rel: &HashMap<V, TopRel>, top| -> Option<Option<usize>> {
-            if mem.space != Space::Native {
-                return None;
-            }
-            if let Some(TopRel::Slot(k)) = get(addr, rel, top) {
-                return Some((mem.offset == cpu::FPU_ST && mem.size == 8).then(|| k.rem_euclid(8) as usize));
-            }
-            if addr != CPU {
-                return Some(None);
-            }
-            let (lo, hi) = (mem.offset, mem.offset + mem.size as u32);
-            if (lo, hi) == (cpu::FPU_TAG, cpu::FPU_TAG + 1) {
-                return Some(Some(TAG));
-            }
-            let overlaps = |a: u32, b: u32| lo < b && a < hi;
-            (overlaps(cpu::FPU_TAG, cpu::FPU_TAG + 1) || overlaps(cpu::FPU_ST, ST_END)).then_some(None)
-        };
+        let slot_of =
+            |addr: V, mem: &Mem, rel: &HashMap<V, TopRel>, top| -> Option<Option<usize>> {
+                if mem.space != Space::Native {
+                    return None;
+                }
+                if let Some(TopRel::Slot(k)) = get(addr, rel, top) {
+                    return Some(
+                        (mem.offset == cpu::FPU_ST && mem.size == 8)
+                            .then(|| k.rem_euclid(8) as usize),
+                    );
+                }
+                if addr != CPU {
+                    return Some(None);
+                }
+                let (lo, hi) = (mem.offset, mem.offset + mem.size as u32);
+                if (lo, hi) == (cpu::FPU_TAG, cpu::FPU_TAG + 1) {
+                    return Some(Some(TAG));
+                }
+                let overlaps = |a: u32, b: u32| lo < b && a < hi;
+                (overlaps(cpu::FPU_TAG, cpu::FPU_TAG + 1) || overlaps(cpu::FPU_ST, ST_END))
+                    .then_some(None)
+            };
         let mut replace = None;
         match &inst.op {
             Op::Copy(a) => {
@@ -1159,12 +1170,22 @@ fn forward_x87_block(f: &mut Function, b: usize, consts: &[Option<i32>]) {
             Op::Bin(op, a, bv) => {
                 let (ra, rb) = (get(*a, &rel, top), get(*bv, &rel, top));
                 let r = match (op, ra, rb, c(*bv)) {
-                    (BinOp::I32Add, Some(TopRel::Top(k) | TopRel::Raw(k)), _, Some(n)) => Some(TopRel::Raw(k + n)),
-                    (BinOp::I32Sub, Some(TopRel::Top(k) | TopRel::Raw(k)), _, Some(n)) => Some(TopRel::Raw(k - n)),
-                    (BinOp::I32And, Some(TopRel::Top(k) | TopRel::Raw(k)), _, Some(7)) => Some(TopRel::Top(k)),
+                    (BinOp::I32Add, Some(TopRel::Top(k) | TopRel::Raw(k)), _, Some(n)) => {
+                        Some(TopRel::Raw(k + n))
+                    }
+                    (BinOp::I32Sub, Some(TopRel::Top(k) | TopRel::Raw(k)), _, Some(n)) => {
+                        Some(TopRel::Raw(k - n))
+                    }
+                    (BinOp::I32And, Some(TopRel::Top(k) | TopRel::Raw(k)), _, Some(7)) => {
+                        Some(TopRel::Top(k))
+                    }
                     (BinOp::I32Shl, Some(TopRel::Top(k)), _, Some(3)) => Some(TopRel::Off(k)),
-                    (BinOp::I32Add | BinOp::I64Add, _, Some(TopRel::Off(k)), _) if *a == CPU => Some(TopRel::Slot(k)),
-                    (BinOp::I32Add | BinOp::I64Add, Some(TopRel::Off(k)), _, _) if *bv == CPU => Some(TopRel::Slot(k)),
+                    (BinOp::I32Add | BinOp::I64Add, _, Some(TopRel::Off(k)), _) if *a == CPU => {
+                        Some(TopRel::Slot(k))
+                    }
+                    (BinOp::I32Add | BinOp::I64Add, Some(TopRel::Off(k)), _, _) if *bv == CPU => {
+                        Some(TopRel::Slot(k))
+                    }
                     _ => None,
                 };
                 if let (Some(d), Some(r)) = (inst.dst, r) {
