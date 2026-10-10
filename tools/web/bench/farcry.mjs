@@ -20,6 +20,8 @@
 //   --port N      the local server's port (default 19621; the cache belongs to
 //                 the origin, so keep it fixed)
 //   --syms DIR    unstripped PE files to name guest functions (drive.mjs --syms)
+//   --page-args Q the page's settings for an experiment ("bundle=URL&translator=URL")
+//   --chrome-args A  Chrome flags for an experiment ("--js-flags=--no-liftoff")
 //
 // The game's menu takes the mouse as relative movement from where its own
 // cursor starts (the screen's centre), so the clicks are moves, not
@@ -50,6 +52,8 @@ const levelSecs = Number(opt('level-secs', 20));
 const profileMs = Number(opt('profile-ms', 10000));
 const syms = opt('syms', '');
 const port = opt('port', '19621');
+const pageArgs = opt('page-args', '');
+const chromeArgs = opt('chrome-args', '');
 const dir = resolve(argv[0] ?? join(root, 'target/games/farcry-x/far-cry-demo'));
 mkdirSync(dirname(out), { recursive: true });
 
@@ -89,7 +93,10 @@ const args = [join(root, 'tools/web/drive.mjs'), dir, 'FarCry.exe', '--out', out
 args.push(...(headed ? ['--headed'] : ['--present', 'offscreen']));
 if (fresh) args.push('--fresh');
 if (syms) args.push('--syms', syms);
-if (!vsync) args.push('--page-args', 'd3dvsync=0');
+const page = new URLSearchParams(pageArgs);
+if (!vsync) page.set('d3dvsync', '0');
+if ([...page].length) args.push('--page-args', page.toString());
+if (chromeArgs) args.push('--chrome-args', chromeArgs);
 const t0 = Date.now();
 const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 const result = { headed, fresh, vsync, started: new Date().toISOString() };

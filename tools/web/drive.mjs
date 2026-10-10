@@ -29,6 +29,7 @@
 //   --screen-timeout MS  how long to wait for the program's screen (default
 //                   600000); without one the run ends with the runtime's log
 //   --page-args Q   more of the page's settings, as a query ("d3dvsync=0")
+//   --chrome-args A more Chrome command-line flags ("--js-flags=--no-liftoff")
 //   --syms DIR      unstripped PE files (Wine's build tree) to name guest
 //                   functions in profiles (tools/web/cdp-profile.mjs)
 //
@@ -92,6 +93,7 @@ const headed = flag('headed');
 const present = opt('present', headed ? 'canvas' : 'gdi');
 const syms = opt('syms', '');
 const pageArgs = opt('page-args', '');
+const chromeArgs = opt('chrome-args', '').split(/\s+/).filter(Boolean);
 const screenTimeout = Number(opt('screen-timeout', 600000));
 const debug = opt('debug', '');
 const unixtrace = opt('unixtrace', '');
@@ -117,6 +119,7 @@ const secs = () => ((Date.now() - t0) / 1000).toFixed(0);
 const cdpPort = port + 1;
 const launch = { args: ['--enable-unsafe-webgpu', `--remote-debugging-port=${cdpPort}`], viewport: { width: 1000, height: 1000 } };
 if (headed) Object.assign(launch, { headless: false, channel: 'chrome', viewport: null, args: [...launch.args, '--window-size=1100,1050'] });
+launch.args.push(...chromeArgs);
 if (video) launch.recordVideo = { dir: resolve(video), size: launch.viewport };
 const context = fresh ? await (await chromium.launch(launch)).newContext(launch) : await chromium.launchPersistentContext(profile, launch);
 let status = null;

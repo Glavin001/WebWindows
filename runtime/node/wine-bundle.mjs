@@ -84,10 +84,13 @@ const PRELINK_BASE = mem64 ? 0x1_9000_0000 : 0x60000000;
 const PROGRAMS = ['winemine', 'notepad'];
 const NLS = ['locale', 'l_intl', 'sortdefault', 'normnfc', 'normnfd', 'normnfkc', 'normnfkd', 'c_1252', 'c_437', 'c_850', 'c_20127'];
 
-const wwt = ['target/release/wwt', 'target/debug/wwt']
-  .map((p) => join(root, p))
-  .filter((p) => existsSync(p))
-  .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
+// WWT=path: another translator build (an experiment's, in its own target dir).
+const wwt =
+  process.env.WWT ??
+  ['target/release/wwt', 'target/debug/wwt']
+    .map((p) => join(root, p))
+    .filter((p) => existsSync(p))
+    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
 
 /** The image without its debug sections (binutils' strip, when installed;
  * loaded sections keep their addresses). */
