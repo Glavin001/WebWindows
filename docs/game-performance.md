@@ -48,15 +48,21 @@ batch slot and for fences (readbacks), with readback MB/s:
 ## Far Cry, measured
 
 Fort level, standing in the boat at the start, MacBook Pro (Apple Silicon),
-Chrome 154:
+Chrome 154, headed (Metal), without vsync (the benchmark's default; see
+below), each step on top of the ones before:
 
-| | Headless (SwiftShader) | Headed (Metal) |
+| Change | fps | Where it was |
 | --- | --- | --- |
-| Before | — | 19.8 fps, 990 draws/frame |
-| GPU colour blits | 58.1 fps, 986 draws/frame | |
+| Start | 19.8 | 4 readbacks a frame, 47% of the time |
+| Colour blits on the GPU, bounds traps for the game's DLLs, x87 registers forwarded within blocks | 64–69 (two runs) | game code 25–37% faster per function from the x87 pass (headless profiles) |
+| Wine's DLLs built with SSE math | 84 | wined3d's matrices and the mixer in x87 |
+| An exact system time on Wine's Unix side | 92 | DirectInput's polls slept 1 ms each |
 
-Launch to menu: 64 s cold; 13 s warm with the DLL translation cache (10 s
-headless, 11 s headed).
+Headless (SwiftShader) runs reached 58 fps after the blit fix and then
+stopped telling much: with vsync they sit at 60, and without it they wait
+for SwiftShader, which draws on the CPU.
+
+Launch to menu: 64 s cold; about 10 s warm with the DLL translation cache.
 
 ## What was found
 
@@ -75,29 +81,57 @@ waits went to zero and the frame rate tripled. Wine's rendering tests: D3D9
 133/133 and D3D8 60/60 functions without failures, as before; DirectDraw 7
 803 failures (from 808: `test_surface_format_conversion_alpha` 51, from 56).
 
+**x87 registers in memory.** The translator keeps x87 registers in the CPU
+struct, addressed through the stack top at run time: every `fld`, `fmul`
+or `fstp` loads and stores there and rewrites the tag word. Far Cry's
+engine is x87 code (2004's MSVC), so is all of Wine's float code built with
+MinGW's defaults. `opt::forward_x87` follows the stack top within a block
+(the block's starting top plus a known amount), so a load of a register the
+block already loaded or stored becomes that value, and a store that a later
+store replaces, with nothing in between that reads it or can fault, goes.
+In the hottest culling function native loads went from 685 to 91.
+
+**wined3d's float code was x87.** Wine's i386 DLLs are built with MinGW's
+default `-mfpmath=387`. `tools/wine/build.sh` now builds them with
+`-msse2 -mfpmath=sse`: the translator keeps SSE values in WebAssembly
+locals. wined3d's per-draw fixed-function matrices (`invert_matrix`,
+`multiply_matrix`) left the top of the profile and the mixer got 40%
+cheaper.
+
+**1 ms sleeps in DirectInput's polls.** With the idle time broken down by
+what the threads waited for (status samples, `idle`), 85 ms a second went
+to `polling (asked 1 ms)` under `dinput8.dll`: Wine's DirectInput calls
+`MsgWaitForMultipleObjectsEx` with a zero timeout every time a game reads a
+device. win32u turns the timeout into an absolute time from
+`NtQuerySystemTime`, which on Emscripten came from `Date.now()` in
+nanoseconds as a double, past 2^53, so up to a tick (100 ns) off; when it
+came out a tick ahead of wineserver's clock (from `gettimeofday`, exact)
+the poll waited for a timer, rounded up to a millisecond.
+`native/wine-unix/prepare.py` now has `NtQuerySystemTime` compute integer
+milliseconds times 10,000.
+
+**Vsync.** A Direct3D 9 game presents with vsync unless it asks otherwise,
+and the render worker waits for the display's next frame then. To measure
+how fast a game runs, the page's `vsync` box (`?d3dvsync=0`) presents
+without waiting; the benchmark does that unless `--vsync`.
+
 ## Where the time goes now
 
-Headless, after the fix, the guest worker is 84% translated x86:
-
-| Share | What |
-| --- | --- |
-| 22% | `wined3d.dll`: state application (`wined3d_device_apply_stateblock`), `adapter_wgpu_draw_primitive`, fixed-function matrices (`invert_matrix`, `multiply_matrix`, `get_texture_matrix`), its mutex |
-| 18% | `cry3dengine.dll` (one function at +0x1a8a2 is 6%) |
-| 11% | `xrenderd3d9.dll` |
-| 14% | `threads.mjs:idle`: every guest thread waiting (the game sleeps) |
-| 6% | `dsound.dll` `DSOUND_MixToPrimary`: Wine's software mixer |
-| 3% | `d3d9.dll` |
+Headed, at 92 fps, the guest worker is 96% translated x86, without idle
+time in the level. The biggest single functions are wined3d's state
+application per draw (`wined3d_device_apply_stateblock` 5%,
+`adapter_wgpu_draw_primitive` 3.5%, `wgpu_cmd_alloc` 1.3%), DirectSound's
+mixer (4%) and Far Cry's own culling and rendering code
+(`cry3dengine.dll`, `xrenderd3d9.dll`).
 
 ## Next
 
-* **wined3d per draw.** It runs translated, about 20% of a frame; running it
-  (and d3d9) as native WebAssembly, or a direct Direct3D 9 path to the d3dgpu
-  core, removes most of it.
-* **The game's own code.** Its DLLs get explicit memory checks (only the
-  .exe gets bounds traps, `memTraps && path === exeDos` in
-  `runtime/web/worker.mjs`), and translate to about 86 bytes of WebAssembly
-  per x86 instruction (`xrenderd3d9.dll`: 44 MB).
-* **Idle time.** Why the game's threads all wait 14% of the time.
+* **wined3d per draw.** It runs translated, about a quarter of a frame;
+  running it (and d3d9) as native WebAssembly, or a direct Direct3D 9 path
+  to the d3dgpu core, removes most of it.
+* **The translator's code.** About 86 bytes of WebAssembly per x86
+  instruction (`xrenderd3d9.dll`: 44 MB); x87 stores at block ends and the
+  tag word could go too (registers in locals across blocks).
 * **Mixing.** `DSOUND_MixToPrimary` as native code, as ntdll's heap and the
   string functions are (`docs/performance.md`).
 * **Cold start.** The translator takes 14 s for `xrenderd3d9.dll` natively
