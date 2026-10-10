@@ -160,7 +160,25 @@ for d in $DLLS; do
     keep="-o tools/sfnt2fon/sfnt2fon"
     continue
   fi
+  # kernelbase keeps x87 math (below).
+  if [ "$d" = kernelbase ] && [ "$ARCH" = i386 ]; then
+    x87_targets="$x87_targets $(target "$d")"
+    continue
+  fi
   targets="$targets $(target "$d")"
 done
 [ -z "$targets" ] || make -j"$(nproc)" $keep $targets
-for t in $targets; do ls -la "$t"; done
+# kernelbase with x87 floating point, as MinGW's default: built with SSE,
+# kernel32's fiber test crashes on translated Wine (a fiber switched to
+# from another thread jumps to address 0), which an x87 kernelbase in an
+# otherwise SSE tree does not; why is not understood yet. Its float code is
+# not hot. Its objects are rebuilt when the flags they were built with
+# change (dlls/kernelbase/.wwt-crossflags).
+if [ -n "${x87_targets:-}" ]; then
+  if [ "$(cat dlls/kernelbase/.wwt-crossflags 2>/dev/null)" != "-g -O2" ]; then
+    rm -f dlls/kernelbase/i386-windows/*.o
+  fi
+  make -j"$(nproc)" i386_CFLAGS="-g -O2" $x87_targets
+  echo "-g -O2" > dlls/kernelbase/.wwt-crossflags
+fi
+for t in $targets ${x87_targets:-}; do ls -la "$t"; done
