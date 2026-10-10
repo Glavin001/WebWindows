@@ -11,6 +11,8 @@
 //   DIR           the demo's folder (default target/games/farcry-x/far-cry-demo)
 //   --headed      Google Chrome in a window on the real GPU (drive.mjs
 //                 --headed); headless Chromium otherwise (SwiftShader)
+//   --vsync       present at the display's rate, as the game asks (default:
+//                 without waiting for it, to measure how fast the game runs)
 //   --fresh       a new browser profile: no cached translations (a cold start)
 //   --out PREFIX  files: PREFIX.json (the summary), PREFIX.log, screenshots and
 //                 profiles (default target/bench/farcry); the browser profile
@@ -40,6 +42,9 @@ const flag = (name) => {
 };
 const headed = flag('headed');
 const fresh = flag('fresh');
+// Frames as fast as the game makes them, not at the display's rate: the
+// measure of how fast it runs (the game asks for vsync).
+const vsync = flag('vsync');
 const out = resolve(opt('out', join(root, 'target/bench/farcry')));
 const levelSecs = Number(opt('level-secs', 20));
 const profileMs = Number(opt('profile-ms', 10000));
@@ -84,9 +89,10 @@ const args = [join(root, 'tools/web/drive.mjs'), dir, 'FarCry.exe', '--out', out
 args.push(...(headed ? ['--headed'] : ['--present', 'offscreen']));
 if (fresh) args.push('--fresh');
 if (syms) args.push('--syms', syms);
+if (!vsync) args.push('--page-args', 'd3dvsync=0');
 const t0 = Date.now();
 const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-const result = { headed, fresh, started: new Date().toISOString() };
+const result = { headed, fresh, vsync, started: new Date().toISOString() };
 const fpsResults = [];
 const waits = [];
 writeFileSync(`${out}.log`, '');

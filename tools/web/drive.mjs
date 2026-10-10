@@ -28,6 +28,7 @@
 //                   Chromium on SwiftShader
 //   --screen-timeout MS  how long to wait for the program's screen (default
 //                   600000); without one the run ends with the runtime's log
+//   --page-args Q   more of the page's settings, as a query ("d3dvsync=0")
 //   --syms DIR      unstripped PE files (Wine's build tree) to name guest
 //                   functions in profiles (tools/web/cdp-profile.mjs)
 //
@@ -90,6 +91,7 @@ const out = resolve(opt('out', join(root, 'target/drive/run')));
 const headed = flag('headed');
 const present = opt('present', headed ? 'canvas' : 'gdi');
 const syms = opt('syms', '');
+const pageArgs = opt('page-args', '');
 const screenTimeout = Number(opt('screen-timeout', 600000));
 const debug = opt('debug', '');
 const unixtrace = opt('unixtrace', '');
@@ -135,6 +137,7 @@ try {
     if (n <= 3) console.log(`console ${m.type()}: ${text.slice(0, 400)}`);
   });
   const q = new URLSearchParams({ wine: '1', d3dpresent: present, debug, unixtrace });
+  for (const [k, v] of new URLSearchParams(pageArgs)) q.set(k, v);
   await page.goto(`http://localhost:${port}/runtime/web/?${q}`);
   await page.setInputFiles('#fallback', resolve(dir));
   await page.waitForFunction(() => !document.getElementById('run').disabled);

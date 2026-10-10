@@ -30,6 +30,7 @@ const SETTINGS = {
   d3dpresent: ['d3dpresent', 'canvas', 'value'],
   memtraps: ['memtraps', 'auto', 'value'],
   d3dstats: ['d3dstats', false, 'check'],
+  d3dvsync: ['d3dvsync', true, 'check'],
   args: ['args', '', 'value'],
   debug: ['debug', '', 'value'],
   unixtrace: ['unixtrace', '', 'value'],
@@ -323,6 +324,9 @@ for (const type of ['keydown', 'keyup']) {
   });
 }
 
+// The vsync box applies at once to a running program too.
+$('d3dvsync').addEventListener('change', () => d3dPort?.postMessage({ type: 'vsync', on: setting('d3dvsync') }));
+
 // Direct3D frames: a canvas over the screen that the program's render
 // worker presents to, moved over the Direct3D window as it reports where
 // that is. ?d3dpresent=gdi keeps the frames in the screen instead (read
@@ -356,6 +360,8 @@ function newD3DCanvas() {
   const port = d3dPort;
   // ?d3dstats=1: the render worker reports how busy it is, once a second.
   if (setting('d3dstats')) port.postMessage({ type: 'stats' });
+  // ?d3dvsync=0: Direct3D presents without waiting for the display.
+  if (!setting('d3dvsync')) port.postMessage({ type: 'vsync', on: false });
   window.d3dSnapshot = () => new Promise((resolve) => (snapshots.push(resolve), port.postMessage({ type: 'snapshot' })));
   if (mode === 'offscreen') return { offscreen: true, port: channel.port2 };
   d3dCanvas = document.createElement('canvas');

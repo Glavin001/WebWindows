@@ -27,6 +27,7 @@ let capture = 'idle'; // 'requested', 'reading'
 const log = (text) => (port ?? self).postMessage({ type: 'log', text });
 // {type: 'stats'} from the page: once a second, how busy this worker was.
 let stats = null;
+let vsync = true;
 // Frame timing for the page's overlay, {type: 'perf'} twice a second:
 // presented frames per second, average and worst time between them, the
 // share of the time spent executing batches, and draws per frame.
@@ -85,6 +86,9 @@ function onPortMessage(e) {
     return;
   }
   if (e.data?.type === 'stats') stats = { since: performance.now(), execute: 0, gpuWait: 0, frames: 0, batches: 0 };
+  // {type: 'vsync', on}: whether a vsynced Present waits for the display
+  // (the page's ?d3dvsync=0 lets a game run past the refresh rate).
+  if (e.data?.type === 'vsync') vsync = !!e.data.on;
   if (e.data?.type !== 'snapshot' || !renderer || capture !== 'idle') return;
   capture = 'requested';
   renderer.capture_frames();
@@ -149,7 +153,7 @@ async function loop() {
     if (present >= 0 && capture === 'requested') snapshot();
     if (present >= 0) {
       renderer.track_gpu();
-      await (present & PRESENT_VSYNC ? nextFrame() : nextTask());
+      await (present & PRESENT_VSYNC && vsync ? nextFrame() : nextTask());
       while (renderer.gpu_in_flight() >= MAX_FRAME_LATENCY) await new Promise((r) => setTimeout(r, 1));
     }
     if (port) {
