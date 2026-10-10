@@ -30,7 +30,7 @@ export class StatusSampler {
     this.extra = opts.extra ?? (() => ({}));
     this.t0 = performance.now();
     this.lastAt = this.t0;
-    this.prev = { calls: new Map(), flushes: 0, taken: 0, queued: 0, batches: 0, fixmes: 0 };
+    this.prev = { calls: new Map(), flushes: 0, taken: 0, queued: 0, batches: 0, fixmes: 0, missingSent: new Set(), listingsSent: new Set() };
     this.seq = 0;
   }
 
@@ -79,6 +79,11 @@ export class StatusSampler {
       syscalls: { perSec: Math.round(total / dt), top: top.slice(0, 5) },
       fixmes: h.fixmes?.size ?? 0,
       unimplemented: [...(h.unimplemented?.keys() ?? [])],
+      // Paths looked for and not found since the last sample (the page
+      // keeps them all, see host.missingFiles), and how many so far.
+      missingFiles: { total: h.missingFiles?.size ?? 0, new: unsent(h.missingFiles, prev.missingSent, (p) => p) },
+      // Directory listings since the last sample, [dir\mask, entries].
+      dirListings: { total: h.dirListings?.size ?? 0, new: unsent(h.dirListings, prev.listingsSent, (k, n) => [k, n]) },
     };
     const d = this.display;
     if (d) {
@@ -103,6 +108,18 @@ export class StatusSampler {
     prev.calls = calls;
     return { ...s, ...this.extra() };
   }
+}
+
+/** A map's entries not sent with an earlier sample, at most 500 (the rest go with the next). */
+function unsent(map, sent, entry) {
+  const out = [];
+  for (const [k, v] of map ?? []) {
+    if (sent.has(k)) continue;
+    if (out.length === 500) break;
+    sent.add(k);
+    out.push(entry(k, v));
+  }
+  return out;
 }
 
 function safe(f, fallback) {

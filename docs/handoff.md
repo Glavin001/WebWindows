@@ -30,13 +30,14 @@ is already merged in, so the branch merges cleanly.
 | Direct3D 8 | Wine's `visual.c`: 60/60 | `… --module d3d8 --test visual` |
 | DirectDraw 7 | `ddraw7.c`: all 119 functions run; 808 failures against native's 45 | `… --module ddraw --test ddraw7` |
 | OpenGL 2.1 | WebGL 2 through gl4es; `gltri`, `glbench` and `gl2test` (17/17) pass | `tests/web/gui.mjs` |
-| Far Cry demo | menu, new game and the Fort level render and play in headless Chromium | `tools/web/drive.mjs` |
+| Far Cry demo | menu, new game and the Fort level render and play, headless and in headed Chrome on Apple Metal | `tools/web/drive.mjs` |
 | UT2004 demo | menus, Instant Action, a DeathMatch | `drive.mjs` |
 | Quake II demo | `ref_gl` on WebGL 2 at about 50 fps; `ref_soft` too | `drive.mjs` |
 | Direct3D 10/11 | **not yet**: DLLs build, the adapter stops at feature level 9_3 | see §6.2 |
 
-**Known open problems,** in priority order: §6.1 (Far Cry on a real GPU),
-§6.2 (Direct3D 10/11), §6.3 (DirectDraw failures), then §6.4 and §6.5.
+**Known open problems,** in priority order: §6.2 (Direct3D 10/11), §6.3
+(DirectDraw failures), then §6.4 and §6.5. (§6.1, Far Cry on a real GPU, is
+solved.)
 
 ## 2. Mental model
 
@@ -210,73 +211,45 @@ Read [docs/opengl.md](opengl.md) first.
   that rule**; the project owner asked for it explicitly.
 - **Sample URLs:** running a sample puts `?exe=` in the address.
 - **Debug report button:** saves a JSON file with the build, GPU, logs,
-  status, the folder's config files and frames. Users send these, so learn to
-  read them (§6.1 shows how).
+  status, the folder's summary, listing and config files, the paths the
+  program looked for and did not find, its directory listings, and frames.
+  Users send these, so learn to read them (§6.1 shows how).
 
 ## 6. Open work
 
-### 6.1 Far Cry blurred on a real GPU (reported blocker, not reproduced)
+### 6.1 Far Cry blurred on a real GPU (solved: an incomplete folder)
 
-**Report:** the owner's Mac (Apple Metal, Chrome 154, preview of `f6bfcd7`).
-After "Start new game", the screen shows the level start, but heavily
-blurred:
+**Report:** the owner's Mac (Apple Metal, Chrome 154). After "Start new
+game" the level showed as blue haze: smooth sky gradients, the pistol as a
+dark blob, no HUD.
 
-- the sky is smooth gradients;
-- the dark blob at the bottom right is the hand and pistol;
-- there is no HUD.
+**Cause:** the page read the chosen folder only three levels deep
+(`readDir` in `runtime/web/app.mjs`), so the folder picker gave Far Cry 552
+of the demo's 2,427 files. Its shader folders are four and five levels down
+(`Shaders/HWScripts/Declarations/CGPShaders`, `CGVShaders`,
+`Techniques/Templates`, `Scripts/CryShaders/System`), so it ran with 5 of 9
+shader files and none of its hardware shaders (the report's `log.txt`:
+"5 Shader files found", "Compile System Shader 'SunFlares'...Fail").
+`tools/web/drive.mjs` loads folders through the page's file input, which
+had no limit, so headless runs always had every file and never reproduced
+it. The guesses this section used to list (Metal LOD and derivatives,
+timing, presentation) were all wrong.
 
-The game keeps rendering at about 30 fps (226 draws/frame), with no WebGPU
-errors in the worker log.
+**Fix:** both ways of choosing a folder now go through one loader
+(`setFolder`) and read every level; the page shows the folder's file count,
+size and depth, and `tests/web/picker.mjs` picks a folder with a file seven
+levels down through the real `showDirectoryPicker` code path.
 
-**Reading the report:**
-`jq -r '.d3dFramePng' report.json | sed 's/^data:image\/png;base64,//' | base64 -d > f.png`.
-Also useful in the JSON:
+**What would have found it in the report,** and is in reports now:
 
-- `.run.files["c:\\app\\log.txt"]` (Far Cry's own log);
-- `.folderConfig["systemcfg.lua"]`;
-- `.d3d.worker` (adapter features and statistics);
-- `.statusHistory`.
-
-**Ruled out:**
-
-- **A regression in the code:** the current code renders the menu and the
-  boat scene sharply headless, with `--present gdi` and with
-  `--present offscreen` (the GPU present path).
-- **Adapter features:** SwiftShader also has `float32-filterable` and
-  `float32-blendable`, so the float format paths are the same.
-- **Vendor and device ID:** both report vendor 0, so Far Cry sees the same
-  "nVidia (Unknown)" GeForce 6800 and picks the NV1x path ("Not using pixel
-  shaders"), per the user's log.txt.
-- **Their config:** I copied their `systemcfg.lua` difference (`r_Glare = 0`;
-  `r_MotionBlur = 1` is on in both). The r_Glare=0 run never got past the
-  menu (keyboard navigation went wrong; §4), so that difference was never
-  actually tested in the level.
-
-**Not yet tested, in order:**
-
-1. **Get into the level headless deterministically.** Click Start, or find
-   the console command. Then run the user's exact `systemcfg.lua`
-   (`r_Glare 0`, `r_MotionBlur 1`, `r_EnhanceImage 1`, `r_HeatHaze 1`).
-2. **Ask the owner to switch "Direct3D frames" to GDI** on the page. If the
-   GDI frame is sharp, the problem is in canvas presentation; if it's still
-   blurred, it's in rendering.
-3. **Real-GPU-only behaviour in our WGSL.** Implicit-LOD sampling and
-   derivatives inside non-uniform control flow are undefined on real GPUs:
-   we turn the uniformity diagnostic off (`diagnostic(off,
-   derivative_uniformity)`) instead of hoisting coordinates, which is on the
-   to-do list in `wgsl.rs`. SwiftShader computes these anyway; Metal may pick
-   a garbage mip level, and a garbage LOD (NaN or huge) means sampling the
-   smallest mips, which looks exactly like this blur. Also check
-   render-target textures with mips, and the motion-blur or "enhance image"
-   passes, which copy the back buffer to a texture and blend it back.
-4. **Timing.** Metal runs at 30 fps against SwiftShader's 5, and Far Cry's
-   effects and physics are time-based. A blue, blurred view with only the gun
-   visible also matches its underwater effect.
-5. **A recording.** `node runtime/node/wine.mjs --d3d-record fc.rec.gz …`
-   records the command stream in Node, and the native replay
-   (`cargo run --release -p d3dgpu-core --example replay -- FILE OUT`) renders
-   it on another wgpu backend for comparison. Getting the recording into the
-   level needs input scripting (`--input`).
+- `folderSummary`: `{ files, bytes, depth }` of the folder the page read.
+- `run.dirListings`: every directory listing the program took and how many
+  entries it found (`c:\app\shaders\hwscripts\declarations\*.*` found 3
+  of 5, and the shader folders below it were never listed).
+- `run.missingFiles`: every path the program opened or queried that did not
+  exist, in order. Most are ordinary probes (DLLs looked for in `c:\app`
+  first, optional overrides); compare with a local run of the same program
+  (`drive.mjs` … `record FILE`) to find the ones that matter.
 
 ### 6.2 Direct3D 10/11 (next feature; started, nothing committed)
 

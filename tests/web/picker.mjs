@@ -25,11 +25,15 @@ try {
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 // The folder the "user" picks: a program in a subdirectory with a data file
-// next to it, which the program opens relative to its working directory.
+// next to it, which the program opens relative to its working directory,
+// and a file seven levels down (games keep data that deep; the page once
+// read three levels and dropped the rest).
+const deep = 'data/a/b/c/d/e/deep.txt';
 const folder = {
   'bin/readfile.exe': [...readFileSync(join(root, 'tests/programs/readfile.exe'))],
   'bin/data.txt': [...Buffer.from('hello from the chosen folder\n')],
   'readme.txt': [...Buffer.from('not a program\n')],
+  [deep]: [...Buffer.from('deep\n')],
 };
 const expect = 'data: hello from the chosen folder';
 
@@ -65,6 +69,12 @@ try {
   const programs = await page.$$eval('#exe option', (os) => os.map((o) => o.value));
   console.log(`programs in the folder: ${programs.join(', ')}`);
   if (programs.join() !== 'bin/readfile.exe') failed = true;
+  const picked = await page.evaluate(() => window.webwindows.folder());
+  console.log(`folder: ${picked.files} files, ${picked.depth} levels deep`);
+  if (picked.files !== Object.keys(folder).length || !picked.paths.includes(deep) || picked.depth !== 7) {
+    console.error(`FAIL: the page read ${picked.paths.join(', ')}`);
+    failed = true;
+  }
 
   for (const launch of ['first', 'second']) {
     await page.evaluate(() => (window.lastExit = undefined));

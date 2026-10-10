@@ -13,6 +13,7 @@ const $ = (id) => document.getElementById(id);
 const out = $('out');
 const logEl = $('log');
 let folder = new Map(); // relative path -> File
+let folderSummary = null; // { files, bytes, depth }, for the page and the debug report
 
 const params = new URLSearchParams(location.search);
 
@@ -105,29 +106,56 @@ function setPrograms() {
   if (!exes.length) sel.add(new Option('No .exe in this folder'));
 }
 
-async function readDir(handle, prefix = '') {
+// Every file under the chosen folder, at any depth: games keep data several
+// folders down (Far Cry's shaders are five levels in), and a program that
+// misses some of its files fails in ways that look like anything but a
+// missing file. Directories are read concurrently.
+async function readDir(handle, prefix, entries) {
+  const pending = [];
   for await (const [name, h] of handle.entries()) {
-    if (h.kind === 'file') folder.set(prefix + name, await h.getFile());
-    else if (prefix.split('/').length < 4) await readDir(h, prefix + name + '/');
+    if (h.kind === 'file') pending.push(h.getFile().then((f) => entries.push([prefix + name, f])));
+    else pending.push(readDir(h, prefix + name + '/', entries));
   }
+  await Promise.all(pending);
+}
+
+/** The folder both ways of choosing one end in: [relative path, File] pairs. */
+function setFolder(entries) {
+  entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  folder = new Map(entries);
+  let bytes = 0;
+  let depth = 0;
+  for (const [k, f] of entries) {
+    bytes += f.size;
+    depth = Math.max(depth, k.split('/').length);
+  }
+  folderSummary = { files: entries.length, bytes, depth };
+  $('status').textContent = `Folder: ${entries.length.toLocaleString()} files, ${(bytes / 1048576).toFixed(0)} MB, ${depth} level${depth === 1 ? '' : 's'} deep`;
+  setPrograms();
 }
 
 $('pick').onclick = async () => {
   if (window.showDirectoryPicker) {
+    let dir;
     try {
-      const dir = await window.showDirectoryPicker();
-      folder = new Map();
-      await readDir(dir);
-      setPrograms();
-    } catch {}
+      dir = await window.showDirectoryPicker();
+    } catch {
+      return; // cancelled
+    }
+    const entries = [];
+    try {
+      await readDir(dir, '', entries);
+    } catch (e) {
+      $('status').textContent = `Could not read the whole folder: ${e.message}`;
+      return;
+    }
+    setFolder(entries);
   } else {
     $('fallback').click();
   }
 };
 $('fallback').onchange = (e) => {
-  folder = new Map();
-  for (const f of e.target.files) folder.set(f.webkitRelativePath.split('/').slice(1).join('/'), f);
-  setPrograms();
+  setFolder([...e.target.files].map((f) => [f.webkitRelativePath.split('/').slice(1).join('/'), f]));
 };
 
 // ---- The screen -----------------------------------------------------------
@@ -382,7 +410,7 @@ function startRecord(exe) {
     const last = localStorage.getItem(RECORD);
     if (last) localStorage.setItem(PREVIOUS, last);
   } catch {}
-  record = { exe, started: new Date().toISOString(), files: {}, status: [] };
+  record = { exe, started: new Date().toISOString(), files: {}, status: [], missingFiles: [], dirListings: [] };
   statusHistory.length = 0;
   clearInterval(recordTimer);
   recordTimer = setInterval(saveRecord, 2000);
@@ -407,6 +435,16 @@ const readRecord = (key) => {
 // console as "webwindows:status <json>" for tools that watch it.
 const statusHistory = [];
 function onStatus(s) {
+  // Paths the program looked for and did not find, and the directory
+  // listings it took with how many entries each found, in the order it
+  // asked (each sample carries the new ones; see runtime/wine/host.mjs).
+  // The record keeps the first 2000 of each (it lives in localStorage), the
+  // samples only the counts.
+  for (const k of ['missingFiles', 'dirListings']) {
+    if (!s[k]?.new) continue;
+    if (record) record[k].push(...s[k].new.slice(0, 2000 - record[k].length));
+    s = { ...s, [k]: { total: s[k].total, new: s[k].new.length } };
+  }
   statusHistory.push(s);
   if (statusHistory.length > 60) statusHistory.shift();
   if (record) record.status = statusHistory.slice(-30);
@@ -475,6 +513,7 @@ async function debugReport() {
   };
   // The program folder: every file's name and size, and the small text
   // files a program reads its settings from.
+  r.folderSummary = folderSummary;
   r.folder = [...folder].slice(0, 5000).map(([k, f]) => [k, f.size]);
   r.folderConfig = {};
   let budget = 1 << 20;
@@ -508,6 +547,8 @@ window.webwindows = {
   debugReport: () => debugReport(),
   /** Runs the GPU self-test (see gpuSelfTest); the results, also kept for the debug report. */
   gpuSelfTest: () => gpuSelfTest(),
+  /** The chosen folder: { files, bytes, depth } and every relative path. */
+  folder: () => ({ ...folderSummary, paths: [...folder.keys()] }),
   /** The latest status sample, and the last 60. */
   status: () => statusHistory.at(-1) ?? null,
   statusHistory: () => statusHistory.slice(),
