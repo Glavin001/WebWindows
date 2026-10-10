@@ -48,6 +48,13 @@ export class D3DBridge {
     this.present = present;
     this.produced = Atomics.load(this.ctrl, P.PRODUCED);
     this.batches = 0;
+    /**
+     * Where the program's thread waits on the render worker, cumulative (the
+     * status sampler turns them into rates): submits that found the slot
+     * still full and how long they waited, fence waits (readbacks) and how
+     * long, and the bytes handed over.
+     */
+    this.stats = { submitWaits: 0, submitWaitMs: 0, fenceWaits: 0, fenceWaitMs: 0, bytes: 0, readbackBytes: 0 };
     /** The GPU's PCI vendor (pciVendor), 0 when not known. */
     this.vendorId = 0;
   }
@@ -78,11 +85,15 @@ export class D3DBridge {
         const size = u32(args + 4);
         if (size > P.SLOT_BYTES) return STATUS_NOT_SUPPORTED;
         // One slot: wait until the render worker took the previous batch.
+        let t0 = 0;
         for (;;) {
           const consumed = Atomics.load(this.ctrl, P.CONSUMED);
           if (consumed === this.produced) break;
+          t0 ||= performance.now();
           Atomics.wait(this.ctrl, P.CONSUMED, consumed, 1000);
         }
+        if (t0) (this.stats.submitWaits++, (this.stats.submitWaitMs += performance.now() - t0));
+        this.stats.bytes += size;
         this.bytes.set(u8.subarray(data, data + size), P.SLOT);
         Atomics.store(this.ctrl, P.LEN, size);
         Atomics.store(this.ctrl, P.FLAGS, this.batches++ ? 0 : P.FIRST);
@@ -96,13 +107,18 @@ export class D3DBridge {
         const offset = u32(args + 8);
         const size = u32(args + 12);
         const dst = u32(args + 16);
-        const deadline = performance.now() + 10000;
+        const t0 = performance.now();
+        const deadline = t0 + 10000;
+        let waited = false;
         for (;;) {
           const done = Atomics.load(this.ctrl, P.FENCE);
           if (done - fence >= 0) break;
           if (performance.now() > deadline) return STATUS_TIMEOUT;
+          waited = true;
           Atomics.wait(this.ctrl, P.FENCE, done, 100);
         }
+        if (waited) (this.stats.fenceWaits++, (this.stats.fenceWaitMs += performance.now() - t0));
+        this.stats.readbackBytes += size;
         if (size) u8.set(this.bytes.subarray(P.SHARED + offset, P.SHARED + offset + size), dst);
         return STATUS_SUCCESS;
       }

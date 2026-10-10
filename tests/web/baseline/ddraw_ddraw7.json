@@ -559,16 +559,16 @@
   },
   "test_surface_format_conversion_alpha": {
     "status": "done",
-    "failures": 56,
+    "failures": 51,
     "failed": [
-      "ddraw7.c:18766: Test failed: Test (0, R5G6B5 -> RGBA), row 0, unexpected surface data.",
       "ddraw7.c:18766: Test failed: Test (1, R5G6B5 -> RGBA), row 0, unexpected surface data.",
       "ddraw7.c:18766: Test failed: Test (2, R5G6B5 -> RGBA), row 0, unexpected surface data.",
       "ddraw7.c:18766: Test failed: Test (3, R5G6B5 -> RGBA), row 0, unexpected surface data.",
       "ddraw7.c:18766: Test failed: Test (0, R5G6B5 -> R5G5B5A1), row 0, unexpected surface data.",
       "ddraw7.c:18766: Test failed: Test (1, R5G6B5 -> R5G5B5A1), row 0, unexpected surface data.",
       "ddraw7.c:18766: Test failed: Test (2, R5G6B5 -> R5G5B5A1), row 0, unexpected surface data.",
-      "ddraw7.c:18766: Test failed: Test (3, R5G6B5 -> R5G5B5A1), row 0, unexpected surface data."
+      "ddraw7.c:18766: Test failed: Test (3, R5G6B5 -> R5G5B5A1), row 0, unexpected surface data.",
+      "ddraw7.c:18766: Test failed: Test (0, R5G5B5A1 -> R5G6B5), row 0, unexpected surface data."
     ]
   },
   "test_compressed_surface_stretch": {

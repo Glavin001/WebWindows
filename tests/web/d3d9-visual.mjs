@@ -4,7 +4,7 @@
 //
 //   node tests/web/d3d9-visual.mjs [--batch N] [--timeout S] [--only A-B,C,...] [--present gdi|canvas]
 //        [--native] [--baseline FILE] [--write-baseline FILE] [--build-only]
-//        [--module M --test T]
+//        [--module M --test T] [--prebuilt]
 //
 // --module and --test run another of Wine's tests the same way: T.c of
 // dlls/M/tests (e.g. d3d8 visual, ddraw ddraw7, d3d11 d3d11; built first
@@ -64,87 +64,96 @@ mkdirSync(out, { recursive: true });
 
 // ---- The numbered test -----------------------------------------------------
 
-const tdir = `dlls/${module}/tests`;
-const src = readFileSync(join(WINE_SRC, tdir, `${test}.c`), 'utf8');
-const start = src.indexOf(`START_TEST(${test})`);
-const body = src.slice(start);
-const names = [];
-let numbered, queued = false;
-if (isD3d9) {
-  const afterRelease = body.indexOf('IDirect3D9_Release(d3d);');
-  numbered = body.slice(0, afterRelease) + body.slice(afterRelease).replace(/^ {4}(\w+)\(\);$/gm, (_, name) => {
-    names.push(name);
-    return `    if (wwt_run(${names.length - 1}, "${name}")) ${name}();`;
-  });
-} else {
-  // Test calls: "    test_x(...);" / "    x_test(...);", queued ones
-  // ("    queue_test(test_x);", possibly over several lines), run at once,
-  // and ones run by a helper ("    run_for_each_device_type(test_x);").
-  numbered = body.replace(/^ {4}(queue_\w+\([^;]*?\)|run_\w+\(\s*test_\w+[^;\n]*\)|(?:test_\w+|\w+_test)\([^;\n]*\));$/gm, (call) => {
-    const q = call.trimStart().startsWith('queue_');
-    const byHelper = q || call.trimStart().startsWith('run_');
-    const name = byHelper ? [...call.matchAll(/\b(test_\w+|\w+_test)\b/g)].pop()?.[1] ?? 'queued' : call.trim().split('(')[0];
-    queued ||= q;
-    names.push(name);
-    return `    if (wwt_run(${names.length - 1}, "${name}")) { ${call.trim()}; ${q ? 'wwt_flush(); ' : ''}}`;
-  });
-}
-const helper = `
-/* Runs functions A to B-1 of START_TEST when argv[2] is "A-B" (tests/web/d3d9-visual.mjs). */
-static BOOL wwt_run(int i, const char *name)
-{
-    static int lo = -1, hi;
-    if (lo < 0)
-    {
-        char **argv;
-        int argc = winetest_get_mainargs(&argv);
-        lo = 0;
-        hi = 1 << 30;
-        if (argc > 2) sscanf(argv[2], "%d-%d", &lo, &hi);
-    }
-    if (i < lo || i >= hi) return FALSE;
-    trace("wwt function %d %s\\n", i, name);
-    return TRUE;
-}
+// --prebuilt: the program built before (--build-only, e.g. in a Linux
+// container that has Wine's build tree and winegcc), run from another
+// machine (a Mac with Chrome).
+const prebuilt = process.argv.includes('--prebuilt');
+const names = prebuilt ? JSON.parse(readFileSync(join(appDir, `${module}_test.json`), 'utf8')).names : buildTest();
 
-`;
-const flush = queued ? `
-/* Runs what a numbered call queued, now, so its output follows its trace line. */
-static void wwt_flush(void)
-{
-    run_queued_tests();
-    mt_test_count = 0;
-}
-
-` : '';
-const patched = join(root, base, `${test}.c`);
-writeFileSync(patched, src.slice(0, start) + helper + flush + numbered);
-const exe = join(appDir, exeName);
-const obj = join(root, base, `${test}.o`);
-execFileSync('i686-w64-mingw32-gcc', ['-c', '-o', obj, patched, `-I${WINE_BUILD}/${tdir}`, `-I${WINE_SRC}/${tdir}`,
-  `-I${WINE_BUILD}/include`, `-I${WINE_SRC}/include`, `-I${WINE_SRC}/include/msvcrt`, '-D_MSVCR_VER=0',
-  '-D__WINESRC__', '-D__WINE_PE_BUILD', '-fno-strict-aliasing', '-fno-omit-frame-pointer',
-  '-mpreferred-stack-boundary=2', '-O2', '-w'], { stdio: 'inherit' });
-// The module's other test objects, its resources and its Makefile's imports.
-const objDir = join(WINE_BUILD, tdir, 'i386-windows');
-const others = readdirSync(objDir).filter((f) => f.endsWith('.o') && f !== `${test}.o` && f !== 'testlist.o').map((f) => join(objDir, f));
-const resources = [join(WINE_BUILD, tdir), objDir].flatMap((d) => readdirSync(d).filter((f) => f.endsWith('.res')).map((f) => join(d, f)));
-const imports = (/^IMPORTS\s*=(.*)$/m.exec(readFileSync(join(WINE_SRC, tdir, 'Makefile.in'), 'utf8'))?.[1] ?? '').trim().split(/\s+/);
-const lib = (name) => {
-  const dirs = [name, `${name}_47`, ...readdirSync(join(WINE_BUILD, 'dlls')).filter((d) => d.startsWith(name))];
-  for (const d of dirs) {
-    const f = join(WINE_BUILD, 'dlls', d, 'i386-windows', `lib${name}.a`);
-    if (existsSync(f)) return f;
+function buildTest() {
+  const tdir = `dlls/${module}/tests`;
+  const src = readFileSync(join(WINE_SRC, tdir, `${test}.c`), 'utf8');
+  const start = src.indexOf(`START_TEST(${test})`);
+  const body = src.slice(start);
+  const names = [];
+  let numbered, queued = false;
+  if (isD3d9) {
+    const afterRelease = body.indexOf('IDirect3D9_Release(d3d);');
+    numbered = body.slice(0, afterRelease) + body.slice(afterRelease).replace(/^ {4}(\w+)\(\);$/gm, (_, name) => {
+      names.push(name);
+      return `    if (wwt_run(${names.length - 1}, "${name}")) ${name}();`;
+    });
+  } else {
+    // Test calls: "    test_x(...);" / "    x_test(...);", queued ones
+    // ("    queue_test(test_x);", possibly over several lines), run at once,
+    // and ones run by a helper ("    run_for_each_device_type(test_x);").
+    numbered = body.replace(/^ {4}(queue_\w+\([^;]*?\)|run_\w+\(\s*test_\w+[^;\n]*\)|(?:test_\w+|\w+_test)\([^;\n]*\));$/gm, (call) => {
+      const q = call.trimStart().startsWith('queue_');
+      const byHelper = q || call.trimStart().startsWith('run_');
+      const name = byHelper ? [...call.matchAll(/\b(test_\w+|\w+_test)\b/g)].pop()?.[1] ?? 'queued' : call.trim().split('(')[0];
+      queued ||= q;
+      names.push(name);
+      return `    if (wwt_run(${names.length - 1}, "${name}")) { ${call.trim()}; ${q ? 'wwt_flush(); ' : ''}}`;
+    });
   }
-  throw new Error(`no import library for ${name}`);
-};
-execFileSync('tools/winegcc/winegcc', ['-o', exe, '--wine-objdir', '.', '-b', 'i686-w64-mingw32',
-  ...others, obj, join(objDir, 'testlist.o'), ...resources, ...imports.map(lib),
-  'dlls/winecrt0/i386-windows/libwinecrt0.a', 'dlls/msvcrt/i386-windows/libmsvcrt.a',
-  'dlls/kernel32/i386-windows/libkernel32.a', 'dlls/ntdll/i386-windows/libntdll.a',
-  '-Wl,--disable-stdcall-fixup'], { cwd: WINE_BUILD, stdio: 'inherit' });
-writeFileSync(join(appDir, `${module}_test.json`), JSON.stringify({ names }) + '\n');
-console.log(`${names.length} test functions in ${test}.c`);
+  const helper = `
+  /* Runs functions A to B-1 of START_TEST when argv[2] is "A-B" (tests/web/d3d9-visual.mjs). */
+  static BOOL wwt_run(int i, const char *name)
+  {
+      static int lo = -1, hi;
+      if (lo < 0)
+      {
+          char **argv;
+          int argc = winetest_get_mainargs(&argv);
+          lo = 0;
+          hi = 1 << 30;
+          if (argc > 2) sscanf(argv[2], "%d-%d", &lo, &hi);
+      }
+      if (i < lo || i >= hi) return FALSE;
+      trace("wwt function %d %s\\n", i, name);
+      return TRUE;
+  }
+
+  `;
+  const flush = queued ? `
+  /* Runs what a numbered call queued, now, so its output follows its trace line. */
+  static void wwt_flush(void)
+  {
+      run_queued_tests();
+      mt_test_count = 0;
+  }
+
+  ` : '';
+  const patched = join(root, base, `${test}.c`);
+  writeFileSync(patched, src.slice(0, start) + helper + flush + numbered);
+  const exe = join(appDir, exeName);
+  const obj = join(root, base, `${test}.o`);
+  execFileSync('i686-w64-mingw32-gcc', ['-c', '-o', obj, patched, `-I${WINE_BUILD}/${tdir}`, `-I${WINE_SRC}/${tdir}`,
+    `-I${WINE_BUILD}/include`, `-I${WINE_SRC}/include`, `-I${WINE_SRC}/include/msvcrt`, '-D_MSVCR_VER=0',
+    '-D__WINESRC__', '-D__WINE_PE_BUILD', '-fno-strict-aliasing', '-fno-omit-frame-pointer',
+    '-mpreferred-stack-boundary=2', '-O2', '-w'], { stdio: 'inherit' });
+  // The module's other test objects, its resources and its Makefile's imports.
+  const objDir = join(WINE_BUILD, tdir, 'i386-windows');
+  const others = readdirSync(objDir).filter((f) => f.endsWith('.o') && f !== `${test}.o` && f !== 'testlist.o').map((f) => join(objDir, f));
+  const resources = [join(WINE_BUILD, tdir), objDir].flatMap((d) => readdirSync(d).filter((f) => f.endsWith('.res')).map((f) => join(d, f)));
+  const imports = (/^IMPORTS\s*=(.*)$/m.exec(readFileSync(join(WINE_SRC, tdir, 'Makefile.in'), 'utf8'))?.[1] ?? '').trim().split(/\s+/);
+  const lib = (name) => {
+    const dirs = [name, `${name}_47`, ...readdirSync(join(WINE_BUILD, 'dlls')).filter((d) => d.startsWith(name))];
+    for (const d of dirs) {
+      const f = join(WINE_BUILD, 'dlls', d, 'i386-windows', `lib${name}.a`);
+      if (existsSync(f)) return f;
+    }
+    throw new Error(`no import library for ${name}`);
+  };
+  execFileSync('tools/winegcc/winegcc', ['-o', exe, '--wine-objdir', '.', '-b', 'i686-w64-mingw32',
+    ...others, obj, join(objDir, 'testlist.o'), ...resources, ...imports.map(lib),
+    'dlls/winecrt0/i386-windows/libwinecrt0.a', 'dlls/msvcrt/i386-windows/libmsvcrt.a',
+    'dlls/kernel32/i386-windows/libkernel32.a', 'dlls/ntdll/i386-windows/libntdll.a',
+    '-Wl,--disable-stdcall-fixup'], { cwd: WINE_BUILD, stdio: 'inherit' });
+  writeFileSync(join(appDir, `${module}_test.json`), JSON.stringify({ names }) + '\n');
+  console.log(`${names.length} test functions in ${test}.c`);
+  return names;
+}
 if (process.argv.includes('--build-only')) process.exit(0);
 
 // ---- Running ---------------------------------------------------------------

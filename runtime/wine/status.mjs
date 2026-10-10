@@ -30,7 +30,7 @@ export class StatusSampler {
     this.extra = opts.extra ?? (() => ({}));
     this.t0 = performance.now();
     this.lastAt = this.t0;
-    this.prev = { calls: new Map(), flushes: 0, taken: 0, queued: 0, batches: 0, fixmes: 0, missingSent: new Set(), listingsSent: new Set() };
+    this.prev = { calls: new Map(), flushes: 0, taken: 0, queued: 0, batches: 0, fixmes: 0, missingSent: new Set(), listingsSent: new Set(), images: 0 };
     this.seq = 0;
   }
 
@@ -101,9 +101,31 @@ export class StatusSampler {
       };
       prev.flushes = flushes;
     }
+    // The loaded images, when they changed: [base, size, path] (profilers
+    // name translated code by its x86 address; tools/web/cdp-profile.mjs).
+    if (h.images && h.images.size !== prev.images) {
+      s.images = [...h.images].map(([base, img]) => [base, img.size, img.path]);
+      prev.images = h.images.size;
+    }
     if (h.d3d) {
       s.d3d = { batchesPerSec: rate(h.d3d.batches ?? 0, prev.batches) };
       prev.batches = h.d3d.batches ?? 0;
+      // Time the program's thread spent waiting on the render worker, in ms
+      // per second: for a full batch slot, and for fences (readbacks).
+      const st = h.d3d.stats;
+      if (st) {
+        const p = (prev.d3dStats ??= {});
+        const d = (k) => (st[k] - (p[k] ?? 0)) / dt;
+        Object.assign(s.d3d, {
+          submitWaitsPerSec: Math.round(d('submitWaits')),
+          submitWaitMsPerSec: Math.round(d('submitWaitMs')),
+          fenceWaitsPerSec: Math.round(d('fenceWaits')),
+          fenceWaitMsPerSec: Math.round(d('fenceWaitMs')),
+          mbPerSec: Math.round(d('bytes') / 1e5) / 10,
+          readbackMbPerSec: Math.round(d('readbackBytes') / 1e5) / 10,
+        });
+        Object.assign(p, st);
+      }
     }
     prev.calls = calls;
     return { ...s, ...this.extra() };
@@ -161,7 +183,9 @@ export function formatStatus(s) {
   const run = s.threads.find((t) => t.state === 'running') ?? s.threads[0];
   const where = run ? `${run.tid} ${run.state}${run.call ? ` in ${run.call}` : ''} ${run.frames.slice(0, 3).join('<')}` : '-';
   const scr = s.screen ? ` screen ${s.screen.updatesPerSec}/s lit ${Math.round(s.screen.nonBlack * 100)}% ${s.screen.colours}c` : '';
-  const d3d = s.d3d ? ` d3d ${s.d3d.batchesPerSec}/s` : '';
+  const d3d = s.d3d
+    ? ` d3d ${s.d3d.batchesPerSec}/s${s.d3d.submitWaitMsPerSec !== undefined ? ` (waits: slot ${s.d3d.submitWaitMsPerSec} ms/s, fence ${s.d3d.fenceWaitsPerSec}x ${s.d3d.fenceWaitMsPerSec} ms/s)` : ''}`
+    : '';
   const inp = s.input ? ` input ${s.input.taken}/${s.input.queued}` : '';
   return `[${s.t}s]${scr}${d3d} sys ${s.syscalls.perSec}/s (${s.syscalls.top.map(([n]) => n).slice(0, 2).join(',')})${inp} | ${where}`;
 }
