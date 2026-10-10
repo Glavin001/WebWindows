@@ -37,6 +37,14 @@ node runtime/web/serve.mjs 8080                    # http://localhost:8080/runti
   `/opt/wine-build`, `/opt/wine-build64`, where Wine's Makefiles expect
   them), cargo's registry and rustup's toolchains between runs
   (`webwindows-*`; `docker volume ls`).
+- **One checkout per agent.** Two sessions in one working tree switch
+  branches and commit each other's files. Give each its own git worktree
+  (`git worktree add`), and its own Wine trees, since two Wine builds in
+  one tree at once corrupt it: `WEBWINDOWS_VOLUMES=webwindows-<name>
+  tools/docker/run.sh …` (seed them by copying the default volumes, or let
+  the first build make them). Each worktree has its own `target/`, so its
+  first `build-all.sh` builds everything, and its own `node_modules`
+  (Playwright).
 - **`target/` belongs to the container.** It holds Linux binaries
   (`target/release/wwt`) next to the WebAssembly the page loads. To build
   Rust natively on a Mac, for a quick check, use another directory:

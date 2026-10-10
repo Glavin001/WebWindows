@@ -9,8 +9,10 @@
 #
 # Wine's source and build trees (/opt/wine-src, /opt/wine-build,
 # /opt/wine-build64, where its Makefiles expect them), cargo's registry and
-# rustup's toolchains are kept in named Docker volumes between runs. The
-# image is built on first use and again when the Dockerfile changes (its
+# rustup's toolchains are kept in named Docker volumes between runs. Wine's
+# are named $WEBWINDOWS_VOLUMES-wine-* (default webwindows): checkouts that
+# build at the same time (git worktrees) each need their own. The image is
+# built on first use and again when the Dockerfile changes (its
 # tag is the file's hash). The image is x86-64 (Rosetta on Apple Silicon):
 # the program tests compare against native x86 runs.
 set -e
@@ -20,15 +22,16 @@ if ! docker image inspect "$tag" > /dev/null 2>&1; then
   echo "building $tag (once; several minutes)" >&2
   docker build --platform linux/amd64 -t "$tag" "$repo/tools/docker" >&2
 fi
+v=${WEBWINDOWS_VOLUMES:-webwindows}
 tty=
 [ -t 0 ] && [ -t 1 ] && tty=-it
 [ $# -gt 0 ] || set -- bash
 # A large stack: the translator recurses deeply on some functions.
 exec docker run --rm $tty --platform linux/amd64 --ulimit stack=268435456:268435456 \
   -v "$repo":/work -w /work \
-  -v webwindows-wine-src:/opt/wine-src \
-  -v webwindows-wine-build:/opt/wine-build \
-  -v webwindows-wine-build64:/opt/wine-build64 \
+  -v "$v-wine-src":/opt/wine-src \
+  -v "$v-wine-build":/opt/wine-build \
+  -v "$v-wine-build64":/opt/wine-build64 \
   -v webwindows-cargo:/root/.cargo/registry \
   -v webwindows-rustup:/root/.rustup \
   "$tag" bash -c '. /opt/emsdk/emsdk_env.sh > /dev/null 2>&1; exec "$@"' bash "$@"
