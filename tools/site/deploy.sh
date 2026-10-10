@@ -32,4 +32,16 @@ JSON
 prod=
 [ "$target" = production ] && prod=--prod
 cd "$root"
-npx --yes vercel@62 deploy --prebuilt $prod --token "$VERCEL_TOKEN" --yes
+log=$(mktemp)
+if npx --yes vercel@62 deploy --prebuilt $prod --token "$VERCEL_TOKEN" --yes 2> "$log"; then
+  cat "$log" >&2
+  exit 0
+fi
+cat "$log" >&2
+# Vercel's free plan takes 5000 file uploads a day and refuses the rest with
+# this code until the next day. Still a failure (nothing was deployed), but
+# one that says so: the commit is not at fault.
+if grep -q 'api-upload-free' "$log"; then
+  echo "::error title=Vercel's daily upload limit::Nothing deployed: the plan's 5000 uploads a day are used up (it resets within 24 hours). Not a fault of this commit." >&2
+fi
+exit 1

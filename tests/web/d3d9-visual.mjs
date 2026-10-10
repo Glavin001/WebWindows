@@ -149,7 +149,7 @@ function buildTest() {
     ...others, obj, join(objDir, 'testlist.o'), ...resources, ...imports.map(lib),
     'dlls/winecrt0/i386-windows/libwinecrt0.a', 'dlls/msvcrt/i386-windows/libmsvcrt.a',
     'dlls/kernel32/i386-windows/libkernel32.a', 'dlls/ntdll/i386-windows/libntdll.a',
-    '-Wl,--disable-stdcall-fixup'], { cwd: WINE_BUILD, stdio: 'inherit' });
+    '-Wl,--disable-stdcall-fixup', '-Wl,--no-insert-timestamp'], { cwd: WINE_BUILD, stdio: 'inherit' });
   writeFileSync(join(appDir, `${module}_test.json`), JSON.stringify({ names }) + '\n');
   console.log(`${names.length} test functions in ${test}.c`);
   return names;
