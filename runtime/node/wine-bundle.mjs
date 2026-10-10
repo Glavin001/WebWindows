@@ -74,6 +74,11 @@ const NET_DLLS = ['ws2_32', 'crypt32', 'dnsapi', 'nsi', 'iphlpapi', 'secur32', '
 // Rich edit controls: loaded by name (Unreal's Window.dll loads RICHED32.DLL
 // for its RICHEDIT class), so fetched for programs whose files name them.
 const RICHEDIT_DLLS = ['riched20', 'riched32'];
+// D3DX, Direct3D 9's helper library: games import one version of it
+// (F.E.A.R. d3dx9_25), which Wine builds from one source with the version's
+// differences. Fetched only for a program that imports one. Its texture
+// loading delay-loads windowscodecs for formats other than DDS, not bundled.
+const D3DX_DLLS = ['d3dxof', 'd3dx9_25'];
 // Translator flags per DLL. The Direct3D DLLs never write code, so their
 // stores skip the self-modifying-code check (the C runtime's memcpy, which
 // could copy code for a program, keeps it); the same list is in wine.mjs.
@@ -84,10 +89,13 @@ const PRELINK_BASE = mem64 ? 0x1_9000_0000 : 0x60000000;
 const PROGRAMS = ['winemine', 'notepad'];
 const NLS = ['locale', 'l_intl', 'sortdefault', 'normnfc', 'normnfd', 'normnfkc', 'normnfkd', 'c_1252', 'c_437', 'c_850', 'c_20127'];
 
-const wwt = ['target/release/wwt', 'target/debug/wwt']
-  .map((p) => join(root, p))
-  .filter((p) => existsSync(p))
-  .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
+// WWT=path: another translator build (an experiment's, in its own target dir).
+const wwt =
+  process.env.WWT ??
+  ['target/release/wwt', 'target/debug/wwt']
+    .map((p) => join(root, p))
+    .filter((p) => existsSync(p))
+    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
 
 /** The image without its debug sections (binutils' strip, when installed;
  * loaded sections keep their addresses). */
@@ -123,7 +131,7 @@ const webglOpengl = join(wineBuild, 'dlls', 'opengl32', peDir, 'opengl32-webgl.d
 const dllPath = (d) =>
   d === 'opengl32' && existsSync(webglOpengl) ? webglOpengl : join(wineBuild, 'dlls', d, peDir, fileName(d));
 let nextBase = PRELINK_BASE;
-for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS, ...NET_DLLS, ...RICHEDIT_DLLS] : [])]) {
+for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS, ...NET_DLLS, ...RICHEDIT_DLLS, ...D3DX_DLLS] : [])]) {
   const pe = dllPath(d);
   const name = fileName(d);
   if (!existsSync(pe)) {
@@ -142,7 +150,15 @@ for (const d of [...DLLS, ...(withUnix ? [...GUI_DLLS, ...MEDIA_DLLS, ...NET_DLL
     }
   }
   writeFileSync(join(out, name), bytes);
-  const group = MEDIA_DLLS.includes(d) ? 'media' : NET_DLLS.includes(d) ? 'network' : RICHEDIT_DLLS.includes(d) ? 'richedit' : null;
+  const group = MEDIA_DLLS.includes(d)
+    ? 'media'
+    : NET_DLLS.includes(d)
+      ? 'network'
+      : RICHEDIT_DLLS.includes(d)
+        ? 'richedit'
+        : D3DX_DLLS.includes(d)
+          ? 'd3dx'
+          : null;
   // The browser runs Wine with a 2 GB guest on a 32-bit memory
   // (runtime/web/worker.mjs), a constant in the memory checks; a 64-bit
   // memory reads its limit at run time. The native heap and string
