@@ -1186,12 +1186,30 @@ const msvcrt = {
     const i = this.m.u8.subarray(a.u32(0), a.u32(0) + a.u32(2)).indexOf(a.u32(1) & 0xff);
     return i < 0 ? 0 : a.u32(0) + i;
   }),
+  time: fn(1, function (a) {
+    const t = Math.floor(Date.now() / 1000) >>> 0;
+    if (a.u32(0)) this.m.dv.setUint32(a.u32(0), t, true);
+    return t;
+  }),
   clock: fn(0, function () {
     // Milliseconds since the first call (CLOCKS_PER_SEC is 1000); callers
     // only use differences.
     this.clockStart ??= performance.now();
     return Math.floor(performance.now() - this.clockStart);
   }),
+  // The C locale's character classes.
+  isalpha: fn(1, (a) => (/[A-Za-z]/.test(String.fromCharCode(a.u32(0) & 0xff)) && a.u32(0) < 128 ? 1 : 0)),
+  isdigit: fn(1, (a) => (a.u32(0) >= 48 && a.u32(0) <= 57 ? 1 : 0)),
+  isalnum: fn(1, (a) => (a.u32(0) < 128 && /[A-Za-z0-9]/.test(String.fromCharCode(a.u32(0))) ? 1 : 0)),
+  iscntrl: fn(1, (a) => (a.u32(0) < 32 || a.u32(0) === 127 ? 1 : 0)),
+  isgraph: fn(1, (a) => (a.u32(0) > 32 && a.u32(0) < 127 ? 1 : 0)),
+  islower: fn(1, (a) => (a.u32(0) >= 97 && a.u32(0) <= 122 ? 1 : 0)),
+  isupper: fn(1, (a) => (a.u32(0) >= 65 && a.u32(0) <= 90 ? 1 : 0)),
+  ispunct: fn(1, (a) => (a.u32(0) > 32 && a.u32(0) < 127 && !/[A-Za-z0-9]/.test(String.fromCharCode(a.u32(0))) ? 1 : 0)),
+  isspace: fn(1, (a) => (a.u32(0) === 32 || (a.u32(0) >= 9 && a.u32(0) <= 13) ? 1 : 0)),
+  isxdigit: fn(1, (a) => (a.u32(0) < 128 && /[0-9A-Fa-f]/.test(String.fromCharCode(a.u32(0))) ? 1 : 0)),
+  tolower: fn(1, (a) => (a.u32(0) >= 65 && a.u32(0) <= 90 ? a.u32(0) + 32 : a.u32(0))),
+  toupper: fn(1, (a) => (a.u32(0) >= 97 && a.u32(0) <= 122 ? a.u32(0) - 32 : a.u32(0))),
   isprint: fn(1, function (a) {
     const c = a.u32(0);
     return c >= 0x20 && c < 0x7f ? 1 : 0;
