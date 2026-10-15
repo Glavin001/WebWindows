@@ -16,6 +16,7 @@
 //   node tests/programs/check.mjs --mem64         # 32-bit programs, 64-bit memory
 //   node tests/programs/check.mjs --shard 2/3 ... # every third run, from the second
 //                                                 # (CI splits the torture tests)
+//   node tests/programs/check.mjs --frame-slots   # stack slots in locals (wwt::frame)
 //   node tests/programs/check.mjs --no-mem-traps  # faithful memory checks instead of
 //                                                 # bounds traps (the runtimes' default
 //                                                 # where the engine maps traps)
@@ -53,6 +54,7 @@ let wine = false;
 let arch = 'x86';
 let mem64 = null;
 let memTraps = trapsMappable();
+let frameSlots = false;
 let torture = null;
 let filter = null;
 let shard = [1, 1];
@@ -69,6 +71,7 @@ while (args.length) {
   else if (a === '--mem32') mem64 = false;
   else if (a === '--mem-traps') memTraps = true;
   else if (a === '--no-mem-traps') memTraps = false;
+  else if (a === '--frame-slots') frameSlots = true;
   else if (a === '--torture') torture = resolve(args.shift());
   else if (a === '--filter') filter = new RegExp(args.shift());
   else if (a === '--shard') shard = args.shift().split('/').map(Number);
@@ -187,7 +190,7 @@ async function runOne(p, opt) {
   // with a 32-bit memory.
   const guestLimitMB = arch === 'x64' ? 3072 : 1024;
   const traps = memTraps ? ['--mem-traps'] : ['--no-mem-traps'];
-  const tr = await sh(wwt, ['translate', b.exe, '-o', wasm, ...(mem64 ? ['--mem64'] : ['--guest-limit-mb', String(guestLimitMB)]), ...(memTraps ? ['--mem-traps'] : [])]);
+  const tr = await sh(wwt, ['translate', b.exe, '-o', wasm, ...(mem64 ? ['--mem64'] : ['--guest-limit-mb', String(guestLimitMB)]), ...(memTraps ? ['--mem-traps'] : []), ...(frameSlots ? ['--frame-slots'] : [])]);
   if (tr.status !== 0) return { status: 'fail', detail: 'translate: ' + tr.stderr.slice(-800) };
   const t0 = performance.now();
   // With --wine the program runs on translated Wine DLLs (Milestone 2)

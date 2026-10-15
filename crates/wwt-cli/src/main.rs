@@ -76,6 +76,12 @@ struct TranslateOpts {
     /// No re-entry at loop headers (see `wwt::osr`).
     #[arg(long)]
     no_osr: bool,
+    /// Keep stack frame slots in locals (experimental, see `wwt::frame`).
+    #[arg(long, conflicts_with = "no_frame_slots")]
+    frame_slots: bool,
+    /// Keep stack frame slots in memory (the default).
+    #[arg(long)]
+    no_frame_slots: bool,
     /// Lower lock-prefixed instructions to WebAssembly atomics, for a
     /// runtime that runs guest threads in parallel.
     #[arg(long)]
@@ -103,6 +109,11 @@ impl TranslateOpts {
         c.native_heap = self.native_heap;
         c.native_strings = self.native_strings;
         c.codegen.osr = !self.no_osr;
+        c.frame_slots = match (self.frame_slots, self.no_frame_slots) {
+            (true, _) => Some(true),
+            (_, true) => Some(false),
+            _ => None,
+        };
         c.codegen.atomics = self.atomics;
         c.c_abi = match self.c_abi.as_str() {
             "on" => Some(true),

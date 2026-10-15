@@ -7,7 +7,8 @@
 //!    relocations and run-time profiles.
 //! 3. Decode (inside [`discover`], with `iced-x86`).
 //! 4. [`lift`] — x86 semantics as explicit operations in [`ir`].
-//! 5. [`opt`] — flag elimination, folding, dead-code elimination.
+//! 5. [`opt`] — flag elimination, folding, dead-code elimination; [`frame`]
+//!    keeps stack frame slots in locals.
 //! 6. [`codegen`] — structured WebAssembly with `wasm-encoder`.
 //! 7. [`translate`] — orchestration, module metadata and caching.
 
@@ -18,6 +19,7 @@ pub mod discover;
 pub mod flags;
 pub mod fpu;
 mod fpu_helpers;
+pub mod frame;
 pub mod inline;
 pub mod ir;
 pub mod kernel;

@@ -569,7 +569,7 @@ impl<'a> ModuleGen<'a> {
             }
             reducible::make_reducible(&mut c);
             if self.cfg.osr {
-                crate::osr::add_reentry(&mut c);
+                crate::osr::add_reentry(&mut c, !irreducible);
             }
             fixed = c;
             &fixed
@@ -971,6 +971,37 @@ impl<'g, 'a> FnGen<'g, 'a> {
                 (Ty::I64, _) => self.emit(W::I64Store(memarg(off, 3))),
                 (_, 2) => self.emit(W::I32Store16(memarg(off, 1))),
                 _ => self.emit(W::I32Store(memarg(off, 2))),
+            }
+        }
+    }
+
+    /// Writes back the stack frame slots held in locals on entry to `b`
+    /// (`crate::frame`), for a thread leaving the function at a back edge.
+    fn flush_slots(&mut self, b: BlockId) {
+        let Some(info) = self.f.frame.clone() else {
+            return;
+        };
+        // Slots whose locals are dead there hold nothing the frame lacks.
+        for fl in info.flush_at(b) {
+            if !self.a.is_live_in(b, fl.slot) {
+                continue;
+            }
+            self.get(fl.base);
+            let off = if fl.offset >= 0 {
+                fl.offset as u32
+            } else {
+                self.emit(W::I32Const(fl.offset));
+                self.emit(W::I32Add);
+                0
+            };
+            self.get(fl.slot);
+            match (fl.size, self.f.ty(fl.slot)) {
+                (1, _) => self.emit(W::I32Store8(memarg(off, 0))),
+                (2, _) => self.emit(W::I32Store16(memarg(off, 1))),
+                (4, Ty::F32) => self.emit(W::F32Store(memarg(off, 2))),
+                (4, _) => self.emit(W::I32Store(memarg(off, 2))),
+                (8, Ty::F64) => self.emit(W::F64Store(memarg(off, 3))),
+                _ => self.emit(W::I64Store(memarg(off, 3))),
             }
         }
     }
@@ -1492,6 +1523,7 @@ impl<'g, 'a> FnGen<'g, 'a> {
         self.emit(W::If(BlockType::Empty));
         self.ctx.push(Ctx::If);
         self.sync(self.a.dirty_end[src as usize]);
+        self.flush_slots(tgt);
         self.emit(W::LocalGet(0));
         self.code_const(resume);
         self.emit(W::Call(F_PREEMPT));
