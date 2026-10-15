@@ -50,6 +50,9 @@ pub struct Config {
     /// Try the host's native string and locale functions before the
     /// translated ones (`builtin::NATIVE_TRY`); applies to Wine's own DLLs.
     pub native_strings: bool,
+    /// Keep stack frame slots in locals (`crate::frame`, opt level 1).
+    /// Off by default: not a measurable gain yet (docs/performance.md).
+    pub frame_slots: Option<bool>,
 }
 
 impl Default for Config {
@@ -65,6 +68,7 @@ impl Default for Config {
             prove_flags_abi: false,
             native_heap: false,
             native_strings: false,
+            frame_slots: None,
         }
     }
 }
@@ -94,6 +98,11 @@ impl Config {
     pub fn mode(&self) -> Mode {
         self.lift.mode
     }
+
+    /// Whether stack frame slots go in locals (see `frame_slots`).
+    pub fn frame_slots(&self) -> bool {
+        self.opt_level > 0 && self.frame_slots.unwrap_or(false)
+    }
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -110,6 +119,13 @@ pub struct Report {
     /// Functions shown to return without their callers reading the flags
     /// (`prove_flags_abi`).
     pub flag_free_returns: usize,
+    /// Stack frame slots kept in locals (`crate::frame`).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub frame_slots: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 pub struct Translation {
@@ -525,6 +541,14 @@ pub fn translate_discovered(
     if cfg.opt_level > 0 && cfg.inline {
         for i in crate::inline::inline_leaves(&mut funcs) {
             opt::optimize(&mut funcs[i], cfg.opt_level);
+        }
+    }
+    // Last: the slots' locals have several definitions, which `opt`'s
+    // passes (but not code generation) assume temporaries never have.
+    if cfg.frame_slots() {
+        let pops = std::sync::Arc::new(crate::frame::stack_pops(&funcs));
+        for f in &mut funcs {
+            report.frame_slots += crate::frame::promote(f, &pops);
         }
     }
     funcs.sort_by_key(|f| f.entry);

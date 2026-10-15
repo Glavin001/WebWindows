@@ -486,6 +486,24 @@ Wine tier when they are (`tools/wine/build.sh`).
   dispatch loop's iterations are the ones worth keeping in locals, and
   re-entry at that loop's header would have to reload them.
 
+* Stack slots as locals (`crates/wwt/src/frame.rs`, `wwt translate
+  --frame-slots`, off by default). Slots of the function's own frame live
+  in WebAssembly locals and are written back only where other code could
+  look: calls and exits, explicit faults, accesses at unknown offsets, and
+  (in reducible functions) on the preemption and `osr` exit paths rather
+  than every back edge. A taken address keeps only the frame from the
+  lowest escaped address up in memory; calls to unknown callees keep `esp`
+  known through a run-time check of the guessed pop (`likely_pops`).
+  Correct on the program suite and 600 Csmith programs (both memory
+  modes), Lua's checksums, CoreMark's CRCs, but no gain (2-vCPU
+  container, interleaved rounds): CoreMark from +2.6% (early version)
+  to −4.5% (21 rounds, with call checks and jump-table range splits),
+  Lua on the M1 shims flat within noise (its time there is mostly host
+  calls). Write-backs at calls and the checks after them cost about what
+  the forwarded loads save; V8 and the CPU's store forwarding already make
+  a reloaded stack slot cheap. Stays as an option for measuring on Wine
+  and games, where MSVC code (ebp frames, x87 spills) may differ.
+
 * Simplifying masks by known zero bits (`setg al; movzx eax, al` lifts to
   `((eax & ~0xff) | flag) & 0xff`): cleaner IR, but V8 already folds it
   (CoreMark, Lua, apibench all within noise).
@@ -696,6 +714,8 @@ In rough order of expected gain:
 1. **Stack slots as locals.** GCC's x86 code keeps locals and spilled
    registers at `esp+N`. When a function's frame doesn't escape, those
    slots can live in WebAssembly locals, as they do in Emscripten's code.
+   Tried (`--frame-slots`, see "What didn't help"): no gain on CoreMark or
+   Lua as built; still to measure on translated Wine and games.
 2. **More inlining, and cheaper calls where it can't happen.** Callees
    that make calls of their own can be inlined too: their calls stay calls.
    Indirect calls through function pointers (CoreMark's sort comparators)

@@ -1028,6 +1028,8 @@ pub struct Function {
     pub vtypes: Vec<Ty>,
     /// What the code may assume about state across calls and returns.
     pub abi: CallAbi,
+    /// Stack frame slots kept in locals (`crate::frame`), when the pass ran.
+    pub frame: Option<std::sync::Arc<crate::frame::FrameInfo>>,
 }
 
 /// What a function may assume about the machine state across its calls and
@@ -1140,6 +1142,7 @@ impl Function {
             blocks: vec![],
             vtypes,
             abi: CallAbi::default(),
+            frame: None,
         }
     }
 

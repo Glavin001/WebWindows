@@ -26,10 +26,12 @@ fn native(offset: u32) -> Mem {
 }
 
 /// Adds re-entry points to `f`'s loops (which must be reducible). Returns
-/// whether anything changed.
-pub fn add_reentry(f: &mut Function) -> bool {
+/// whether anything changed. `slots_ok`: the function was reducible before
+/// code generation, so its stack frame slots (`crate::frame`) are written
+/// back on every back edge and can be reloaded at re-entry.
+pub fn add_reentry(f: &mut Function, slots_ok: bool) -> bool {
     let before = f.clone();
-    let changed = add_reentry_points(f);
+    let changed = add_reentry_points(f, slots_ok);
     // Never trade structured code for re-entry.
     if changed && !crate::reducible::is_reducible(f) {
         *f = before;
@@ -38,7 +40,7 @@ pub fn add_reentry(f: &mut Function) -> bool {
     changed
 }
 
-fn add_reentry_points(f: &mut Function) -> bool {
+fn add_reentry_points(f: &mut Function, slots_ok: bool) -> bool {
     let order = f.rpo();
     let n = f.blocks.len();
     let mut rpo_num = vec![u32::MAX; n];
@@ -88,12 +90,26 @@ fn add_reentry_points(f: &mut Function) -> bool {
     }
     headers.retain(|&h| !inner[h as usize]);
     let a = opt::analyze(f);
+    // Stack frame slots live at a header are reloaded from the frame, which
+    // the back edges wrote back, when esp's place in the frame is known.
+    let homes: std::collections::HashMap<V, (i32, u8)> = match &f.frame {
+        Some(i) if slots_ok => i.slots.iter().map(|h| (h.v, (h.offset, h.size))).collect(),
+        _ => Default::default(),
+    };
+    let esp_at = if homes.is_empty() {
+        vec![]
+    } else {
+        crate::frame::entry_esp(f)
+    };
+    let slot_ok = |h: BlockId, v: V| {
+        homes.contains_key(&v) && esp_at.get(h as usize).copied().flatten().is_some()
+    };
     headers.retain(|&h| {
         h != 0
             && a.global
                 .iter()
                 .enumerate()
-                .all(|(d, &v)| v < NUM_STATE || !a.live_in[h as usize].contains(d))
+                .all(|(d, &v)| v < NUM_STATE || !a.live_in[h as usize].contains(d) || slot_ok(h, v))
     });
     if headers.is_empty() {
         return false;
@@ -166,6 +182,46 @@ fn add_reentry_points(f: &mut Function) -> bool {
                 eip: addr,
             },
         ];
+        // Live slots: from the frame.
+        for (d, &v) in a.global.iter().enumerate() {
+            if v < NUM_STATE || !a.live_in[h as usize].contains(d) {
+                continue;
+            }
+            let (o, size) = homes[&v];
+            let k = esp_at[h as usize].unwrap();
+            let rel = o.wrapping_sub(k);
+            let (base, off) = if rel >= 0 {
+                (ESP, rel as u32)
+            } else {
+                let c = f.new_vreg(Ty::I32);
+                let sum = f.new_vreg(Ty::I32);
+                f.blocks[go as usize].insts.push(Inst {
+                    dst: Some(c),
+                    op: Op::Const(rel as u32 as u64),
+                    eip: addr,
+                });
+                f.blocks[go as usize].insts.push(Inst {
+                    dst: Some(sum),
+                    op: Op::Bin(BinOp::I32Add, ESP, c),
+                    eip: addr,
+                });
+                (sum, 0)
+            };
+            f.blocks[go as usize].insts.push(Inst {
+                dst: Some(v),
+                op: Op::Load {
+                    addr: base,
+                    mem: Mem {
+                        size,
+                        signed: false,
+                        space: Space::Trusted,
+                        offset: off,
+                        atomic: false,
+                    },
+                },
+                eip: addr,
+            });
+        }
         f.blocks[go as usize].term = Term::Jump(h);
         let next = f.new_block(entry_addr);
         let kc = f.new_vreg(Ty::I32);
@@ -244,6 +300,48 @@ fn add_reentry_points(f: &mut Function) -> bool {
                 eip: addr,
             },
         ];
+        // Stack frame slots held in locals at the header, to the frame.
+        if let Some(info) = f.frame.clone() {
+            // Slots whose locals are dead there hold nothing the frame lacks.
+            for fl in info.flush_at(h) {
+                let d = a.dense[fl.slot as usize];
+                if d == u32::MAX || !a.live_in[h as usize].contains(d as usize) {
+                    continue;
+                }
+                let (base, off) = if fl.offset >= 0 {
+                    (fl.base, fl.offset as u32)
+                } else {
+                    let c = f.new_vreg(Ty::I32);
+                    let sum = f.new_vreg(Ty::I32);
+                    f.blocks[exit as usize].insts.push(Inst {
+                        dst: Some(c),
+                        op: Op::Const(fl.offset as u32 as u64),
+                        eip: addr,
+                    });
+                    f.blocks[exit as usize].insts.push(Inst {
+                        dst: Some(sum),
+                        op: Op::Bin(BinOp::I32Add, fl.base, c),
+                        eip: addr,
+                    });
+                    (sum, 0)
+                };
+                f.blocks[exit as usize].insts.push(Inst {
+                    dst: None,
+                    op: Op::Store {
+                        addr: base,
+                        val: fl.slot,
+                        mem: Mem {
+                            size: fl.size,
+                            signed: false,
+                            space: Space::Trusted,
+                            offset: off,
+                            atomic: false,
+                        },
+                    },
+                    eip: addr,
+                });
+            }
+        }
         f.blocks[exit as usize].term = Term::Exit(f.entry);
         // Retreating edges into h (by the order before this pass).
         for &p in &preds[h as usize] {
